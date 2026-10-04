@@ -5,11 +5,23 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ai_chains"
-version = "1.0.0"
-description = "AI workflow chains and sequences for complex AI task automation"
+version = "2.0.0"
+description = "Chains of prompts, abilities, conditions and variables that run within their bounds as their owner"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_AI_Chains"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "ai"
+optional = false
+
+[[extension_dependencies]]
+name = "ai_prompts"
+optional = false
+
+[[extension_dependencies]]
+name = "ai_agents"
+optional = false

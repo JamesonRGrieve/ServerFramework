@@ -1,259 +1,117 @@
-# import uuid
-# import pytest
-# from endpoints.AbstractEPTest import AbstractEndpointTest
-# @pytest.mark.chains
-#     base_endpoint = "chain"
-#     entity_name = "chain"
-#     required_fields = ["id", "name"]
-#     string_field_to_update = "name"
-#     searchable_fields = ["name"]
-#     # No parent entities for chains
-#     parent_entities = []
-#     # Not a system entity
-#     system_entity = False
-#     def create_payload(self, name=None, parent_ids=None, team_id=None):
-#         if not name:
-#             name = testdata.get_name(1)
-#         if team_id:
-#             payload["team_id"] = team_id
-#     def test_POST_201_import_chain(self, server, admin_a_jwt, team_a):
-#         """Test importing a chain with steps."""
-#         # Create an agent first if needed for chain steps
-#         agent_name = f"Test Agent {uuid.uuid4()}"
-#             "agent": {
-#                 "description": "Test agent for chain steps",
-#                 "provider": "OpenAI",
-#             }
-#         agent_response = server.post(
-#             "/v1/agent", json=agent_payload, headers=self._auth_header(admin_a_jwt)
-#         )
-#         # If agent creation fails, skip this test
-#         if agent_response.status_code != 201:
-#             pytest.skip("Failed to create agent for chain steps")
-#         agent = agent_response.json()["agent"]
-#         # Create a chain with import
-#         chain_name = f"Imported Chain {uuid.uuid4()}"
-#         import_payload = {
-#             "chain": {
-#                 "chain_name": chain_name,
-#                     "steps": [
-#                         {
-#                             "step": 1,
-#                             "prompt_type": "prompt",
-#                             "prompt": {
-#                                 "prompt_name": "Think About It",
-#                             },
-#                         {
-#                             "step": 2,
-#                             "agent_name": agent_name,
-#                             "prompt_type": "prompt",
-#                             "prompt": {
-#                                 "prompt_name": "Problem Solver",
-#                                 "prompt_category": "Default",
-#                             },
-#                         },
-#                     ]
-#                 },
-#             }
-#         }
-#         endpoint = "/v1/chain/import"
-#         response = server.post(
-#             endpoint, json=import_payload, headers=self._auth_header(admin_a_jwt)
-#         )
-#         self._assert_response_status(
-#             response, 201, "POST import chain", endpoint, import_payload
-#         )
-#         # The import endpoint returns a message
-#         assert "message" in response.json(), (
-#             f"[{self.entity_name}] Message not found in import response\n"
-#             f"Response: {response.json()}"
-#         )
-#         # Get the chain to verify it was created
-#         get_endpoint = f"/v1/chain/{chain_name}"
-#         get_response = server.get(get_endpoint, headers=self._auth_header(admin_a_jwt))
-#         self._assert_response_status(
-#         )
-#         chain = self._assert_entity_in_response(get_response)
-#         assert chain["name"] == chain_name, (
-#             f"[{self.entity_name}] Chain name mismatch\n"
-#             f"Got: {chain['name']}"
-#         )
-#         # Check if steps were imported
-#             f"[{self.entity_name}] Steps not found in imported chain\n"
-#             f"Chain: {chain}"
-#         )
-#         assert len(chain["steps"]) == 2, (
-#             f"[{self.entity_name}] Expected 2 steps, got {len(chain['steps'])}\n"
-#         )
-#         return chain
-#     def test_POST_201_add_step(self, server, admin_a_jwt, team_a):
-#         # First create a chain
-#         chain = self.test_POST_201(server, admin_a_jwt, team_a)
-#         # Create an agent for the step
-#         agent_payload = {
-#             "agent": {
-#                 "name": agent_name,
-#                 "description": "Test agent for chain steps",
-#                 "provider": "OpenAI",
-#                 "model": "gpt-4",
-#         }
-#         agent_response = server.post(
-#             "/v1/agent", json=agent_payload, headers=self._auth_header(admin_a_jwt)
-#         )
-#         # If agent creation fails, skip this test
-#             pytest.skip("Failed to create agent for chain steps")
-#         # Add a step to the chain
-#         step_payload = {
-#             "step_number": 1,
-#             "prompt_type": "prompt",
-#         }
-#         endpoint = f"/v1/chain/{chain['name']}/step"
-#         response = server.post(
-#             endpoint, json=step_payload, headers=self._auth_header(admin_a_jwt)
-#         self._assert_response_status(
-#             response, 201, "POST add step", endpoint, step_payload
-#         )
-#         # The add step endpoint returns a message
-#         assert "message" in response.json(), (
-#             f"[{self.entity_name}] Message not found in add step response\n"
-#             f"Response: {response.json()}"
-#         )
-#         # Get the chain to verify the step was added
-#         get_endpoint = f"/v1/chain/{chain['name']}"
-#         self._assert_response_status(
-#             get_response, 200, "GET chain with step", get_endpoint
-#         )
-#         assert "steps" in updated_chain, (
-#             f"[{self.entity_name}] Steps not found in chain\n" f"Chain: {updated_chain}"
-#         )
-#             f"[{self.entity_name}] No steps found in chain\n" f"Chain: {updated_chain}"
-#         )
-#         # Check if our step is in the list
-#         step = updated_chain["steps"][0]
-#         assert step["step"] == 1, (
-#             f"[{self.entity_name}] Step number mismatch\n"
-#             f"Expected: 1\n"
-#         )
-#         assert step["agent_name"] == agent_name, (
-#             f"[{self.entity_name}] Agent name mismatch\n"
-#             f"Expected: {agent_name}\n"
-#         )
-#         return updated_chain
-#     def test_PUT_200_update_step(self, server, admin_a_jwt, team_a):
-#         # First create a chain with a step
-#         chain = self.test_POST_201_add_step(server, admin_a_jwt, team_a)
-#         # Create another agent for the updated step
-#         agent_name = f"Updated Agent {uuid.uuid4()}"
-#         agent_payload = {
-#                 "name": agent_name,
-#                 "description": "Updated agent for chain steps",
-#                 "provider": "OpenAI",
-#             }
-#         }
-#         agent_response = server.post(
-#         )
-#         # If agent creation fails, skip this test
-#         if agent_response.status_code != 201:
-#             pytest.skip("Failed to create agent for updated step")
-#         update_payload = {
-#             "step_number": 1,
-#             "agent_name": agent_name,
-#             "prompt": {"prompt_name": "Problem Solver", "prompt_category": "Default"},
-#         }
-#         endpoint = f"/v1/chain/{chain['name']}/step/1"
-#         response = server.put(
-#             endpoint, json=update_payload, headers=self._auth_header(admin_a_jwt)
-#         )
-#         self._assert_response_status(
-#         )
-#         # The update step endpoint returns a message
-#         assert "message" in response.json(), (
-#             f"[{self.entity_name}] Message not found in update step response\n"
-#             f"Response: {response.json()}"
-#         # Get the chain to verify the step was updated
-#         get_response = server.get(get_endpoint, headers=self._auth_header(admin_a_jwt))
-#         self._assert_response_status(
-#             get_response, 200, "GET chain with updated step", get_endpoint
-#         )
-#         # Check if our step was updated
-#         step = updated_chain["steps"][0]
-#         assert step["agent_name"] == agent_name, (
-#             f"[{self.entity_name}] Agent name not updated\n"
-#             f"Expected: {agent_name}\n"
-#             f"Got: {step['agent_name']}"
-#         )
-#         assert step["prompt"]["prompt_name"] == "Problem Solver", (
-#             f"[{self.entity_name}] Prompt name not updated\n"
-#             f"Expected: Problem Solver\n"
-#         )
-#         return updated_chain
-#     def test_PATCH_200_move_step(self, server, admin_a_jwt, team_a):
-#         # First create a chain with at least two steps
-#         chain = self.test_POST_201_import_chain(server, admin_a_jwt, team_a)
-#         # Move the first step to position 2
-#         endpoint = f"/v1/chain/{chain['name']}/step/move"
-#         response = server.patch(
-#             endpoint, json=move_payload, headers=self._auth_header(admin_a_jwt)
-#         )
-#         self._assert_response_status(
-#             response, 200, "PATCH move step", endpoint, move_payload
-#         )
-#         assert "message" in response.json(), (
-#             f"[{self.entity_name}] Message not found in move step response\n"
-#             f"Response: {response.json()}"
-#         )
-#         get_endpoint = f"/v1/chain/{chain['name']}"
-#         get_response = server.get(get_endpoint, headers=self._auth_header(admin_a_jwt))
-#         self._assert_response_status(
-#         )
-#         updated_chain = self._assert_entity_in_response(get_response)
-#         # Check if steps were reordered correctly
-#         first_step = updated_chain["steps"][0]
-#         second_step = updated_chain["steps"][1]
-#             f"[{self.entity_name}] First step number mismatch\n"
-#             f"Expected: 1\n"
-#             f"Got: {first_step['step']}"
-#         assert second_step["step"] == 2, (
-#             f"[{self.entity_name}] Second step number mismatch\n"
-#             f"Expected: 2\n"
-#         )
-#         assert second_step["prompt"]["prompt_name"] == "Think About It", (
-#             f"[{self.entity_name}] Step was not moved correctly\n"
-#             f"Expected prompt name: Think About It\n"
-#             f"Got: {second_step['prompt']['prompt_name']}"
-#         )
-#         return updated_chain
-#     def test_DELETE_200_step(self, server, admin_a_jwt, team_a):
-#         # First create a chain with a step
-#         chain = self.test_POST_201_add_step(server, admin_a_jwt, team_a)
-#         # Delete the step
-#         endpoint = f"/v1/chain/{chain['name']}/step/1"
-#         response = server.delete(endpoint, headers=self._auth_header(admin_a_jwt))
-#         # The delete step endpoint returns a message
-#             f"[{self.entity_name}] Message not found in delete step response\n"
-#             f"Response: {response.json()}"
-#         )
-#         # Get the chain to verify the step was deleted
-#         get_response = server.get(get_endpoint, headers=self._auth_header(admin_a_jwt))
-#         self._assert_response_status(
-#         )
-#         updated_chain = self._assert_entity_in_response(get_response)
-#         # Check if the step was deleted
-#         assert len(updated_chain["steps"]) == 0, (
-#             f"Steps: {updated_chain['steps']}"
-#         )
-#         return updated_chain
-#         """Test retrieving chain arguments."""
-#         # First create a chain with steps
-#         chain = self.test_POST_201_import_chain(server, admin_a_jwt, team_a)
-#         # Get the chain arguments
-#         endpoint = f"/v1/chain/{chain['name']}/args"
-#         self._assert_response_status(response, 200, "GET chain args", endpoint)
-#         json_response = response.json()
-#         assert "chain_args" in json_response, (
-#             f"Response: {json_response}"
-#         )
-#         chain_args = json_response["chain_args"]
-#             f"[{self.entity_name}] Chain args should be a list\n"
-#         )
-#         return chain_args
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The chain routes: generic CRUD for chains and steps, read-only runs and
+step results, ``POST /v1/chain/{id}/run`` and ``POST /v1/chain-run/{id}/
+cancel``. The old router imported a module that does not exist
+(``extensions.chains.BLL_Chains``) and its execute route called methods no
+manager had."""
+
+from typing import Any, Dict
+
+from zephyrex.extensions.ai_chains.chain_fixtures_test import ChainFixtures
+
+
+def auth(user) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {user.jwt}"}
+
+
+class TestRoutes(ChainFixtures):
+    def _create(self, server, user, path, key, body) -> Dict[str, Any]:
+        response = server.post(path, json={key: body}, headers=auth(user))
+        assert response.status_code == 201, response.text
+        created: Dict[str, Any] = response.json()[key]
+        return created
+
+    def _chain_with_steps(self, server, user) -> Dict[str, Any]:
+        chain = self._create(
+            server, user, "/v1/chain", "chain", {"name": "Greeter", "max_steps": 10}
+        )
+        self._create(
+            server,
+            user,
+            "/v1/chain-step",
+            "chain_step",
+            {
+                "chain_id": chain["id"],
+                "name": "greet",
+                "kind": "set",
+                "position": 1,
+                "expression": "'hello ' + who",
+                "variable": "greeting",
+            },
+        )
+        return chain
+
+    def test_run_a_chain_and_read_what_it_did(self, server, admin_a):
+        chain = self._chain_with_steps(server, admin_a)
+        ran = server.post(
+            f"/v1/chain/{chain['id']}/run",
+            json={"inputs": {"who": "Ada"}},
+            headers=auth(admin_a),
+        )
+        assert ran.status_code == 200, ran.text
+        run = ran.json()
+        assert run["status"] == "succeeded"
+        assert run["variables"]["greeting"] == "hello Ada"
+        stored = server.get(f"/v1/chain-run/{run['id']}", headers=auth(admin_a))
+        assert stored.status_code == 200, stored.text
+        results = server.get(
+            "/v1/chain-step-result",
+            params={"chain_run_id": run["id"]},
+            headers=auth(admin_a),
+        )
+        assert results.status_code == 200, results.text
+        [result] = results.json()["chain_step_results"]
+        assert result["step_name"] == "greet" and result["status"] == "succeeded"
+
+    def test_no_one_else_runs_or_reads_a_chain(self, server, admin_a, admin_b):
+        chain = self._chain_with_steps(server, admin_a)
+        ran = server.post(
+            f"/v1/chain/{chain['id']}/run", json={"inputs": {}}, headers=auth(admin_b)
+        )
+        assert ran.status_code in (403, 404), ran.text
+        mine = server.post(
+            f"/v1/chain/{chain['id']}/run",
+            json={"inputs": {"who": "x"}},
+            headers=auth(admin_a),
+        ).json()
+        assert (
+            server.get(f"/v1/chain-run/{mine['id']}", headers=auth(admin_b)).status_code
+            == 404
+        )
+        cancel = server.post(
+            f"/v1/chain-run/{mine['id']}/cancel", json={}, headers=auth(admin_b)
+        )
+        assert cancel.status_code in (403, 404), cancel.text
+
+    def test_runs_are_not_written_through_generic_routes(self, server, admin_a):
+        chain = self._chain_with_steps(server, admin_a)
+        forged = server.post(
+            "/v1/chain-run",
+            json={"chain_run": {"chain_id": chain["id"], "status": "succeeded"}},
+            headers=auth(admin_a),
+        )
+        assert forged.status_code in (404, 405), forged.text
+        planted = server.post(
+            "/v1/chain-step-result",
+            json={"chain_step_result": {"step_name": "x"}},
+            headers=auth(admin_a),
+        )
+        assert planted.status_code in (404, 405), planted.text
+
+    def test_a_failing_run_is_answered_not_raised(self, server, admin_a):
+        chain = self._chain_with_steps(server, admin_a)
+        ran = server.post(
+            f"/v1/chain/{chain['id']}/run", json={"inputs": {}}, headers=auth(admin_a)
+        )
+        assert ran.status_code == 200, ran.text
+        assert ran.json()["status"] == "failed"
+        assert ran.json()["error_kind"] == "step"
+
+    def test_bad_inputs_are_refused(self, server, admin_a):
+        chain = self._chain_with_steps(server, admin_a)
+        ran = server.post(
+            f"/v1/chain/{chain['id']}/run",
+            json={"inputs": {"not an identifier": 1}},
+            headers=auth(admin_a),
+        )
+        assert ran.status_code == 422, ran.text

@@ -1,95 +1,309 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Chains: owned, ordered steps that a run executes (see ChainEngine).
+
+A chain belongs to whoever creates it (ROOT and SYSTEM may name another
+owner); an update never moves its owner or team. Its steps inherit access
+from it, so only someone who may edit a chain changes its steps or runs it.
+A run executes as the chain's owner and inherits access from the chain; the
+record of each step it executed (a :class:`ChainStepResultModel`) inherits
+access from the run. A run's lifecycle and its step results are written by
+the server alone.
+
+A step is one of four kinds, in ``position`` order:
+
+- ``prompt``: a stored prompt (ai_prompts) filled from the run's variables
+  and sent to the AI extension's chat models; the answer's text is the
+  step's output.
+- ``ability``: an extension's ability, called with ``arguments`` evaluated
+  from the run's variables; its result is the output.
+- ``condition``: an ``expression`` over the run's variables; true goes to
+  the step named ``on_true``, false to ``on_false`` (unnamed: the next step;
+  ``end``: finish). A jump back to this step or an earlier one is a loop,
+  and needs ``max_loops``, the most times it may be taken.
+- ``set``: ``variable`` takes the value of ``expression``.
+
+A prompt or ability step's output goes to ``variable`` when one is named.
+Expressions are SafeExpressions (``zephyrex.lib.SafeExpression``): no code
+runs, and their size and work are bounded.
+
+Every record a step references (its prompt, its ability) is read as the
+requester when the step is saved, and as the chain's owner when it runs.
+"""
+
+import json
+import re
 from datetime import datetime
-from enum import Enum as PyEnum, IntEnum
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
-from sqlalchemy.orm import Session
+from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel as RouteModel
+from pydantic import Field, ValidationError
 
+from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+from zephyrex.extensions.ai_agents.AbilityInvoker import NEVER_AGENT_INVOCABLE
+from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager, PromptModel
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route
+from zephyrex.lib.Environment import env
+from zephyrex.lib.SafeExpression import ExpressionError, check
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
     DescriptionMixinModel,
+    ModelMeta,
     NameMixinModel,
-    ParentMixinModel,
     StringSearchModel,
     UpdateMixinModel,
 )
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
-from zephyrex.logic.BLL_Extensions import AbilityModel
+from zephyrex.logic.BLL_Extensions import AbilityManager, AbilityModel
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.pydantic2.fastapi.types import RouteType
+from zephyrex.pydantic2.registry import BaseModel
+
+# A chain's own bounds, and the ceilings an owner may raise them to.
+DEFAULT_MAX_STEPS = 100
+MAX_MAX_STEPS = 10_000
+DEFAULT_TIMEOUT_SECONDS = 300
+MAX_TIMEOUT_SECONDS = 3_600
+DEFAULT_MAX_OUTPUT_CHARACTERS = 20_000
+MAX_MAX_OUTPUT_CHARACTERS = 100_000
+MAX_LOOPS = 1_000
+
+# What one chain may hold, and what one run may carry.
+MAX_STEPS_PER_CHAIN = 200
+MAX_INPUT_CHARACTERS = 100_000
+MAX_VARIABLES_CHARACTERS = 1_000_000
+MAX_ARGUMENTS = 50
+
+IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+END = "end"
+StepKind = Literal["prompt", "ability", "condition", "set"]
+RunStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
+PENDING: RunStatus = "pending"
+RUNNING: RunStatus = "running"
+SUCCEEDED: RunStatus = "succeeded"
+FAILED: RunStatus = "failed"
+CANCELLED: RunStatus = "cancelled"
+
+# Abilities no chain step may call: running chains (a chain running itself
+# never ends), and everything no agent may use.
+NEVER_CHAIN_INVOCABLE: frozenset[str] = NEVER_AGENT_INVOCABLE | {"run_chain"}
+
+# A run's lifecycle, which only the engine (ROOT) writes.
+RUN_LIFECYCLE = (
+    "status",
+    "error",
+    "error_kind",
+    "variables",
+    "output",
+    "steps_executed",
+    "started_at",
+    "completed_at",
+)
 
 
-class ExecutionType(PyEnum):
-    STANDARD = "standard"
-    CONDITIONAL = "conditional"
-    ITERATION = "iteration"
-    PARALLEL_ITERATION = "parallel_iteration"
+class ChainError(Exception):
+    """Why a run stopped short of finishing; ``kind`` is recorded on it."""
+
+    kind: ClassVar[str] = "error"
 
 
-class AggregationStrategy(PyEnum):
-    FIRST_SUCCESS = "first_success"
-    MAJORITY_VOTE = "majority_vote"
-    ALL = "all"
-    CUSTOM = "custom"
+class ChainDefinitionError(ChainError):
+    """The chain's steps cannot run as defined (a jump to no step, a loop
+    without a bound, a step missing what its kind needs)."""
+
+    kind = "definition"
 
 
-class IterationType(PyEnum):
-    FOR_EACH = "for_each"
-    WHILE = "while"
-    COUNT = "count"
+class ChainLimitError(ChainError):
+    """A bound was reached: steps executed, a loop's count, an output's or
+    the variables' size."""
+
+    kind = "limit"
 
 
-class ChainRunStatus(IntEnum):
-    PENDING = 0
-    RUNNING = 1
-    COMPLETED = 2
-    FAILED = 3
+class ChainTimeoutError(ChainError):
+    """The run's deadline passed."""
+
+    kind = "timeout"
 
 
-class ChainLinkRunStatus(IntEnum):
-    PENDING = 0
-    READY = 1
-    RUNNING = 2
-    COMPLETED = 3
-    FAILED = 4
-    SKIPPED = 5
-    AGGREGATING = 6
+class ChainStepError(ChainError):
+    """A step failed: its expression, prompt, model or ability."""
+
+    kind = "step"
+
+
+class ChainCancelledError(ChainError):
+    """The run was cancelled."""
+
+    kind = "cancelled"
+
+
+def _server_side(requester_id: str) -> bool:
+    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
+    return is_root_id(requester_id) or is_system_id(requester_id)
+
+
+def _each(
+    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
+) -> Dict[str, Any]:
+    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
+    if isinstance(kwargs.get("entities"), list):
+        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
+    return prepare(dict(kwargs))
+
+
+def _owned_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+    """The owner is the requester; ROOT and SYSTEM may name another."""
+
+    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
+        if not _server_side(requester_id) or not fields.get("user_id"):
+            fields["user_id"] = requester_id
+        return fields
+
+    return prepare
+
+
+def _as(manager_class: Any, source: AbstractBLLManager) -> Any:
+    """``manager_class`` acting as ``source``'s requester."""
+    return manager_class(
+        requester_id=source.requester.id, model_registry=source.model_registry
+    )
+
+
+def _visible(manager: AbstractBLLManager, record_id: str, detail: str) -> Any:
+    """The record ``record_id`` as ``manager``'s requester sees it, or 404."""
+    try:
+        return manager.get(id=record_id)
+    except HTTPException as error:
+        if error.status_code == 404:
+            raise HTTPException(status_code=404, detail=detail) from None
+        raise
+
+
+def _invalid(detail: str) -> HTTPException:
+    return HTTPException(status_code=422, detail=detail)
+
+
+def json_size(value: Any) -> int:
+    """The length of ``value`` as JSON text."""
+    return len(json.dumps(jsonable_encoder(value), default=str))
+
+
+def check_inputs(inputs: Any) -> Dict[str, Any]:
+    """A run's inputs: an object of variables, each named as an identifier,
+    within the size limit."""
+    if inputs is None:
+        return {}
+    if not isinstance(inputs, dict):
+        raise _invalid("a run's inputs are an object of variables")
+    for name in inputs:
+        if not isinstance(name, str) or not IDENTIFIER.fullmatch(name):
+            raise _invalid(f"an input's name is an identifier, not {name!r}")
+    if json_size(inputs) > MAX_INPUT_CHARACTERS:
+        raise _invalid(f"a run's inputs are at most {MAX_INPUT_CHARACTERS} characters")
+    return dict(inputs)
+
+
+def _expression(text: Optional[str], what: str) -> None:
+    try:
+        check(text or "")
+    except ExpressionError as error:
+        raise _invalid(f"{what}: {error}") from None
+
+
+def _identifier(name: Optional[str], what: str) -> None:
+    if name is None or not IDENTIFIER.fullmatch(name) or name == END:
+        raise _invalid(f"{what} is an identifier other than {END!r}, not {name!r}")
+
+
+def check_step(step: Dict[str, Any]) -> None:
+    """``step``'s fields are what its kind needs (422 otherwise): the parts
+    of a step that can be checked without reading anything."""
+    kind = step.get("kind")
+    _identifier(step.get("name"), "a step's name")
+    if step.get("variable") is not None or kind == "set":
+        _identifier(step.get("variable"), "a step's variable")
+    arguments = step.get("arguments") or {}
+    if len(arguments) > MAX_ARGUMENTS:
+        raise _invalid(f"a step has at most {MAX_ARGUMENTS} arguments")
+    for name, expression in arguments.items():
+        if not IDENTIFIER.fullmatch(name):
+            raise _invalid(f"an argument's name is an identifier, not {name!r}")
+        _expression(expression, f"argument {name}")
+    if kind == "prompt" and not step.get("prompt_id"):
+        raise _invalid("a prompt step names its prompt")
+    if kind == "ability" and not step.get("ability_id"):
+        raise _invalid("an ability step names its ability")
+    if kind in ("condition", "set"):
+        _expression(step.get("expression"), f"a {kind} step's expression")
+    for target in ("on_true", "on_false"):
+        named = step.get(target)
+        if named is not None and named != END and not IDENTIFIER.fullmatch(named):
+            raise _invalid(f"{target} names a step or {END!r}, not {named!r}")
+    if kind != "condition" and (step.get("on_true") or step.get("on_false")):
+        raise _invalid("only a condition step jumps")
 
 
 class ChainModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    NameMixinModel,
-    DescriptionMixinModel,
-    UserModel.Reference.ID.Optional,
-    TeamModel.Reference.ID.Optional,
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    NameMixinModel.Optional,
+    DescriptionMixinModel.Optional,
+    UserModel.Reference.Optional,
+    TeamModel.Reference.Optional,
+    metaclass=ModelMeta,
 ):
-    favourite: bool = Field(
-        False, description="Whether the user has marked this chain as a favourite"
+    favourite: bool = Field(False, description="Marked as a favourite")
+    max_steps: int = Field(
+        DEFAULT_MAX_STEPS,
+        description="The most steps a run executes (loops included)",
+        ge=1,
+        le=MAX_MAX_STEPS,
+    )
+    timeout_seconds: int = Field(
+        DEFAULT_TIMEOUT_SECONDS,
+        description="How long a run may take before it fails",
+        ge=1,
+        le=MAX_TIMEOUT_SECONDS,
+    )
+    max_output_characters: int = Field(
+        DEFAULT_MAX_OUTPUT_CHARACTERS,
+        description="The largest output (as JSON text) one step may produce",
+        ge=1,
+        le=MAX_MAX_OUTPUT_CHARACTERS,
     )
 
-    # Database metadata
-    table_comment: ClassVar[str] = "A Chain represents a collection of ChainSteps."
+    table_comment: ClassVar[str] = (
+        "A Chain is an owned, ordered set of steps (prompts, abilities, "
+        "conditions and variables) that a run executes within its bounds."
+    )
+    is_system_entity: ClassVar[bool] = False
 
     class Create(
         BaseModel,
         NameMixinModel,
-        DescriptionMixinModel,
-        UserModel.Reference.ID.Optional,
-        TeamModel.Reference.ID.Optional,
-    ):
-        favourite: bool = Field(
-            False, description="Whether the user has marked this chain as a favourite"
-        )
-
-    class Update(
-        BaseModel,
-        NameMixinModel.Optional,
         DescriptionMixinModel.Optional,
         UserModel.Reference.ID.Optional,
         TeamModel.Reference.ID.Optional,
     ):
-        favourite: Optional[bool] = Field(
-            None, description="Whether the user has marked this chain as a favourite"
+        favourite: bool = Field(False, description="Marked as a favourite")
+        max_steps: int = Field(DEFAULT_MAX_STEPS, ge=1, le=MAX_MAX_STEPS)
+        timeout_seconds: int = Field(
+            DEFAULT_TIMEOUT_SECONDS, ge=1, le=MAX_TIMEOUT_SECONDS
+        )
+        max_output_characters: int = Field(
+            DEFAULT_MAX_OUTPUT_CHARACTERS, ge=1, le=MAX_MAX_OUTPUT_CHARACTERS
+        )
+
+    class Update(BaseModel, NameMixinModel.Optional, DescriptionMixinModel.Optional):
+        favourite: Optional[bool] = Field(None, description="Marked as a favourite")
+        max_steps: Optional[int] = Field(None, ge=1, le=MAX_MAX_STEPS)
+        timeout_seconds: Optional[int] = Field(None, ge=1, le=MAX_TIMEOUT_SECONDS)
+        max_output_characters: Optional[int] = Field(
+            None, ge=1, le=MAX_MAX_OUTPUT_CHARACTERS
         )
 
     class Search(
@@ -100,458 +314,69 @@ class ChainModel(
         UserModel.Reference.ID.Search,
         TeamModel.Reference.ID.Search,
     ):
-        favourite: Optional[bool] = None
-
-
-class ChainNetworkModel:
-    class POST(BaseModel):
-        chain: ChainModel.Create
-
-    class PUT(BaseModel):
-        chain: ChainModel.Update
-
-    class SEARCH(BaseModel):
-        chain: ChainModel.Search
-
-    class ResponseSingle(BaseModel):
-        chain: ChainModel
-
-    class ResponsePlural(BaseModel):
-        chains: List[ChainModel]
-
-
-class ChainManager(AbstractBLLManager):
-    _model = ChainModel
-    NetworkModel = ChainNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._links = None
-        self._runs = None
-
-    @property
-    def DB(self):
-        """Get the SQLAlchemy model class for this manager."""
-        return self.Model.DB
-
-    @property
-    def links(self):
-        if self._links is None:
-            self._links = ChainLinkManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._links
-
-    @property
-    def runs(self):
-        if self._runs is None:
-            self._runs = ChainRunManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._runs
-
-
-class ChainLinkModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    ParentMixinModel,
-    ChainModel.Reference.ID.Optional,
-    AbilityModel.Reference.ID.Optional,
-):
-    agent_id: str = Field(..., description="ID of the agent executing this step")
-    link_of_chain_id: str = Field(
-        ..., description="ID of the chain this link belongs to"
-    )
-    content: Optional[str] = Field(
-        None, description="Additional text content injected with this step"
-    )
-
-    # Execution control fields
-    execution_type: ExecutionType = Field(
-        ExecutionType.STANDARD,
-        description="Determines how the step executes: standard, conditional, iteration, parallel_iteration",
-    )
-
-    # Conditional execution
-    condition_expression: Optional[str] = Field(
-        None,
-        description="Expression to evaluate for conditional steps. If true, the 'then' branch is taken, otherwise the 'else' branch",
-    )
-
-    # Iteration configuration
-    iteration_type: Optional[IterationType] = Field(
-        None,
-        description="Type of iteration: for_each (iterate over collection), while (repeat while condition is true), count (repeat fixed number of times)",
-    )
-    iteration_expression: Optional[str] = Field(
-        None,
-        description="Expression providing the collection for for_each loops, condition for while loops, or count for count loops",
-    )
-    iteration_variable: Optional[str] = Field(
-        None,
-        description="Variable name that will contain the current item during iteration",
-    )
-    max_iterations: Optional[int] = Field(
-        None, description="Maximum number of iterations allowed for safety"
-    )
-
-    # Parallel execution configuration
-    parallel_execution: bool = Field(
-        False,
-        description="When true, iterations are executed concurrently rather than sequentially",
-    )
-    aggregation_strategy: Optional[AggregationStrategy] = Field(
-        None,
-        description="Strategy for combining results from parallel iterations: first_success, majority_vote, all, or custom",
-    )
-    aggregation_expression: Optional[str] = Field(
-        None,
-        description="Custom expression for aggregating results when using custom aggregation strategy",
-    )
-    max_parallel_instances: Optional[int] = Field(
-        None, description="Maximum number of instances that can execute concurrently"
-    )
-
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "A ChainLink represents a step in a Chain, supporting various execution patterns "
-        "including standard, conditional, iteration, and parallel execution."
-    )
-
-    class Create(
-        BaseModel,
-        ParentMixinModel.Optional,
-        ChainModel.Reference.ID.Optional,
-        AbilityModel.Reference.ID.Optional,
-    ):
-        agent_id: str = Field(..., description="ID of the agent executing this step")
-        link_of_chain_id: str = Field(
-            ..., description="ID of the chain this link belongs to"
-        )
-        content: Optional[str] = Field(
-            None, description="Additional text content injected with this step"
-        )
-        execution_type: ExecutionType = Field(
-            ExecutionType.STANDARD, description="How the step executes"
-        )
-        condition_expression: Optional[str] = Field(
-            None, description="Expression for conditional steps"
-        )
-        iteration_type: Optional[IterationType] = Field(
-            None, description="Type of iteration"
-        )
-        iteration_expression: Optional[str] = Field(
-            None, description="Iteration expression"
-        )
-        iteration_variable: Optional[str] = Field(
-            None, description="Variable name for iteration"
-        )
-        max_iterations: Optional[int] = Field(
-            None, description="Maximum iterations allowed"
-        )
-        parallel_execution: bool = Field(False, description="Concurrent execution flag")
-        aggregation_strategy: Optional[AggregationStrategy] = Field(
-            None, description="Result aggregation strategy"
-        )
-        aggregation_expression: Optional[str] = Field(
-            None, description="Custom aggregation expression"
-        )
-        max_parallel_instances: Optional[int] = Field(
-            None, description="Maximum parallel instances"
-        )
-
-        @model_validator(mode="after")
-        def validate_execution_type_fields(self):
-            """Validate execution type field requirements."""
-            if self.execution_type == ExecutionType.CONDITIONAL:
-                if not self.condition_expression:
-                    raise ValueError(
-                        "condition_expression is required for conditional execution"
-                    )
-            elif self.execution_type in [
-                ExecutionType.ITERATION,
-                ExecutionType.PARALLEL_ITERATION,
-            ]:
-                if not all(
-                    [
-                        self.iteration_type,
-                        self.iteration_expression,
-                        self.iteration_variable,
-                    ]
-                ):
-                    raise ValueError(
-                        "iteration_type, iteration_expression, and iteration_variable are required for iteration execution"
-                    )
-                if (
-                    self.execution_type == ExecutionType.PARALLEL_ITERATION
-                    and not self.parallel_execution
-                ):
-                    raise ValueError(
-                        "parallel_execution must be True for parallel_iteration execution type"
-                    )
-
-            # Validate aggregation strategy
-            if self.aggregation_strategy == AggregationStrategy.CUSTOM:
-                if not self.aggregation_expression:
-                    raise ValueError(
-                        "aggregation_expression is required for custom aggregation strategy"
-                    )
-
-            return self
-
-    class Update(
-        BaseModel,
-        ParentMixinModel.Optional,
-        ChainModel.Reference.ID.Optional,
-        AbilityModel.Reference.ID.Optional,
-    ):
-        agent_id: Optional[str] = Field(
-            None, description="ID of the agent executing this step"
-        )
-        link_of_chain_id: Optional[str] = Field(
-            None, description="ID of the chain this link belongs to"
-        )
-        content: Optional[str] = Field(None, description="Additional text content")
-        execution_type: Optional[ExecutionType] = Field(
-            None, description="Execution type"
-        )
-        condition_expression: Optional[str] = Field(
-            None, description="Conditional expression"
-        )
-        iteration_type: Optional[IterationType] = Field(
-            None, description="Iteration type"
-        )
-        iteration_expression: Optional[str] = Field(
-            None, description="Iteration expression"
-        )
-        iteration_variable: Optional[str] = Field(
-            None, description="Iteration variable"
-        )
-        max_iterations: Optional[int] = Field(None, description="Maximum iterations")
-        parallel_execution: Optional[bool] = Field(
-            None, description="Parallel execution flag"
-        )
-        aggregation_strategy: Optional[AggregationStrategy] = Field(
-            None, description="Aggregation strategy"
-        )
-        aggregation_expression: Optional[str] = Field(
-            None, description="Aggregation expression"
-        )
-        max_parallel_instances: Optional[int] = Field(
-            None, description="Maximum parallel instances"
-        )
-
-    class Search(
-        ApplicationModel.Search,
-        UpdateMixinModel.Search,
-        ParentMixinModel.Search,
-        ChainModel.Reference.ID.Search,
-        AbilityModel.Reference.ID.Search,
-    ):
-        agent_id: Optional[StringSearchModel] = None
-        link_of_chain_id: Optional[StringSearchModel] = None
-        content: Optional[StringSearchModel] = None
-        execution_type: Optional[ExecutionType] = None
-        parallel_execution: Optional[bool] = None
-        aggregation_strategy: Optional[AggregationStrategy] = None
-
-
-class ChainLinkNetworkModel:
-    class POST(BaseModel):
-        chain_link: ChainLinkModel.Create
-
-    class PUT(BaseModel):
-        chain_link: ChainLinkModel.Update
-
-    class SEARCH(BaseModel):
-        chain_link: ChainLinkModel.Search
-
-    class ResponseSingle(BaseModel):
-        chain_link: ChainLinkModel
-
-    class ResponsePlural(BaseModel):
-        chain_links: List[ChainLinkModel]
-
-
-class ChainLinkManager(AbstractBLLManager):
-    _model = ChainLinkModel
-    NetworkModel = ChainLinkNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._dependencies = None
-        self._runs = None
-
-    @property
-    def DB(self):
-        """Get the SQLAlchemy model class for this manager."""
-        return self.Model.DB
-
-    @property
-    def dependencies(self):
-        if self._dependencies is None:
-            self._dependencies = ChainLinkDependencyManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._dependencies
-
-    @property
-    def runs(self):
-        if self._runs is None:
-            self._runs = ChainLinkRunManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._runs
-
-
-class ChainLinkDependencyModel(ApplicationModel):
-    prerequisite_chain_link_id: str = Field(
-        ..., description="ID of the prerequisite chain link"
-    )
-    dependent_chain_link_id: str = Field(
-        ..., description="ID of the dependent chain link"
-    )
-    condition_value: Optional[bool] = Field(
-        None,
-        description="For conditional dependencies: NULL means always follow this dependency, TRUE means follow only if condition is true, FALSE means follow only if condition is false",
-    )
-
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "Defines dependencies between chain steps, supporting conditional paths. "
-        "NULL condition_value means always follow this dependency, TRUE means follow only if condition is true, FALSE means follow only if condition is false."
-    )
-
-    class Create(BaseModel):
-        prerequisite_chain_link_id: str = Field(
-            ..., description="ID of the prerequisite chain link"
-        )
-        dependent_chain_link_id: str = Field(
-            ..., description="ID of the dependent chain link"
-        )
-        condition_value: Optional[bool] = Field(
-            None, description="Condition value for dependency"
-        )
-
-    class Update(BaseModel):
-        condition_value: Optional[bool] = Field(
-            None, description="Condition value for dependency"
-        )
-
-    class Search(ApplicationModel.Search):
-        prerequisite_chain_link_id: Optional[StringSearchModel] = None
-        dependent_chain_link_id: Optional[StringSearchModel] = None
-        condition_value: Optional[bool] = None
-
-
-class ChainLinkDependencyNetworkModel:
-    class POST(BaseModel):
-        chain_link_dependency: ChainLinkDependencyModel.Create
-
-    class PUT(BaseModel):
-        chain_link_dependency: ChainLinkDependencyModel.Update
-
-    class SEARCH(BaseModel):
-        chain_link_dependency: ChainLinkDependencyModel.Search
-
-    class ResponseSingle(BaseModel):
-        chain_link_dependency: ChainLinkDependencyModel
-
-    class ResponsePlural(BaseModel):
-        chain_link_dependencies: List[ChainLinkDependencyModel]
-
-
-class ChainLinkDependencyManager(AbstractBLLManager):
-    _model = ChainLinkDependencyModel
-    NetworkModel = ChainLinkDependencyNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-
-    @property
-    def DB(self):
-        """Get the SQLAlchemy model class for this manager."""
-        return self.Model.DB
+        favourite: Optional[bool] = Field(None, description="Filter by favourite")
 
 
 class ChainRunModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    ChainModel.Reference.ID,
-    UserModel.Reference.ID.Optional,
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    ChainModel.Reference,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
 ):
-    status: ChainRunStatus = Field(
-        ChainRunStatus.PENDING, description="Current status of the chain execution"
-    )
-    meta_data: Optional[Dict[str, Any]] = Field(
-        None, description="Additional execution context and parameters"
-    )
+    """One run of a chain: what it started with, where it got to, and how
+    it ended. The steps it executed are its ChainStepResults."""
 
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "Represents a specific execution instance of a Chain."
+    status: RunStatus = Field(
+        PENDING,
+        description="Set by the server: pending | running | succeeded | "
+        "failed | cancelled",
     )
+    inputs: Optional[Dict[str, Any]] = Field(
+        None, description="The run's starting variables"
+    )
+    variables: Optional[Dict[str, Any]] = Field(
+        None, description="Set by the server: the variables when it ended"
+    )
+    output: Optional[str] = Field(
+        None, description="Set by the server: the last step's output, as JSON"
+    )
+    error: Optional[str] = Field(None, description="Set by the server: why it failed")
+    error_kind: Optional[str] = Field(
+        None,
+        description="Set by the server: definition | limit | timeout | step | "
+        "cancelled | error",
+    )
+    steps_executed: int = Field(0, description="Set by the server")
+    cancel_requested: bool = Field(
+        False, description="Asked to stop: the run stops before its next step"
+    )
+    started_at: Optional[datetime] = Field(None, description="Set by the server")
+    completed_at: Optional[datetime] = Field(None, description="Set by the server")
+
+    table_comment: ClassVar[str] = (
+        "A ChainRun is one execution of a Chain, as its owner: its inputs, "
+        "final variables and output, and its lifecycle."
+    )
+    is_system_entity: ClassVar[bool] = False
+    permission_references: ClassVar[List[str]] = ["chain"]
 
     class Create(BaseModel, ChainModel.Reference.ID, UserModel.Reference.ID.Optional):
-        status: ChainRunStatus = Field(
-            ChainRunStatus.PENDING, description="Initial status of the chain execution"
-        )
-        meta_data: Optional[Dict[str, Any]] = Field(
-            None, description="Execution context and parameters"
-        )
+        inputs: Optional[Dict[str, Any]] = None
+        status: Optional[str] = Field(PENDING, description="Set by the server")
 
     class Update(BaseModel):
-        status: Optional[ChainRunStatus] = Field(
-            None, description="Chain execution status"
+        cancel_requested: Optional[bool] = None
+        status: Optional[str] = Field(None, description="Set by the server")
+        error: Optional[str] = Field(None, description="Set by the server")
+        error_kind: Optional[str] = Field(None, description="Set by the server")
+        variables: Optional[Dict[str, Any]] = Field(
+            None, description="Set by the server"
         )
-        meta_data: Optional[Dict[str, Any]] = Field(
-            None, description="Execution metadata"
-        )
+        output: Optional[str] = Field(None, description="Set by the server")
+        steps_executed: Optional[int] = Field(None, description="Set by the server")
+        started_at: Optional[datetime] = Field(None, description="Set by the server")
+        completed_at: Optional[datetime] = Field(None, description="Set by the server")
 
     class Search(
         ApplicationModel.Search,
@@ -559,226 +384,356 @@ class ChainRunModel(
         ChainModel.Reference.ID.Search,
         UserModel.Reference.ID.Search,
     ):
-        status: Optional[ChainRunStatus] = None
+        status: Optional[StringSearchModel] = None
 
 
-class ChainRunNetworkModel:
-    class POST(BaseModel):
-        chain_run: ChainRunModel.Create
-
-    class PUT(BaseModel):
-        chain_run: ChainRunModel.Update
-
-    class SEARCH(BaseModel):
-        chain_run: ChainRunModel.Search
-
-    class ResponseSingle(BaseModel):
-        chain_run: ChainRunModel
-
-    class ResponsePlural(BaseModel):
-        chain_runs: List[ChainRunModel]
+class RunRequest(RouteModel):
+    inputs: Dict[str, Any] = Field(
+        default_factory=dict, description="The run's starting variables"
+    )
 
 
-class ChainRunManager(AbstractBLLManager):
-    _model = ChainRunModel
-    NetworkModel = ChainRunNetworkModel
+class ChainManager(AbstractBLLManager, RouterMixin):
+    _model = ChainModel
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._link_runs = None
+    prefix: ClassVar[Optional[str]] = "/v1/chain"
+    tags: ClassVar[Optional[List[str]]] = ["Chain Management"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    @property
-    def DB(self):
-        """Get the SQLAlchemy model class for this manager."""
-        return self.Model.DB
+    def create(self, **kwargs: Any) -> Any:
+        """Chains owned by the requester (ROOT and SYSTEM may name another)."""
+        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
 
-    @property
-    def link_runs(self):
-        if self._link_runs is None:
-            self._link_runs = ChainLinkRunManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._link_runs
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A chain's owner and team are not changed by an update."""
+        kwargs.pop("user_id", None)
+        kwargs.pop("team_id", None)
+        return super().update(id, **kwargs)
+
+    async def run(self, chain_id: str, inputs: Optional[Dict[str, Any]]) -> Any:
+        """Run the chain now with ``inputs`` as its starting variables; the
+        run, finished (succeeded, failed or cancelled). Only someone who may
+        edit the chain runs it; it runs as the chain's owner."""
+        from zephyrex.extensions.ai_chains.ChainEngine import ChainEngine
+
+        runs = _as(ChainRunManager, self)
+        run = runs.create(chain_id=chain_id, inputs=check_inputs(inputs))
+        await ChainEngine(
+            model_registry=self.model_registry, requester_id=self.requester.id
+        ).run(run.id)
+        return runs.get(id=run.id)
+
+    @custom_route(
+        method="POST",
+        path="/{chain_id}/run",
+        input_model=RunRequest,
+        output_model=ChainRunModel,
+        authentication_type="jwt",
+        openapi_tags=("Chain Management",),
+        summary="Run the chain now",
+        expose_in=(ExposeIn.REST,),
+    )
+    async def run_route(self, chain_id: str, body: RunRequest) -> Any:
+        return await self.run(chain_id, body.inputs)
 
 
-class ChainLinkRunModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    ParentMixinModel,
-    ChainRunModel.Reference.ID,
-    ChainLinkModel.Reference.ID,
+class ChainStepModel(
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    ChainModel.Reference,
+    PromptModel.Reference.Optional,
+    AbilityModel.Reference.Optional,
+    metaclass=ModelMeta,
 ):
-    # Iteration tracking
-    iteration_index: Optional[int] = Field(
-        None, description="For iteration steps, the current iteration number (0-based)"
-    )
-    iteration_value: Optional[Dict[str, Any]] = Field(
-        None, description="For for_each iterations, contains the current item value"
-    )
-    iteration_complete: Optional[bool] = Field(
+    name: str = Field(..., description="The step's name, an identifier")
+    position: int = Field(0, description="Where the step runs, lowest first")
+    kind: StepKind = Field(..., description="prompt | ability | condition | set")
+    arguments: Optional[Dict[str, str]] = Field(
         None,
-        description="For iteration steps, indicates whether all iterations are complete",
+        description="Expressions over the run's variables: an ability's "
+        "arguments, or a prompt's {VARIABLE}s",
+    )
+    expression: Optional[str] = Field(
+        None, description="A condition's test, or a set step's value"
+    )
+    variable: Optional[str] = Field(
+        None, description="The variable the step's output goes to"
+    )
+    on_true: Optional[str] = Field(
+        None, description="The step a true condition goes to (none: the next)"
+    )
+    on_false: Optional[str] = Field(
+        None, description="The step a false condition goes to (none: the next)"
+    )
+    max_loops: Optional[int] = Field(
+        None, description="The most times a condition's jump back may be taken"
     )
 
-    # Parallel execution tracking
-    is_aggregation_step: bool = Field(
-        False,
-        description="Identifies the special step that aggregates results from parallel iterations",
-    )
-    aggregated_result: Optional[Dict[str, Any]] = Field(
-        None,
-        description="For aggregation steps, contains the combined result from all parallel iterations",
-    )
-
-    # Conditional execution tracking
-    condition_result: Optional[bool] = Field(
-        None,
-        description="For conditional steps, stores the result of the condition evaluation",
-    )
-
-    # General execution state
-    status: ChainLinkRunStatus = Field(
-        ChainLinkRunStatus.PENDING, description="Current status of this step execution"
-    )
-    start_time: Optional[datetime] = Field(
-        None, description="When execution of this step began"
-    )
-    end_time: Optional[datetime] = Field(
-        None,
-        description="When execution of this step completed (successfully or with failure)",
-    )
-    result: Optional[Dict[str, Any]] = Field(
-        None, description="Output data produced by this step execution"
-    )
-    error: Optional[str] = Field(
-        None, description="Error information if the step failed"
-    )
-
-    # Database metadata
     table_comment: ClassVar[str] = (
-        "Records the execution of a specific ChainLink within a ChainRun, "
-        "tracking status, results, and execution-specific data."
+        "A ChainStep is one step of a Chain: a prompt, an ability, a "
+        "condition or a variable set, run in position order."
     )
+    is_system_entity: ClassVar[bool] = False
+    permission_references: ClassVar[List[str]] = ["chain"]
 
     class Create(
         BaseModel,
-        ParentMixinModel.Optional,
-        ChainRunModel.Reference.ID,
-        ChainLinkModel.Reference.ID,
+        ChainModel.Reference.ID,
+        PromptModel.Reference.ID.Optional,
+        AbilityModel.Reference.ID.Optional,
     ):
-        iteration_index: Optional[int] = Field(None, description="Iteration index")
-        iteration_value: Optional[Dict[str, Any]] = Field(
-            None, description="Iteration value"
-        )
-        is_aggregation_step: bool = Field(False, description="Is aggregation step")
-        condition_result: Optional[bool] = Field(None, description="Condition result")
-        status: ChainLinkRunStatus = Field(
-            ChainLinkRunStatus.PENDING, description="Initial execution status"
-        )
+        name: str = Field(..., max_length=64)
+        position: int = Field(0, ge=0, le=1_000_000)
+        kind: StepKind
+        arguments: Optional[Dict[str, str]] = None
+        expression: Optional[str] = Field(None, max_length=2_000)
+        variable: Optional[str] = Field(None, max_length=64)
+        on_true: Optional[str] = Field(None, max_length=64)
+        on_false: Optional[str] = Field(None, max_length=64)
+        max_loops: Optional[int] = Field(None, ge=1, le=MAX_LOOPS)
 
-    class Update(BaseModel):
-        iteration_index: Optional[int] = Field(None, description="Iteration index")
-        iteration_value: Optional[Dict[str, Any]] = Field(
-            None, description="Iteration value"
-        )
-        iteration_complete: Optional[bool] = Field(
-            None, description="Iteration complete"
-        )
-        is_aggregation_step: Optional[bool] = Field(
-            None, description="Is aggregation step"
-        )
-        aggregated_result: Optional[Dict[str, Any]] = Field(
-            None, description="Aggregated result"
-        )
-        condition_result: Optional[bool] = Field(None, description="Condition result")
-        status: Optional[ChainLinkRunStatus] = Field(
-            None, description="Execution status"
-        )
-        start_time: Optional[datetime] = Field(None, description="Start time")
-        end_time: Optional[datetime] = Field(None, description="End time")
-        result: Optional[Dict[str, Any]] = Field(None, description="Execution result")
-        error: Optional[str] = Field(None, description="Error information")
+    class Update(
+        BaseModel,
+        PromptModel.Reference.ID.Optional,
+        AbilityModel.Reference.ID.Optional,
+    ):
+        name: Optional[str] = Field(None, max_length=64)
+        position: Optional[int] = Field(None, ge=0, le=1_000_000)
+        kind: Optional[StepKind] = None
+        arguments: Optional[Dict[str, str]] = None
+        expression: Optional[str] = Field(None, max_length=2_000)
+        variable: Optional[str] = Field(None, max_length=64)
+        on_true: Optional[str] = Field(None, max_length=64)
+        on_false: Optional[str] = Field(None, max_length=64)
+        max_loops: Optional[int] = Field(None, ge=1, le=MAX_LOOPS)
 
     class Search(
         ApplicationModel.Search,
         UpdateMixinModel.Search,
-        ParentMixinModel.Search,
-        ChainRunModel.Reference.ID.Search,
-        ChainLinkModel.Reference.ID.Search,
+        ChainModel.Reference.ID.Search,
+        PromptModel.Reference.ID.Search,
+        AbilityModel.Reference.ID.Search,
     ):
-        iteration_index: Optional[int] = None
-        iteration_complete: Optional[bool] = None
-        is_aggregation_step: Optional[bool] = None
-        condition_result: Optional[bool] = None
-        status: Optional[ChainLinkRunStatus] = None
+        name: Optional[StringSearchModel] = None
+        kind: Optional[StringSearchModel] = None
 
 
-class ChainLinkRunNetworkModel:
-    class POST(BaseModel):
-        chain_link_run: ChainLinkRunModel.Create
+class ChainStepManager(AbstractBLLManager, RouterMixin):
+    _model = ChainStepModel
 
-    class PUT(BaseModel):
-        chain_link_run: ChainLinkRunModel.Update
+    prefix: ClassVar[Optional[str]] = "/v1/chain-step"
+    tags: ClassVar[Optional[List[str]]] = ["Chain Step Management"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    class SEARCH(BaseModel):
-        chain_link_run: ChainLinkRunModel.Search
+    def ordered(self, chain_id: str) -> List[Any]:
+        """The chain's steps in the order they run."""
+        steps = self.list(chain_id=chain_id)
+        return sorted(steps, key=lambda s: (s.position, str(s.created_at), s.id))
 
-    class ResponseSingle(BaseModel):
-        chain_link_run: ChainLinkRunModel
+    def _references(self, step: Dict[str, Any]) -> None:
+        """The step's prompt and ability, read as the requester; an ability
+        no chain may call is refused."""
+        if step.get("kind") == "prompt":
+            _visible(_as(PromptManager, self), step["prompt_id"], "Prompt not found")
+        if step.get("kind") == "ability":
+            ability = _visible(
+                _as(AbilityManager, self), step["ability_id"], "Ability not found"
+            )
+            if ability.name in NEVER_CHAIN_INVOCABLE:
+                raise HTTPException(
+                    status_code=403, detail=f"No chain may call {ability.name!r}"
+                )
 
-    class ResponsePlural(BaseModel):
-        chain_link_runs: List[ChainLinkRunModel]
+    def _unique_name(self, chain_id: str, name: str, step_id: Optional[str]) -> None:
+        clash = [s for s in self.list(chain_id=chain_id, name=name) if s.id != step_id]
+        if clash:
+            raise HTTPException(
+                status_code=409, detail=f"The chain already has a step {name!r}"
+            )
+
+    def create_validation(self, entity: Any) -> None:
+        step = entity.model_dump()
+        _visible(_as(ChainManager, self), entity.chain_id, "Chain not found")
+        check_step(step)
+        self._references(step)
+        self._unique_name(entity.chain_id, entity.name, None)
+        if len(self.list(chain_id=entity.chain_id)) >= MAX_STEPS_PER_CHAIN:
+            raise _invalid(f"a chain has at most {MAX_STEPS_PER_CHAIN} steps")
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A step stays in its chain; the step as changed is checked as a
+        new one would be."""
+        kwargs.pop("chain_id", None)
+        try:
+            changes = (
+                self.model_registry.apply(self.Model)
+                .Update(**kwargs)
+                .model_dump(exclude_unset=True)
+            )
+        except ValidationError as invalid:
+            raise HTTPException(status_code=422, detail=invalid.errors()) from None
+        current = self.get(id=id)
+        merged = {**current.model_dump(), **changes}
+        check_step(merged)
+        if {"kind", "prompt_id", "ability_id"} & changes.keys():
+            self._references(merged)
+        if "name" in changes:
+            self._unique_name(current.chain_id, merged["name"], id)
+        return super().update(id, **kwargs)
 
 
-class ChainLinkRunManager(AbstractBLLManager):
-    _model = ChainLinkRunModel
-    NetworkModel = ChainLinkRunNetworkModel
+class CancelRequest(RouteModel):
+    reason: Optional[str] = Field(
+        None, max_length=500, description="Why the run is stopped"
+    )
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
+
+class ChainRunManager(AbstractBLLManager, RouterMixin):
+    _model = ChainRunModel
+
+    prefix: ClassVar[Optional[str]] = "/v1/chain-run"
+    tags: ClassVar[Optional[List[str]]] = ["Chain Run Management"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.LIST,
+        RouteType.SEARCH,
+    ]
+
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(ChainManager, self), entity.chain_id, "Chain not found")
+
+    def create(self, **kwargs: Any) -> Any:
+        """Runs started by the requester; every run starts pending."""
+
+        def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
+            fields = _owned_by(self.requester.id)(fields)
+            fields["status"] = PENDING
+            fields["inputs"] = check_inputs(fields.get("inputs"))
+            return fields
+
+        return super().create(**_each(kwargs, prepare))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A run's lifecycle is the engine's (ROOT) to record; a user may
+        only ask it to stop."""
+        if not _server_side(self.requester.id):
+            for field in RUN_LIFECYCLE:
+                kwargs.pop(field, None)
+            if kwargs.get("cancel_requested") is not True:
+                kwargs.pop("cancel_requested", None)
+        return super().update(id, **kwargs)
+
+    def cancel(self, run_id: str, reason: Optional[str] = None) -> Any:
+        """Ask the run to stop: a pending run is cancelled at once, a running
+        one before its next step (or while its current step is awaited)."""
+        run = self.update(run_id, cancel_requested=True)
+        if run.status == PENDING:
+            ChainRunManager(
+                requester_id=env("ROOT_ID"), model_registry=self.model_registry
+            ).update(
+                run_id,
+                status=CANCELLED,
+                error=reason or "cancelled before it started",
+                error_kind=ChainCancelledError.kind,
+            )
+        return self.get(id=run_id)
+
+    @custom_route(
+        method="POST",
+        path="/{run_id}/cancel",
+        input_model=CancelRequest,
+        output_model=ChainRunModel,
+        authentication_type="jwt",
+        openapi_tags=("Chain Run Management",),
+        summary="Stop a run",
+        expose_in=(ExposeIn.REST,),
+    )
+    def cancel_route(self, run_id: str, body: CancelRequest) -> Any:
+        return self.cancel(run_id, body.reason)
+
+
+class ChainStepResultModel(
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    ChainRunModel.Reference,
+    ChainStepModel.Reference.Optional,
+    metaclass=ModelMeta,
+):
+    """One step a run executed: its input, output, status and timing. A
+    step that ran several times (in a loop) has a result for each time."""
+
+    step_name: str = Field(..., description="The step's name when it ran")
+    kind: str = Field(..., description="The step's kind when it ran")
+    sequence: int = Field(..., description="Its place in the run, from 1")
+    status: str = Field(..., description="succeeded | failed | cancelled")
+    input: Optional[str] = Field(None, description="What the step was given, as JSON")
+    output: Optional[str] = Field(None, description="What it produced, as JSON")
+    error: Optional[str] = Field(None, description="Why it failed")
+    started_at: Optional[datetime] = Field(None, description="When it began")
+    completed_at: Optional[datetime] = Field(None, description="When it ended")
+    duration_ms: Optional[int] = Field(None, description="How long it took")
+
+    table_comment: ClassVar[str] = (
+        "A ChainStepResult records one step a ChainRun executed: its input, "
+        "output, status and timing."
+    )
+    is_system_entity: ClassVar[bool] = False
+    permission_references: ClassVar[List[str]] = ["chain_run"]
+
+    class Create(
+        BaseModel, ChainRunModel.Reference.ID, ChainStepModel.Reference.ID.Optional
     ):
-        super().__init__(
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
+        step_name: str
+        kind: str
+        sequence: int
+        status: str
+        input: Optional[str] = None
+        output: Optional[str] = None
+        error: Optional[str] = None
+        started_at: Optional[datetime] = None
+        completed_at: Optional[datetime] = None
+        duration_ms: Optional[int] = None
 
-    @property
-    def DB(self):
-        """Get the SQLAlchemy model class for this manager."""
-        return self.Model.DB
-
-
-# Extension hooks for integrating chains with other models
-try:
-    from zephyrex.extensions.ai_agents.BLL_AI_Agents import ActivityModel
-
-    # Extend Activity model with chain link reference
-    class ActivityChainExtension(ChainLinkModel.Reference.ID.Optional):
+    class Update(BaseModel):
         pass
 
-    # Add the extension to ActivityModel
-    ActivityModel.__bases__ = ActivityModel.__bases__ + (ActivityChainExtension,)
+    class Search(
+        ApplicationModel.Search,
+        ChainRunModel.Reference.ID.Search,
+        ChainStepModel.Reference.ID.Search,
+    ):
+        step_name: Optional[StringSearchModel] = None
+        status: Optional[StringSearchModel] = None
 
-except ImportError:
-    # AI Agents extension not available
-    pass
+
+class ChainStepResultManager(AbstractBLLManager, RouterMixin):
+    _model = ChainStepResultModel
+
+    prefix: ClassVar[Optional[str]] = "/v1/chain-step-result"
+    tags: ClassVar[Optional[List[str]]] = ["Chain Run Management"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.LIST,
+        RouteType.SEARCH,
+    ]
+
+    def create(self, **kwargs: Any) -> Any:
+        """Step results are the engine's to record (see :meth:`record`);
+        only ROOT and SYSTEM create them otherwise."""
+        if not _server_side(self.requester.id):
+            raise HTTPException(
+                status_code=403, detail="A run's step results are the server's"
+            )
+        return super().create(**kwargs)
+
+    def record(self, **fields: Any) -> Any:
+        """The engine's record of a step it executed, written as the
+        requester who started the run (a row ROOT writes is ROOT's alone, so
+        no one else could read it)."""
+        return super().create(**fields)
+
+    def of(self, run_id: str) -> List[Any]:
+        """The run's step results in the order they ran."""
+        return sorted(self.list(chain_run_id=run_id), key=lambda r: r.sequence)
