@@ -16,6 +16,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth._shared import (
     BaseModel,
     _invitation_hooks,
@@ -380,9 +381,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):
 
     def update(self, id: str, **kwargs):
         """Update a team with metadata"""
-        from zephyrex.database.StaticPermissions import is_root_id, is_system_id
-
-        if not (is_root_id(self.requester.id) or is_system_id(self.requester.id)):
+        if not server_side(self.requester.id):
             db_session = self.model_registry.DB.session()
             try:
                 team_db = TeamModel.DB(self.model_registry.DB.manager.Base)

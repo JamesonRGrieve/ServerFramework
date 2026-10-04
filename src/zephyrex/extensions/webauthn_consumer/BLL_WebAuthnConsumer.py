@@ -29,7 +29,7 @@ credential and stamps ``clone_detected_at``.
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 
 from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel as RouteModel
@@ -41,7 +41,6 @@ from webauthn.helpers.structs import (
 )
 
 import jwt
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.webauthn_consumer.RelyingParty import (
     CHALLENGE_BYTES,
     Assertion,
@@ -66,12 +65,12 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import each_created, owned_by
 from zephyrex.logic.BLL_Auth import (
     MFAMethodSource,
     OneTimeTokenMixin,
     UserManager,
     UserModel,
-    refuse_internal_account,
     register_mfa_source,
 )
 from zephyrex.logic.BLL_Auth.user import MFA_CHALLENGE_AUDIENCE
@@ -91,19 +90,6 @@ class Ceremony:
     REGISTRATION = "registration"
     SIGN_IN = "sign_in"
     SECOND_FACTOR = "second_factor"
-
-
-def _server_side(requester_id: str) -> bool:
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
 
 
 def user_handle(user_id: str) -> bytes:
@@ -346,15 +332,8 @@ class WebAuthnCredentialManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """The owner is the requester; ROOT and SYSTEM may name another, but
         not an internal account (403): it would sign in as it."""
-        requester_id = self.requester.id
-
-        def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
-            if not _server_side(requester_id) or not fields.get("user_id"):
-                fields["user_id"] = requester_id
-            refuse_internal_account(fields["user_id"])
-            return fields
-
-        return super().create(**_each(kwargs, owned))
+        owned = owned_by(self.requester.id, owner_never_internal=True)
+        return super().create(**each_created(kwargs, owned))
 
 
 class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):

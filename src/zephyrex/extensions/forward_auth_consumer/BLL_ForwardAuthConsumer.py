@@ -30,7 +30,6 @@ from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ExternalErrors import (
     AuthExternalError,
     BaseExternalError,
@@ -55,6 +54,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
@@ -68,13 +68,6 @@ from zephyrex.pydantic2.registry import BaseModel
 ROUTE_PREFIX = "/v1/auth/forward-auth"
 FORWARD_AUTH_TAGS = ("Forward-auth Sign-in",)
 INSTANCE_QUERY_PARAMETER = "instance"
-
-
-def _server_side(requester_id: Optional[str]) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return bool(requester_id) and (
-        is_root_id(str(requester_id)) or is_system_id(str(requester_id))
-    )
 
 
 def _now() -> datetime:
@@ -168,7 +161,7 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """Link an identity to a user: ROOT and SYSTEM only. The link is
         written as its user, so they can see and remove it."""
-        if not _server_side(str(self.requester.id)):
+        if not server_side(str(self.requester.id)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forward-auth identities are linked by signing in with them",
@@ -200,7 +193,7 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
     def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its ``last_login_at``); a link never
         moves to another identity or user."""
-        if not _server_side(self.requester.id) or set(kwargs) - {"last_login_at"}:
+        if not server_side(self.requester.id) or set(kwargs) - {"last_login_at"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forward-auth identity links are not edited",
@@ -279,7 +272,7 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
                 for row in rows or []
                 if row.user_id is None
                 and row.team_id is None
-                and _server_side(str(row.created_by_user_id))
+                and server_side(str(row.created_by_user_id))
             ),
             key=lambda row: row.created_at or _now(),
         )

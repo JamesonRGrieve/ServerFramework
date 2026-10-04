@@ -43,6 +43,7 @@ from zephyrex.logic.AbstractLogicManager.hooks import (
     wrap_method_with_hooks,
 )
 from zephyrex.logic.AbstractLogicManager.models import FieldComparison
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 T = TypeVar("T")
@@ -1342,13 +1343,9 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """
         if not self._CALLER_OWNED_FIELDS:
             return
-        from zephyrex.database.StaticPermissions import is_root_id, is_system_id
-
         requester = self.optional_requester
         requester_id = requester.id if requester is not None else None
-        if requester_id is not None and (
-            is_root_id(requester_id) or is_system_id(requester_id)
-        ):
+        if server_side(requester_id):
             return
         for field in self._CALLER_OWNED_FIELDS:
             supplied = kwargs.get(field)

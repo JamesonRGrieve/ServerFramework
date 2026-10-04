@@ -52,6 +52,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 from zephyrex.logic.BLL_Extensions import AbilityModel, ExtensionModel
 
@@ -1126,11 +1127,7 @@ class ProviderInstanceChildManager(AbstractBLLManager):
     """
 
     def _require_writable_instance(self, provider_instance_id: Optional[str]) -> None:
-        from zephyrex.database.StaticPermissions import (
-            is_root_id,
-            is_system_id,
-            user_can_edit,
-        )
+        from zephyrex.database.StaticPermissions import user_can_edit
 
         if not provider_instance_id:
             raise HTTPException(
@@ -1149,7 +1146,7 @@ class ProviderInstanceChildManager(AbstractBLLManager):
         )
         if instance is None:
             raise HTTPException(status_code=404, detail="Provider instance not found")
-        if is_root_id(requester_id) or is_system_id(requester_id):
+        if server_side(requester_id):
             return
         if instance.scope in OPERATOR_SCOPES:
             raise HTTPException(
@@ -1282,12 +1279,9 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
         """An instance in the root or system scope speaks for the operator
         (an extension may trust what it vouches for), so only ROOT and
         SYSTEM may put one there."""
-        from zephyrex.database.StaticPermissions import is_root_id, is_system_id
-
         if scope not in OPERATOR_SCOPES:
             return
-        requester_id = self.requester.id
-        if not (is_root_id(requester_id) or is_system_id(requester_id)):
+        if not server_side(self.requester.id):
             raise HTTPException(
                 status_code=403,
                 detail=f"Only the operator may create {scope}-scoped instances",

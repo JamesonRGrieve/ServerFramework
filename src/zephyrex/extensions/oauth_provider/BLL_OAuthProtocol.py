@@ -29,7 +29,7 @@ from zephyrex.extensions.oauth_provider.AuthorizationServer import (
     AuthorizationServer,
     SignedInUser,
 )
-from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import TAGS, server_side
+from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import TAGS
 from zephyrex.extensions.oauth_provider.OAuthProtocol import (
     NO_STORE_HEADERS,
     OAuthError,
@@ -44,6 +44,7 @@ from zephyrex.lib.InboundSecurity import (
     rate_limit,
 )
 from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 
 REST = (ExposeIn.REST,)

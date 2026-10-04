@@ -56,7 +56,6 @@ from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib import Environment
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env, env_bool
@@ -74,6 +73,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
@@ -96,13 +96,6 @@ MAX_NAME_LENGTH = 256
 # so a proxy stripping only one spelling would let a client's through.
 _HEADER_NAME = re.compile(r"[A-Za-z0-9-]+")
 _EMAIL = re.compile(r"[^@\s,]+@[^@\s,]+")
-
-
-def _server_side(requester_id: Optional[str]) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return bool(requester_id) and (
-        is_root_id(str(requester_id)) or is_system_id(str(requester_id))
-    )
 
 
 def _now() -> datetime:
@@ -322,7 +315,7 @@ class UserProxyAuthLinkManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """Link an identity to a user: ROOT and SYSTEM only. The link is
         written as its user, so they can see and remove it."""
-        if not _server_side(str(self.requester.id)):
+        if not server_side(str(self.requester.id)):
             raise _forbidden("Proxy identities are linked by signing in with them")
         if isinstance(kwargs.get("entities"), list):
             return [self.create(**dict(entity)) for entity in kwargs["entities"]]
@@ -341,7 +334,7 @@ class UserProxyAuthLinkManager(AbstractBLLManager, RouterMixin):
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its last login)."""
-        if not _server_side(str(self.requester.id)):
+        if not server_side(str(self.requester.id)):
             raise _forbidden("Proxy identity links are not edited")
         kwargs.pop("user_id", None)
         kwargs.pop("identity", None)

@@ -28,7 +28,6 @@ from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import (
     ClientRegistration,
     OauthClientManager,
     OauthGrantManager,
-    server_side,
 )
 from zephyrex.extensions.oauth_provider.OAuthProtocol import APPLICATION_WEB
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
@@ -36,6 +35,7 @@ from zephyrex.lib.SecretEncryption import (
     MissingFernetKeyError,
     assert_encryption_available,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 
 
 class EXT_OAuthProvider(AbstractStaticExtension):

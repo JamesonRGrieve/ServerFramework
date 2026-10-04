@@ -43,11 +43,7 @@ from fastapi import HTTPException, Response
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import (
-    is_any_internal_id,
-    is_root_id,
-    is_system_id,
-)
+from zephyrex.database.StaticPermissions import is_any_internal_id
 from zephyrex.extensions.x509_provider.CertificateAuthority import (
     DEFAULT_CA_KEY_TYPE,
     MAX_PEM_CHARS,
@@ -79,6 +75,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import UserManager, UserModel
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceManager,
@@ -117,11 +114,6 @@ def _now() -> datetime:
 
 def _root() -> str:
     return env("ROOT_ID")
-
-
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM administer the CA and act for other users."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
 
 
 def _bounded(name: str, default: int, bounds: Tuple[int, int]) -> int:
@@ -445,7 +437,7 @@ class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
         """The account to issue for: the requester, or for root or system
         the user named, looked up as the requester."""
         requester_id = self.requester.id
-        owner_id = user_id if user_id and _server_side(requester_id) else requester_id
+        owner_id = user_id if user_id and server_side(requester_id) else requester_id
         if is_any_internal_id(owner_id):
             raise HTTPException(
                 status_code=400,
@@ -521,7 +513,7 @@ class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
         """Revoke a certificate the requester owns (root and system: any).
         404 for one they cannot see; 409 when it is already revoked."""
         record = self.get(id=id)
-        if not _server_side(self.requester.id) and record.user_id != self.requester.id:
+        if not server_side(self.requester.id) and record.user_id != self.requester.id:
             raise HTTPException(status_code=404, detail="No such certificate")
         if record.is_revoked:
             raise HTTPException(status_code=409, detail="It is already revoked")
@@ -588,7 +580,7 @@ class X509AuthorityManager(AbstractBLLManager, RouterMixin):
     routes_to_register: ClassVar[Optional[List[Any]]] = []
 
     def _administrator(self) -> None:
-        if not _server_side(self.requester.id):
+        if not server_side(self.requester.id):
             raise HTTPException(
                 status_code=403,
                 detail="Certificate authorities are managed by the administrator",

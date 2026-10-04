@@ -45,7 +45,6 @@ from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.x509_consumer.X509Verification import (
     DEFAULT_IDENTITY_ATTRIBUTE,
     CertificateEncodingError,
@@ -81,6 +80,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
@@ -94,13 +94,6 @@ ROUTE_PREFIX = "/v1/auth/x509"
 X509_TAGS = ("X.509 Sign-in",)
 DEFAULT_CERT_HEADER = "X-SSL-Client-Cert"
 _ASGI_TLS_EXTENSION = "tls"
-
-
-def _server_side(requester_id: Optional[str]) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return bool(requester_id) and (
-        is_root_id(str(requester_id)) or is_system_id(str(requester_id))
-    )
 
 
 def _now() -> datetime:
@@ -388,7 +381,7 @@ class X509TrustAnchorManager(AbstractBLLManager, RouterMixin):
 
     def _require_server_side(self) -> None:
         requester = self.optional_requester
-        if requester is None or not _server_side(str(requester.id)):
+        if requester is None or not server_side(str(requester.id)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only ROOT or SYSTEM manage X.509 trust anchors",
@@ -478,7 +471,7 @@ class UserX509LinkManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """Link a certificate identity to a user: ROOT and SYSTEM only. The
         link is written as its user, so they can see and remove it."""
-        if not _server_side(str(self.requester.id)):
+        if not server_side(str(self.requester.id)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Certificate identities are linked by signing in with them",
@@ -505,7 +498,7 @@ class UserX509LinkManager(AbstractBLLManager, RouterMixin):
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its last certificate and login)."""
-        if not _server_side(str(self.requester.id)):
+        if not server_side(str(self.requester.id)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Certificate identity links are not edited",

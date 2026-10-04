@@ -31,7 +31,6 @@ from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     PermanentExternalError,
@@ -55,6 +54,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import UserManager, UserModel, refuse_internal_account
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel, ProviderManager
 from zephyrex.pydantic2.fastapi import AuthType, RouteType, RouterMixin
@@ -63,11 +63,6 @@ from zephyrex.pydantic2.registry import BaseModel
 NEGOTIATE = "Negotiate"
 NEGOTIATE_CHALLENGE = {"WWW-Authenticate": NEGOTIATE}
 KERBEROS_TAGS = ("Kerberos Sign-in",)
-
-
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
 
 
 def negotiate_token(authorization: Optional[str]) -> Optional[bytes]:
@@ -173,7 +168,7 @@ class KerberosPrincipalManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """Link a principal to a user: ROOT and SYSTEM only. The link is
         written as its user, so they can see and remove it."""
-        if not _server_side(self.requester.id):
+        if not server_side(self.requester.id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Kerberos principals are linked by signing in with them",
@@ -208,7 +203,7 @@ class KerberosPrincipalManager(AbstractBLLManager, RouterMixin):
     def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its ``last_login_at``); a link never
         moves to another principal or user."""
-        if not _server_side(self.requester.id) or set(kwargs) - {"last_login_at"}:
+        if not server_side(self.requester.id) or set(kwargs) - {"last_login_at"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Kerberos principal links are not edited",
@@ -279,7 +274,7 @@ class KerberosPrincipalManager(AbstractBLLManager, RouterMixin):
                 instance.enabled is not False
                 and instance.user_id is None
                 and instance.team_id is None
-                and _server_side(str(instance.created_by_user_id))
+                and server_side(str(instance.created_by_user_id))
                 and PRV_KerberosKeytab.is_configured_instance(instance)
             ):
                 continue

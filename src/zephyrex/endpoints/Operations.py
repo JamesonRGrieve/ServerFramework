@@ -422,11 +422,8 @@ def _require_admin_principal(
     # JWT path: RequestContext is populated by the framework's
     # JWT-extraction middleware in ``app.py``.
     try:
-        from zephyrex.database.StaticPermissions import (
-            is_root_id,
-            is_system_id,
-        )
         from zephyrex.lib.RequestContext import get_request_user
+        from zephyrex.logic.AbstractLogicManager.ownership import server_side
     except ImportError as exc:  # pragma: no cover — bootstrap-only
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -440,7 +437,7 @@ def _require_admin_principal(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required for admin endpoint",
         )
-    if not (is_root_id(user_id) or is_system_id(user_id)):
+    if not server_side(user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",

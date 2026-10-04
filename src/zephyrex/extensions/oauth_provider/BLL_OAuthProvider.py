@@ -20,13 +20,12 @@ the clients they register and the consents (grants) they gave.
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Set
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set
 
 from fastapi import HTTPException
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.oauth_provider import Config
 from zephyrex.extensions.oauth_provider.OAuthProtocol import (
     APPLICATION_NATIVE,
@@ -51,6 +50,11 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    each_created,
+    owned_by,
+    server_side,
+)
 from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.Permissions import (
     PermissionRegistry,
@@ -65,13 +69,6 @@ MAX_REDIRECT_URIS = 20
 MAX_CLIENT_NAME = 200
 TAGS = ["OAuth Provider"]
 UNIQUE: Dict[str, Any] = {"unique": True}
-
-
-def server_side(requester_id: Optional[str]) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    if not requester_id:
-        return False
-    return is_root_id(requester_id) or is_system_id(requester_id)
 
 
 def now_utc() -> datetime:
@@ -454,15 +451,6 @@ class OauthGrantModel(
         client_id: Optional[StringSearchModel] = None
 
 
-def _owned_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-        if not server_side(requester_id) or not fields.get("user_id"):
-            fields["user_id"] = requester_id
-        return fields
-
-    return prepare
-
-
 class OauthGrantManager(AbstractBLLManager, RouterMixin):
     """A user's consents: listed and revoked by that user."""
 
@@ -481,15 +469,7 @@ class OauthGrantManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """A grant is the requester's own (ROOT and SYSTEM may name another),
         singly or in a batch."""
-        prepare = _owned_by(self.requester.id)
-        if isinstance(kwargs.get("entities"), list):
-            kwargs = {
-                **kwargs,
-                "entities": [prepare(dict(e)) for e in kwargs["entities"]],
-            }
-        else:
-            kwargs = prepare(dict(kwargs))
-        return super().create(**kwargs)
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def consent(self, client: OauthClientModel, scopes: List[str]) -> OauthGrantModel:
         """Record that the requester consents to ``client`` holding

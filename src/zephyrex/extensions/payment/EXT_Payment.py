@@ -577,12 +577,6 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
-def _server_side(requester_id: str) -> bool:
-    from zephyrex.database.StaticPermissions import is_root_id, is_system_id
-
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
 class EXT_Payment(AbstractStaticExtension):
     name: ClassVar[str] = "payment"
     friendly_name: ClassVar[str] = "Payments"
@@ -634,8 +628,10 @@ class EXT_Payment(AbstractStaticExtension):
     def _merchant(cls, requester_id: str) -> str:
         """The merchant's side (captures, refunds) is the server's: a payer
         must never refund or capture their own payment."""
+        from zephyrex.logic.AbstractLogicManager.ownership import server_side
+
         cls._users(requester_id)
-        if not _server_side(requester_id):
+        if not server_side(requester_id):
             raise HTTPException(
                 status_code=403, detail="Only ROOT or SYSTEM act for the merchant"
             )

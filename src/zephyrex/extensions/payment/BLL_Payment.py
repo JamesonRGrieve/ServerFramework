@@ -26,7 +26,6 @@ from datetime import UTC, datetime
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     ClassVar,
     Dict,
     List,
@@ -40,7 +39,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ExternalErrors import BaseExternalError
 from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import (
@@ -52,6 +50,13 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
     _cache_sync_run,
     hook_bll,
+)
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    OWNERSHIP_FIELDS,
+    each_created,
+    owned_by,
+    server_side,
+    without,
 )
 from zephyrex.logic.BLL_Auth import UserManager, UserModel, register_login_check
 from zephyrex.pydantic2.fastapi import RouterMixin
@@ -89,20 +94,6 @@ SUBSCRIPTION_MIRRORED = (
 LOGIN_CHECK_TIMEOUT_SECONDS = 20.0
 
 
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
-
-
 @extension_model(UserModel)
 class Payment_UserModel(BaseModel):
     """A user's customer record at a payment provider, set by the server."""
@@ -132,7 +123,7 @@ class Payment_UserModel(BaseModel):
 def link_is_server_set(context: HookContext) -> None:
     """Only ROOT and SYSTEM write a user's customer link."""
     named = sorted(set(LINK_FIELDS) & set(context.kwargs))
-    if named and not _server_side(context.manager.requester.id):
+    if named and not server_side(context.manager.requester.id):
         raise HTTPException(
             status_code=403,
             detail=f"Only the server sets {', '.join(named)}",
@@ -289,20 +280,11 @@ class MirrorManager(AbstractBLLManager):
 
     def create(self, **kwargs: Any) -> Any:
         """Records are the requester's; ROOT and SYSTEM may name the owner."""
-        requester_id = self.requester.id
-
-        def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
-            if not _server_side(requester_id) or not fields.get("user_id"):
-                fields["user_id"] = requester_id
-            return fields
-
-        return super().create(**_each(kwargs, owned))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """An update never moves a record to another owner or team."""
-        kwargs.pop("user_id", None)
-        kwargs.pop("team_id", None)
-        return super().update(id, **kwargs)
+        return super().update(id, **without(kwargs, OWNERSHIP_FIELDS))
 
     def record(self, answer: Dict[str, Any], **extra: Any) -> Any:
         """A new record of the provider's ``answer``."""
@@ -408,7 +390,7 @@ def require_active_subscription(user_id: str, model_registry: Any) -> None:
     (``register_login_check``) before it issues any session."""
     if str(env("DISABLE_SUBSCRIPTION_VALIDATION") or "").lower() == "true":
         return
-    if not user_id or _server_side(str(user_id)):
+    if not user_id or server_side(str(user_id)):
         return
     subscriptions = PaymentSubscriptionManager(
         model_registry=model_registry, requester_id=str(env("ROOT_ID"))

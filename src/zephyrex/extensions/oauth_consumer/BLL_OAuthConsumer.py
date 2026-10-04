@@ -45,7 +45,6 @@ from datetime import datetime, timedelta, timezone
 from typing import (
     Any,
     Awaitable,
-    Callable,
     ClassVar,
     Dict,
     List,
@@ -60,7 +59,6 @@ from pydantic import BaseModel as RouteModel
 from pydantic import Field
 from sqlalchemy import delete, update
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ExternalErrors import (
     BaseExternalError,
     InvalidInputExternalError,
@@ -87,6 +85,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import each_created, owned_by
 from zephyrex.logic.BLL_Auth import (
     InvalidGrantError,
     PasswordlessGrantRegistry,
@@ -136,20 +135,6 @@ def _same_digest(stored: Optional[str], secret: Optional[str]) -> bool:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -506,15 +491,8 @@ class OAuthIdentityManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """An identity of the requester's own; ROOT and SYSTEM name the user,
         never an internal account (403)."""
-        requester_id = self.requester.id
-
-        def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
-            if not _server_side(requester_id) or not fields.get("user_id"):
-                fields["user_id"] = requester_id
-            refuse_internal_account(fields["user_id"])
-            return fields
-
-        return super().create(**_each(kwargs, owned))
+        owned = owned_by(self.requester.id, owner_never_internal=True)
+        return super().create(**each_created(kwargs, owned))
 
     def find(
         self, provider_instance_id: str, subject: str

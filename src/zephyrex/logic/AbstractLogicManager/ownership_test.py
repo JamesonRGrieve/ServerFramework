@@ -2,8 +2,9 @@
 from typing import Any, Dict
 
 import pytest
+from fastapi import HTTPException
 
-from zephyrex.database.StaticPermissions import ROOT_ID, SYSTEM_ID
+from zephyrex.database.StaticPermissions import ROOT_ID, SYSTEM_ID, TEMPLATE_ID
 from zephyrex.logic.AbstractLogicManager.ownership import (
     OWNERSHIP_FIELDS,
     created_records,
@@ -53,6 +54,24 @@ def test_leaving_unowned_is_never_a_users():
         assert prepare(dict(named))["user_id"] == USER
 
 
+@pytest.mark.parametrize("server", SERVER)
+def test_an_owner_that_is_never_internal_refuses_every_internal_account(server: str):
+    prepare = owned_by(server, owner_never_internal=True)
+    assert prepare({"user_id": OTHER})["user_id"] == OTHER
+    for internal in ({}, {"user_id": ROOT_ID}, {"user_id": SYSTEM_ID}):
+        with pytest.raises(HTTPException) as refused:
+            prepare(dict(internal))
+        assert refused.value.status_code == 403
+    with pytest.raises(HTTPException):
+        prepare({"user_id": TEMPLATE_ID})
+
+
+def test_a_user_whose_records_are_never_internally_owned_still_owns_them():
+    prepare = owned_by(USER, owner_never_internal=True)
+    for named in ({}, {"user_id": OTHER}, {"user_id": ROOT_ID}):
+        assert prepare(dict(named))["user_id"] == USER
+
+
 def test_each_created_prepares_a_single_create():
     sent = {"name": "n", "user_id": OTHER}
     prepared = each_created(sent, owned_by(USER))
@@ -60,7 +79,7 @@ def test_each_created_prepares_a_single_create():
     assert sent["user_id"] == OTHER, "the caller's kwargs are not changed"
 
 
-def test_each_created_prepares_every_entity_of_a_batch():
+def test_each_created_prepares_every_entity_of_a_batch() -> None:
     entities = [{"name": "a", "user_id": OTHER}, {"name": "b"}]
     sent: Dict[str, Any] = {"entities": entities, "flag": True}
     prepared = each_created(sent, owned_by(USER))

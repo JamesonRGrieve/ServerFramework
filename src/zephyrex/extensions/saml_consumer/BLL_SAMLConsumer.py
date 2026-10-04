@@ -43,7 +43,6 @@ from pydantic import BaseModel as RouteModel
 from pydantic import Field
 from sqlalchemy.exc import IntegrityError
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ExternalErrors import (
     BaseExternalError,
     InvalidInputExternalError,
@@ -83,6 +82,11 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    each_created,
+    owned_by,
+    server_side,
+)
 from zephyrex.logic.BLL_Auth import (
     PasswordlessGrantRegistry,
     UserIdGrantPayload,
@@ -111,12 +115,6 @@ _REDIRECT_STATUS = 303
 # same IdP at nine o'clock, and a forged response gets nowhere however
 # often it is tried, so the cap only bounds the signature-checking work.
 SIGN_IN_RATE_LIMIT = DEFAULT_READ_RATE_LIMIT
-
-
-def _server_side(requester_id: Optional[str]) -> bool:
-    if not requester_id:
-        return False
-    return is_root_id(requester_id) or is_system_id(requester_id)
 
 
 def _sha256(value: str) -> str:
@@ -469,7 +467,7 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
 
     def _require_server_side(self) -> None:
         requester = self.optional_requester
-        if requester is None or not _server_side(str(requester.id)):
+        if requester is None or not server_side(str(requester.id)):
             raise HTTPException(
                 status_code=403,
                 detail="Only ROOT or SYSTEM manage SAML identity providers",
@@ -936,18 +934,8 @@ class SamlIdentityManager(AbstractBLLManager, RouterMixin):
         """An identity belongs to its user: a user links only themselves;
         ROOT and SYSTEM (the sign-in) name the user, never an internal
         account (403)."""
-        requester_id = str(self.requester.id)
-
-        def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
-            if not _server_side(requester_id) or not fields.get("user_id"):
-                fields["user_id"] = requester_id
-            refuse_internal_account(fields["user_id"])
-            return fields
-
-        if isinstance(kwargs.get("entities"), list):
-            kwargs["entities"] = [owned(dict(e)) for e in kwargs["entities"]]
-            return super().create(**kwargs)
-        return super().create(**owned(dict(kwargs)))
+        owned = owned_by(str(self.requester.id), owner_never_internal=True)
+        return super().create(**each_created(kwargs, owned))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         kwargs.pop("user_id", None)

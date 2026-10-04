@@ -48,13 +48,23 @@ def created_records(result: Any) -> List[Any]:
     return result if isinstance(result, list) else [result]
 
 
-def owned_by(requester_id: str, *, server_may_leave_unowned: bool = False) -> Prepare:
+def owned_by(
+    requester_id: str,
+    *,
+    server_may_leave_unowned: bool = False,
+    owner_never_internal: bool = False,
+) -> Prepare:
     """Fields whose ``user_id`` is the requester. ROOT and SYSTEM may name
     another owner; when they name none (absent or empty), it is theirs.
 
     ``server_may_leave_unowned``: ROOT and SYSTEM may also name no owner
     at all, by passing ``user_id=None``; only an absent ``user_id`` makes
-    the record theirs (a message an agent posts has no author)."""
+    the record theirs (a message an agent posts has no author).
+
+    ``owner_never_internal``: the owner is never ROOT, SYSTEM or the
+    template user (403), ROOT and SYSTEM themselves included, for a record
+    that would let whoever holds it sign in as its owner (a linked
+    identity, a security key)."""
 
     def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
         if not server_side(requester_id):
@@ -63,6 +73,11 @@ def owned_by(requester_id: str, *, server_may_leave_unowned: bool = False) -> Pr
             fields.setdefault("user_id", requester_id)
         elif not fields.get("user_id"):
             fields["user_id"] = requester_id
+        if owner_never_internal:
+            # BLL_Auth's managers build on this package: imported when used.
+            from zephyrex.logic.BLL_Auth import refuse_internal_account
+
+            refuse_internal_account(fields["user_id"])
         return fields
 
     return prepare

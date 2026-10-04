@@ -41,7 +41,6 @@ from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel as RouteModel
 from pydantic import Field, ValidationError
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ExternalErrors import BaseExternalError
 from zephyrex.extensions.ldap_consumer.LDAPClient import (
     CredentialsRefused,
@@ -70,6 +69,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import (
     UserCredentialManager,
     UserManager,
@@ -118,17 +118,11 @@ ADMIN_ROUTES = [
 ]
 
 
-def _server_side(requester_id: Optional[str]) -> bool:
-    if not requester_id:
-        return False
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
 def _require_server_side(manager: AbstractBLLManager) -> None:
     """Directories and identities are the server's own configuration: an
     API key issued to a user is not enough to touch them."""
     requester = manager.optional_requester
-    if not _server_side(requester.id if requester is not None else None):
+    if not server_side(requester.id if requester is not None else None):
         raise HTTPException(
             status_code=403, detail="Only the server's administrator manages this"
         )

@@ -21,7 +21,6 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import (
     Any,
-    Callable,
     ClassVar,
     Dict,
     Iterator,
@@ -35,7 +34,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ai_tuning.TuningProvider import (
     AbstractTuningProvider,
     checked_dataset,
@@ -60,6 +58,12 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    OWNERSHIP_FIELDS,
+    each_created,
+    owned_by,
+    without,
+)
 from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceManager,
@@ -83,20 +87,6 @@ MIRRORED = (
     "hyperparameters",
     "finished_at",
 )
-
-
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
 
 
 class TuningJobModel(
@@ -259,20 +249,11 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Jobs are the requester's; ROOT and SYSTEM may name the owner."""
-        requester_id = self.requester.id
-
-        def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
-            if not _server_side(requester_id) or not fields.get("user_id"):
-                fields["user_id"] = requester_id
-            return fields
-
-        return super().create(**_each(kwargs, owned))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """An update never moves a job to another owner or team."""
-        kwargs.pop("user_id", None)
-        kwargs.pop("team_id", None)
-        return super().update(id, **kwargs)
+        return super().update(id, **without(kwargs, OWNERSHIP_FIELDS))
 
     def account(
         self, provider_instance_id: str
