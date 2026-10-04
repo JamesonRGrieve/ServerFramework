@@ -68,11 +68,13 @@ Hierarchical role system with inheritance.
 deleted or expired role extends nothing), serves both the team-record filter
 (EDIT/DELETE/SHARE on a record's own team) and `TeamAuthority.is_admin_role`
 (the membership rules). A role's name and its depth rank nothing: names are
-not unique, and every team's admins create their own. Creating a team role takes
-a live admin membership of a live team, under a parent the creator may grant
-(`TeamAuthority.assert_may_create_role`); root and system create any. Moving
-a role (a new `parent_id`) grants its new rank to everyone holding it, so it
-is `TeamAuthority.assert_may_place`'s to allow.
+not unique, and every team's admins create their own. Placing a role, by
+creating it or by moving it (a new `parent_id`), grants its rank to everyone
+holding it, so both are `TeamAuthority.assert_may_place`'s to allow: a live
+admin membership of a live team, and a role ranking no higher than the
+requester's own (an admin places under `user`, a superadmin under `admin`).
+Root and system place any. Reading a team's role takes a live membership of
+the team (or having created it).
 
 ### Team Structure
 Hierarchical teams with parent-child relationships.

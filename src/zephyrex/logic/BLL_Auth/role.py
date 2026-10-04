@@ -6,7 +6,6 @@ from fastapi import HTTPException
 
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
@@ -215,50 +214,19 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         )
         team_id = role.get("team_id") if isinstance(role, dict) else role.team_id
 
-        # Root and system administer every team without belonging to it.
-        requester_id = self.requester.id
+        # A team's role is read by its live members (TeamAuthority's rule:
+        # enabled, unexpired, undeleted, in a live team) and by its creator;
+        # root and system belong to every team.
         if (
-            created_by_user_id != requester_id
-            and not is_root_id(requester_id)
-            and not is_system_id(requester_id)
+            team_id
+            and created_by_user_id != self.requester.id
+            and not TeamAuthority(
+                self.requester.id, team_id, self.model_registry
+            ).holds_live_membership()
         ):
-            # Business logic validation: if accessing a team-specific role, validate team membership
-            if team_id:
-                self.validate_user_team(self.requester.id, team_id)
+            raise HTTPException(status_code=403, detail="Access denied")
 
         return role
-
-    def validate_user_team(self, user_id: str, team_id: str):
-        """
-        Validate that the user has exactly one UserTeam relationship with the specified team.
-        This is business logic validation, not permission validation.
-        """
-        # Use the UserTeamManager class defined later in this file instead of importing it
-        from zephyrex.logic.BLL_Auth.user_team import UserTeamManager, UserTeamModel
-
-        user_team_manager = UserTeamManager(
-            requester_id=self.requester.id, model_registry=self.model_registry
-        )
-
-        # Check that user has exactly one UserTeam relationship with this team
-        # Use the database class directly to avoid parameter conflicts
-        user_teams = UserTeamModel.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            user_id=user_id,
-            team_id=team_id,
-        )
-
-        if len(user_teams) == 0:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied",
-            )
-        elif len(user_teams) > 1:
-            raise HTTPException(
-                status_code=409,
-                detail="Request uncovered multiple UserTeam when only one was expected.",
-            )
 
     def create_validation(self, entity):
         """Validate role creation."""
@@ -295,9 +263,9 @@ class RoleManager(AbstractBLLManager, RouterMixin):
             except HTTPException:
                 raise HTTPException(status_code=404, detail="Parent role not found")
 
-        # Finally, a team's roles are its admins' to shape: a role extending
-        # a parent grants that parent's rank to whoever later holds it, so
-        # the creator must be a team admin who may grant that parent.
+        # Finally, a team's roles are its admins' to shape: a new role's rank
+        # goes to whoever later holds it, so, as for a move, the creator must
+        # be a team admin and the role may not outrank them.
         TeamAuthority(
             self.requester.id, entity.team_id, self.model_registry
         ).assert_may_create_role(entity.parent_id)

@@ -105,17 +105,20 @@ class TeamAuthority:
                 status_code=403, detail="Cannot grant a role above your own"
             )
 
-    def assert_may_place(self, role_id: str, parent_id: Optional[str]) -> None:
-        """May make ``role_id`` extend ``parent_id`` (None: no parent). A
-        role's parent sets what everyone holding it may do, so the move is a
-        grant of the role's new rank to all of them; 422 when the role would
-        extend itself."""
+    def assert_may_place(
+        self, role_id: Optional[str], parent_id: Optional[str]
+    ) -> None:
+        """May make ``role_id`` (None: a role not yet created) extend
+        ``parent_id`` (None: no parent). A role's parent sets what everyone
+        holding it may do, so placing it is a grant of the role's rank to all
+        of them, and that rank may not exceed the requester's; 422 when the
+        role would extend itself."""
         parent_chain = (
             []
             if parent_id is None
             else _role_chain(parent_id, self._model_registry, self._chains)
         )
-        if role_id in parent_chain:
+        if role_id is not None and role_id in parent_chain:
             raise HTTPException(status_code=422, detail="A role cannot extend itself")
         ceiling = self._own_rank()
         if ceiling is not None and len(parent_chain) + 1 > ceiling:
@@ -125,11 +128,14 @@ class TeamAuthority:
 
     def assert_may_create_role(self, parent_id: Optional[str]) -> None:
         """May add a role extending ``parent_id`` (None: no parent) to the
-        team: only a team admin, and only under a parent they may grant."""
-        if parent_id is None:
-            self._own_rank()
-        else:
-            self.assert_may_grant(parent_id)
+        team: creating a role places it, so the rule is ``assert_may_place``'s
+        (an admin creates under ``user``, a superadmin under ``admin``)."""
+        self.assert_may_place(None, parent_id)
+
+    def holds_live_membership(self) -> bool:
+        """The requester belongs to the team through a live membership
+        (``live_membership_role``); root and system belong everywhere."""
+        return self.unlimited or self.role_id is not None
 
     def assert_may_act_on(self, member_role_id: str) -> None:
         """May change or remove a member who holds ``member_role_id``."""
