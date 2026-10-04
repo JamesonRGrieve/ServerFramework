@@ -13,23 +13,32 @@ import pytest
 from fastapi import HTTPException
 
 from zephyrex.extensions.acl_rbac.BLL_ACL import PermissionManager
+from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import RotationManager
+from zephyrex.testing.factories import add_user_to_team, create_team, create_user
 
 
-def test_a_revoked_grant_grants_nothing(admin_a, admin_b, model_registry):
-    owned = RotationManager(requester_id=admin_a.id, model_registry=model_registry)
+def test_a_revoked_grant_grants_nothing(server, model_registry):
+    # A grant may name only a user the granter can see, so the owner and the
+    # grantee share a team (admin_a and admin_b, who share none, could once
+    # grant to each other because the grantee was checked as SYSTEM).
+    owner, grantee = create_user(server), create_user(server)
+    team = create_team(server, owner.id, name=f"revocation {uuid.uuid4().hex[:8]}")
+    add_user_to_team(server, grantee.id, team.id, env("USER_ROLE_ID"))
+
+    owned = RotationManager(requester_id=owner.id, model_registry=model_registry)
     rotation = owned.create(
         name=f"revocation {uuid.uuid4().hex}", description="shared, then not"
     )
-    other = RotationManager(requester_id=admin_b.id, model_registry=model_registry)
+    other = RotationManager(requester_id=grantee.id, model_registry=model_registry)
     with pytest.raises(HTTPException):
         other.get(id=rotation.id)
 
-    grants = PermissionManager(requester_id=admin_a.id, model_registry=model_registry)
+    grants = PermissionManager(requester_id=owner.id, model_registry=model_registry)
     grant = grants.create(
         resource_type="rotations",
         resource_id=rotation.id,
-        user_id=admin_b.id,
+        user_id=grantee.id,
         can_view=True,
         can_edit=True,
     )

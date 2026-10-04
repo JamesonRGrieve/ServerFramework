@@ -48,6 +48,7 @@ from zephyrex.testing.factories import (
     INTERNAL_ACCOUNTS,
     TEST_PASSWORD,
     add_user_to_team,
+    create_team,
     create_user,
     generate_test_email,
     internal_account_email,
@@ -1244,6 +1245,37 @@ class TestInvitationManager(AbstractBLLTest):
         ParentEntity(name="role", foreign_key="role_id", test_class=TestRoleManager),
     ]
 
+    def build_entities(
+        self,
+        server,
+        user_id: str = "",
+        team_id: Optional[str] = None,
+        count=1,
+        unique_fields: Optional[List[str]] = None,
+    ):
+        """A direct invitation names only a user the inviter can see, and the
+        "user" parent registers a stranger, so the inviter first shares a
+        fresh team with each invitee. (These generic tests once invited
+        strangers, which resolving the invitee as ROOT allowed.)"""
+        entities = super().build_entities(
+            server,
+            user_id=user_id,
+            team_id=team_id,
+            count=count,
+            unique_fields=unique_fields,
+        )
+        if not user_id or user_id in (env("ROOT_ID"), env("SYSTEM_ID")):
+            return entities
+        server = server or self.server
+        for entity in entities:
+            invitee_id = entity.get("user_id")
+            if invitee_id and invitee_id != user_id:
+                shared = create_team(
+                    server, user_id, name=f"Invitee {uuid.uuid4().hex[:8]}"
+                )
+                add_user_to_team(server, invitee_id, shared.id, env("USER_ROLE_ID"))
+        return entities
+
     def _create_parent_entities_for_search(self, requester_id, team_id, model_registry):
         """Override parent entity creation to ensure access to created teams."""
         parent_data = {}
@@ -2003,7 +2035,12 @@ class TestInvitationManager(AbstractBLLTest):
         assert app_invitation.team_id is None
         assert app_invitation.role_id is None
 
-        # Team invitations are issued by the team's admin.
+        # Team invitations are issued by the team's admin, and a direct one
+        # names only a user the admin can see: the invitees share another
+        # team with admin_a (this once invited strangers).
+        known = create_team(server, admin_a.id, name=f"Known {uuid.uuid4().hex[:8]}")
+        for invitee in (test_user_2, test_user_3):
+            add_user_to_team(server, invitee.id, known.id, env("USER_ROLE_ID"))
         manager = self.class_under_test(
             requester_id=admin_a.id,
             target_team_id=team_a.id,

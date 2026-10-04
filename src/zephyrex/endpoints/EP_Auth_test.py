@@ -3914,10 +3914,15 @@ class TestInvitationEndpoints(AbstractEPTest):
         self, server: Any, admin_a: Any
     ) -> None:
         from conftest import create_user
-        from zephyrex.testing.factories import create_team
+        from zephyrex.testing.factories import add_user_to_team, create_team
 
         team = create_team(server, admin_a.id, name=f"Direct {uuid.uuid4().hex[:8]}")
         invited = create_user(server)
+        # A direct invitation names only a user the inviter can see, so the
+        # invitee shares another team with admin_a (this once invited a
+        # stranger, whose email the invitee row then showed admin_a).
+        known = create_team(server, admin_a.id, name=f"Known {uuid.uuid4().hex[:8]}")
+        add_user_to_team(server, invited.id, known.id, env("USER_ROLE_ID"))
         invitation = self._invitation(server, admin_a, team, user_id=invited.id)
 
         listed = server.get(

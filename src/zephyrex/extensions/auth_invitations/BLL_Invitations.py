@@ -343,6 +343,10 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                 raise HTTPException(status_code=404, detail="Role not found")
         if entity.team_id and entity.role_id:
             self._assert_may_grant(entity.team_id, entity.role_id)
+        if entity.user_id:
+            # ``create`` resolves a single direct invitee before writing; a
+            # batch (``entities=[…]``) reaches each one only here.
+            self._visible_user(entity.user_id)
 
     def update(self, id: str, **kwargs: Any) -> Any:
         if kwargs.get("role_id"):
@@ -414,35 +418,32 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             return invitation
 
         user = None
-        if "user_id" in kwargs:
-            user_id = kwargs.get("user_id")
+        user_id = kwargs.get("user_id")
+        if user_id:
+            user = self._visible_user(user_id)
             for invitation in existing_invitations:
                 if user_id == invitation.user_id:
                     raise HTTPException(
                         status_code=400, detail=f"user {user_id} already invited"
                     )
-            # The invitee is usually someone the inviter shares no team with,
-            # so cannot read: the server addresses the invitation to them.
-            user_manager = UserManager(
-                requester_id=env("ROOT_ID"),
-                target_id=user_id,
-                model_registry=self.model_registry,
-            )
-            user = user_manager.get()
 
         invitation = super().create(**kwargs)
         if user is not None:
             # The row the invited user answers with (PATCH takes an invitee
             # id or a code, and a direct invitation may have no code).
             self._add_invitee(invitation, user.email)
-            # The inviter is shown the invitee's record only if they could
-            # read it anyway.
-            readable = UserManager(
-                requester_id=self.requester.id, model_registry=self.model_registry
-            ).list(id=user.id)
-            if readable:
-                invitation.user = readable[0]
+            invitation.user = user
         return invitation
+
+    def _visible_user(self, user_id: str) -> Any:
+        """The user a direct invitation names, read as the inviter: a user
+        they cannot see (no shared live team hierarchy, no explicit grant;
+        ROOT and SYSTEM see everyone) is a 404, as a missing one is, so a
+        known id never reveals a stranger's email through the invitee row.
+        An invitation by email names no account and is not held to this."""
+        return UserManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=user_id)
 
     @staticmethod
     def generate_invitation_link(code: str, email: Optional[str] = None) -> str:

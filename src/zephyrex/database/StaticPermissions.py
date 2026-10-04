@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import inspect
 from enum import Enum as PyEnum  # Import Python Enum
 from typing import Any, Optional, Type, TypeVar
@@ -1133,6 +1134,77 @@ def _get_admin_accessible_team_ids_cte(
     return recursive_cte
 
 
+def _live_sub_team_ids_cte(
+    user_id: str, declarative_base: Any, unique_suffix: str
+) -> CTE:
+    """A recursive CTE of the teams at or below the user's live memberships:
+    each team the user holds an enabled, unexpired, undeleted membership in
+    (when that team is not deleted), and every sub-team beneath one at any
+    depth. A deleted team ends the walk down through it, so its sub-teams
+    are reached only through another live path.
+
+    Only the ``id`` column is carried and the recursion is a ``UNION``, so a
+    team already reached is not revisited: the walk ends on any hierarchy,
+    a cyclic one included, without a depth bound."""
+    from zephyrex.logic.BLL_Auth import TeamModel, UserTeamModel
+
+    team_db_cls = TeamModel.DB(declarative_base)
+    user_team_db_cls = UserTeamModel.DB(declarative_base)
+    cte_name = f"live_sub_teams_cte{unique_suffix}"
+
+    live_team = aliased(team_db_cls, name=f"{cte_name}_live")
+    memberships = (
+        select(user_team_db_cls.team_id.label("id"))
+        .where(user_team_db_cls.user_id == user_id)
+        .where(user_team_db_cls.enabled == True)
+        .where(_active(user_team_db_cls))
+        .where(
+            user_team_db_cls.team_id.in_(
+                select(live_team.id).where(live_team.deleted_at.is_(None))
+            )
+        )
+    )
+    sub_teams = memberships.cte(cte_name, recursive=True)
+
+    reached = aliased(sub_teams, name=f"{cte_name}_alias")
+    child = aliased(team_db_cls, name=f"{cte_name}_child")
+    return sub_teams.union(
+        select(child.id.label("id"))
+        .select_from(child)
+        .join(reached, child.parent_id == reached.c.id)
+        .where(child.deleted_at.is_(None))
+    )
+
+
+def _in_live_team_hierarchy(
+    team_id_column: Any, user_id: str, declarative_base: Any, unique_suffix: str
+) -> Any:
+    """Whether ``team_id_column`` names a team the user reaches through their
+    live memberships, in either direction: a team they belong to, its live
+    parents (up to the depth team-scoped records reach), or its live
+    sub-teams at any depth. Siblings and cousins are not reached: the walk
+    goes up from a membership or down from one, never up and then down.
+
+    This is the reach the users rule gives a requester, kept in one place so
+    every read of team members (the users rule, a team's member list) names
+    exactly the people that rule shows."""
+    parents = _get_admin_accessible_team_ids_cte(
+        user_id,
+        None,
+        declarative_base,
+        max_depth=5,
+        unique_suffix=f"{unique_suffix}_up",
+        memberships_only=True,
+    )
+    sub_teams = _live_sub_team_ids_cte(
+        user_id, declarative_base, unique_suffix=f"{unique_suffix}_down"
+    )
+    return or_(
+        team_id_column.in_(select(parents.c.id)),
+        team_id_column.in_(select(sub_teams.c.id)),
+    )
+
+
 def _get_role_hierarchy_map(db: Session, declarative_base) -> dict:
     """
     Get the role hierarchy map {role_name: level}.
@@ -1558,31 +1630,29 @@ def generate_permission_filter(
             pass
 
     # 5. Special Table Logic for Users. A user sees themselves, and for VIEW
-    # the users they share a live team with: both memberships enabled,
-    # unexpired and not deleted, in a team that is not deleted, the
-    # requester's side reaching up through parent teams as team-scoped
-    # records do. A pending invitation is not a shared team. ROOT and SYSTEM
-    # returned above; an explicit Permission row on the user (section 4)
-    # also grants. Anyone else is invisible, so a server-side lookup of an
-    # arbitrary account (login, registration, invitation acceptance) runs as
-    # ROOT or SYSTEM, never as the requester.
+    # the users they share a live team hierarchy with: both memberships
+    # enabled, unexpired and not deleted, in a team that is not deleted, the
+    # requester's side reaching up through live parent teams (as team-scoped
+    # records do) and down through live sub-teams at any depth. A pending
+    # invitation is not a shared team. ROOT and SYSTEM returned above; an
+    # explicit Permission row on the user (section 4) also grants. Anyone
+    # else is invisible, so a server-side lookup of an arbitrary account
+    # (login, registration, invitation acceptance) runs as ROOT or SYSTEM,
+    # never as the requester.
     if resource_db_cls.__tablename__ == USERS_TABLE:
         conditions.append(resource_db_cls.id == user_id)
 
         if required_permission_level == PermissionType.VIEW:
-            shared_team_ids_cte = _get_admin_accessible_team_ids_cte(
-                user_id,
-                db,
-                declarative_base,
-                max_depth=5,
-                unique_suffix=f"{unique_suffix}_members",
-                memberships_only=True,
-            )
             conditions.append(
                 exists().where(
                     and_(
                         user_team_db_cls.user_id == resource_db_cls.id,
-                        user_team_db_cls.team_id.in_(select(shared_team_ids_cte.c.id)),
+                        _in_live_team_hierarchy(
+                            user_team_db_cls.team_id,
+                            user_id,
+                            declarative_base,
+                            unique_suffix=f"{unique_suffix}_members",
+                        ),
                         user_team_db_cls.enabled == True,
                         _active(user_team_db_cls),
                     )
@@ -1790,10 +1860,11 @@ def live_team_members_filter(
     """A filter on ``users_db_cls`` for the live members of ``team_id`` the
     requester may list: users with an enabled, unexpired, undeleted
     membership in it, when the team is live and the requester holds a live
-    membership in it or in one of its sub-teams (the reach the users rule
-    gives a requester, so the list names no one that rule hides); ROOT and
-    SYSTEM list any team's. Anyone else matches no one, so membership of a
-    team the requester is not in never shows."""
+    membership in it, in one of its sub-teams, or in one of its parent
+    teams (the reach the users rule gives a requester, in both directions,
+    so the list names no one that rule hides); ROOT and SYSTEM list any
+    team's. Anyone else matches no one, so membership of a team outside the
+    requester's hierarchy never shows."""
     from zephyrex.logic.BLL_Auth import TeamModel, UserTeamModel
 
     team_db_cls = TeamModel.DB(declarative_base)
@@ -1810,17 +1881,11 @@ def live_team_members_filter(
     )
     if is_root_id(requester_id) or is_system_id(requester_id):
         return exists().where(membership)
-    reachable_team_ids = _get_admin_accessible_team_ids_cte(
-        requester_id,
-        None,
-        declarative_base,
-        max_depth=5,
-        unique_suffix="_team_members",
-        memberships_only=True,
-    )
     return and_(
         exists().where(membership),
-        literal(team_id).in_(select(reachable_team_ids.c.id)),
+        _in_live_team_hierarchy(
+            literal(team_id), requester_id, declarative_base, "_team_members"
+        ),
     )
 
 

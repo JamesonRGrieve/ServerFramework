@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Canonical ACL/RBAC model and manager (Scope #5 — moved from core).
 
 Owns the per-record `permissions` table and the share/grant manager surface.
@@ -133,11 +134,14 @@ class PermissionManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         if entity.user_id:
-            # A grant names who receives it, usually someone the granter shares
-            # no team with and so cannot read: the server checks the account
-            # exists, and the granter learns nothing more about it.
+            # A grant may name only a user the granter can see (a shared live
+            # team hierarchy or an explicit grant on that user; ROOT and SYSTEM
+            # see everyone), so a known id is no way to reach a stranger. An
+            # invisible user is indistinguishable from a missing one. A grant
+            # the server makes on its own account (a conversation adding a
+            # participant) runs as ROOT.
             user = UserModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("SYSTEM_ID"),
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=entity.user_id,
                 allow_nonexistent=True,
@@ -197,8 +201,6 @@ def _create_permission(
     requester_id=None,
     model_registry=None,
 ):
-    from zephyrex.lib.Environment import env
-
     with PermissionManager(
         requester_id=requester_id or env("ROOT_ID"),
         model_registry=model_registry,

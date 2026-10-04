@@ -236,14 +236,21 @@ Some models override default permission behavior:
 
 **User Model:**
 - Users can always see their own records
-- Can see the users they share a live team with: both memberships enabled,
-  unexpired and not deleted, in a team that is not deleted. The requester's
-  side reaches up through parent teams, as for team-scoped records; a pending
-  invitation is not a shared team
+- Can see the users they share a live team hierarchy with: both memberships
+  enabled, unexpired and not deleted, in a team that is not deleted. The
+  requester's side reaches up through live parent teams, as for team-scoped
+  records, and down through live sub-teams at any depth (never sideways to a
+  sibling team); a deleted team ends the walk through it, and a pending
+  invitation is not a shared team. Listing a team's users
+  (`UserManager.list(team_id=)`, GraphQL `users(teamId:)`) follows the same
+  reach
 - An explicit Permission row on the user grants view
 - ROOT and SYSTEM see everyone; anyone else is a 404 and absent from list and
   search, so server-side lookups of arbitrary accounts (login, registration,
   invitation acceptance, external sign-in) run as ROOT or SYSTEM
+- Naming a user by id in an ACL grant or a direct invitation requires seeing
+  them (404 otherwise; ROOT and SYSTEM may name anyone). Grants the server
+  makes itself, and email invitations, are not held to this
 
 **Permission Model:**
 - Requires SHARE permission on target resource to manage permissions

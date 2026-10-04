@@ -10,8 +10,9 @@ target could export the whole directory.
 
 The rule now: a requester sees themselves, the users they share a live team
 with (both memberships enabled, unexpired and not deleted, in a team that is
-not deleted; the requester's side reaches up to parent teams, as team-scoped
-records do), and anyone an explicit Permission row lets them view. ROOT and
+not deleted; the requester's side reaches up to live parent teams, as
+team-scoped records do, and down to live sub-teams at any depth, never
+sideways), and anyone an explicit Permission row lets them view. ROOT and
 SYSTEM see everyone. Anyone else is a 404 and absent from list and search."""
 
 import uuid
@@ -90,15 +91,146 @@ def test_a_teammate_is_visible(server, model_registry):
     assert _visible(model_registry, member.id, owner)
 
 
-def test_parent_team_members_are_visible_from_a_sub_team(server, model_registry):
-    """Team-scoped records reach a sub-team's members from its parents, not
-    the other way round; user records follow the same hierarchy."""
+def test_the_team_hierarchy_is_visible_in_both_directions(server, model_registry):
+    """A sub-team's members see its parents' members, and (by the operator's
+    decision of 2026-10-03) a parent team's members see its sub-teams'.
+    This test asserted the parent side could not, which was the rule
+    before that decision."""
     parent_owner, child_owner = create_user(server), create_user(server)
     parent = _team(server, parent_owner)
     _team(server, child_owner, parent_id=parent.id)
 
     assert _visible(model_registry, child_owner.id, parent_owner)
-    assert not _visible(model_registry, parent_owner.id, child_owner)
+    assert _visible(model_registry, parent_owner.id, child_owner)
+
+
+def _hierarchy(server: Any) -> Dict[str, Any]:
+    """A parent team with a sub-team, a grandchild team under that, and a
+    sibling sub-team, each with a plain member besides its owner."""
+    people = {
+        name: create_user(server)
+        for name in ("parent", "sub", "grandchild", "sibling", "stranger")
+    }
+    parent = _team(server, people["parent"])
+    sub = _team(server, create_user(server), parent_id=parent.id)
+    grandchild = _team(server, create_user(server), parent_id=sub.id)
+    sibling = _team(server, create_user(server), parent_id=parent.id)
+    _team(server, people["stranger"])
+    memberships = {
+        "sub": _join(server, people["sub"], sub),
+        "grandchild": _join(server, people["grandchild"], grandchild),
+        "sibling": _join(server, people["sibling"], sibling),
+    }
+    return {
+        "people": people,
+        "teams": {"parent": parent, "sub": sub, "grandchild": grandchild},
+        "memberships": memberships,
+    }
+
+
+def test_a_parent_team_member_sees_sub_team_members_at_any_depth(
+    server, model_registry
+):
+    tree = _hierarchy(server)
+    people = tree["people"]
+    parent = people["parent"].id
+
+    assert _visible(model_registry, parent, people["sub"])
+    assert _visible(model_registry, parent, people["grandchild"])
+    assert _visible(model_registry, parent, people["sibling"])
+    # Upward, as before.
+    assert _visible(model_registry, people["grandchild"].id, people["parent"])
+    assert _visible(model_registry, people["grandchild"].id, people["sub"])
+
+
+def test_the_hierarchy_walk_never_goes_sideways(server, model_registry):
+    """Up from a membership or down from one, never up and then down: a
+    sibling sub-team's member stays invisible, and so does anyone in an
+    unrelated team."""
+    tree = _hierarchy(server)
+    people = tree["people"]
+
+    assert not _visible(model_registry, people["sibling"].id, people["sub"])
+    assert not _visible(model_registry, people["sub"].id, people["sibling"])
+    assert not _visible(model_registry, people["sibling"].id, people["grandchild"])
+    for name in ("parent", "sub", "grandchild", "sibling"):
+        assert not _visible(model_registry, people["stranger"].id, people[name])
+        assert not _visible(model_registry, people[name].id, people["stranger"])
+
+
+def test_a_deleted_sub_team_ends_the_walk_down(server, model_registry):
+    """Deleting the sub-team hides its members and everyone beneath it,
+    though the grandchild team itself is not deleted."""
+    tree = _hierarchy(server)
+    people = tree["people"]
+    TeamModel.DB(model_registry.DB.manager.Base).delete(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        id=tree["teams"]["sub"].id,
+    )
+
+    assert not _visible(model_registry, people["parent"].id, people["sub"])
+    assert not _visible(model_registry, people["parent"].id, people["grandchild"])
+    assert not _visible(model_registry, people["grandchild"].id, people["parent"])
+    assert _visible(model_registry, people["parent"].id, people["sibling"])
+
+
+@pytest.mark.parametrize(
+    "ended",
+    [
+        pytest.param({"enabled": False}, id="disabled"),
+        pytest.param(
+            {"expires_at": datetime.now(timezone.utc) - timedelta(days=1)},
+            id="expired",
+        ),
+        pytest.param({"deleted_at": datetime.now(timezone.utc)}, id="soft-deleted"),
+    ],
+)
+def test_an_ended_membership_ends_the_walk_down(
+    server, model_registry, ended: Dict[str, Any]
+):
+    tree = _hierarchy(server)
+    people = tree["people"]
+    _change_membership(model_registry, tree["memberships"]["grandchild"], **ended)
+
+    assert not _visible(model_registry, people["parent"].id, people["grandchild"])
+    assert _visible(model_registry, people["parent"].id, people["sub"])
+
+
+def test_the_viewers_own_ended_membership_ends_the_walk_down(server, model_registry):
+    """The requester's side must be live too: a parent-team member whose
+    membership ended sees no one below it."""
+    tree = _hierarchy(server)
+    people = tree["people"]
+    viewer = create_user(server)
+    membership = _join(server, viewer, tree["teams"]["parent"])
+    assert _visible(model_registry, viewer.id, people["grandchild"])
+
+    _change_membership(model_registry, membership, enabled=False)
+
+    assert not _visible(model_registry, viewer.id, people["sub"])
+    assert not _visible(model_registry, viewer.id, people["grandchild"])
+
+
+def test_a_sub_teams_members_are_listed_to_a_parent_team_member(server, model_registry):
+    """Listing a team's users follows the users rule's reach, down included,
+    so a parent-team member lists a sub-team's members and a sibling
+    sub-team's member does not."""
+    tree = _hierarchy(server)
+    people = tree["people"]
+    sub = tree["teams"]["sub"]
+
+    lister = UserManager(
+        requester_id=people["parent"].id, model_registry=model_registry
+    )
+    assert people["sub"].id in {user.id for user in lister.list(team_id=sub.id)}
+    assert people["sub"].id in _graphql_team_members(server, people["parent"], sub)
+
+    sideways = UserManager(
+        requester_id=people["sibling"].id, model_registry=model_registry
+    )
+    assert sideways.list(team_id=sub.id) == []
+    assert _graphql_team_members(server, people["sibling"], sub) == set()
 
 
 @pytest.mark.parametrize(
