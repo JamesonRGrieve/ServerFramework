@@ -23,6 +23,7 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     InvocationTriggerModel,
     ProjectContextPromptModel,
     ProjectContextProviderModel,
+    ProjectConversationModel,
     ProjectModel,
     ProviderInstanceAgentAbilityModel,
     ProviderInstanceAgentModel,
@@ -30,6 +31,9 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
 from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
 from zephyrex.extensions.ai_prompts.EP_AI_Prompts_test import (
     TestPromptEndpoints as EXT_PromptEndpointTests,
+)
+from zephyrex.extensions.conversations.EP_Conversations_test import (
+    TestConversationEndpoints as EXT_ConversationEndpointTests,
 )
 from zephyrex.extensions.conversations.EP_Conversations_test import (
     TestMessageEndpoints as EXT_MessageEndpointTests,
@@ -213,27 +217,38 @@ class TestProviderInstanceAgentAbilityEndpoints(AbstractEPTest, ExtensionServerM
 
     # ProviderInstanceAgentAbilityManager declares no prefix -> flat default
     # route /v1/provider_instance_agent_ability. Real model fields are
-    # provider_instance_id, agent_id, state (NOT name/description/enabled).
+    # provider_instance_id, agent_id, ability_id, state.
     base_endpoint = "provider_instance_agent_ability"
     entity_name = "provider_instance_agent_ability"
-    required_fields = ["id", "provider_instance_id", "agent_id"]
+    required_fields = ["id", "provider_instance_id", "agent_id", "ability_id"]
     string_field_to_update = None
     supports_search = True
-    searchable_fields = ["provider_instance_id", "agent_id", "state"]
+    searchable_fields = ["provider_instance_id", "agent_id", "ability_id", "state"]
     class_under_test = ProviderInstanceAgentAbilityModel
 
     create_fields = {
         "state": lambda: False,
         "provider_instance_id": None,  # from the provider-instance parent
         "agent_id": None,  # from the agent parent
+        "ability_id": None,  # from the ability parent
     }
     update_fields = {"state": True}
     unique_fields = []
 
+    from zephyrex.endpoints.EP_Extensions_test import TestAbilityEndpoints
+
     # Parent NAMES must match the model's include relationships
-    # (valid_includes: agent, provider_instance) -- ProviderInstanceEndpointTests
-    # creates its own provider dependency.
+    # (valid_includes: agent, provider_instance, ability) --
+    # ProviderInstanceEndpointTests creates its own provider dependency.
     parent_entities = [
+        ParentEntity(
+            name="ability",
+            foreign_key="ability_id",
+            nullable=False,
+            system=True,
+            is_path=False,
+            test_class=TestAbilityEndpoints,
+        ),
         ParentEntity(
             name="provider_instance",
             foreign_key="provider_instance_id",
@@ -263,7 +278,7 @@ class TestProviderInstanceAgentAbilityEndpoints(AbstractEPTest, ExtensionServerM
         """ProviderInstanceAgentAbility payload (raw dict; framework wraps it)."""
         parent_ids = parent_ids or {}
         payload = {"state": False}
-        for key in ("provider_instance_id", "agent_id"):
+        for key in ("provider_instance_id", "agent_id", "ability_id"):
             if key in parent_ids:
                 payload[key] = parent_ids[key]
         if invalid_data:
@@ -617,6 +632,82 @@ class TestProjectContextPromptEndpoints(AbstractEPTest, ExtensionServerMixin):
                 payload[key] = parent_ids[key]
         if invalid_data:
             payload["prompt_id"] = 12345  # wrong type
+        return payload
+
+
+@pytest.mark.ep
+class TestProjectConversationEndpoints(AbstractEPTest, ExtensionServerMixin):
+    """Tests for the Project Conversation endpoints (/v1/project_conversation)."""
+
+    extension_class = EXT_AI_Agents
+
+    test_config = ClassOfTestsConfig(
+        categories=[
+            CategoryOfTest.ENDPOINT,
+            CategoryOfTest.REST,
+            CategoryOfTest.EXTENSION,
+        ],
+        timeout=60,
+        cleanup=True,
+    )
+
+    # Like the project's other children: no prefix, so the flat default
+    # route; project_id/conversation_id are body FKs.
+    base_endpoint = "project_conversation"
+    entity_name = "project_conversation"
+    required_fields = ["id", "project_id", "conversation_id"]
+    supports_search = True
+    searchable_fields = ["project_id", "conversation_id"]
+    string_field_to_update = None
+    class_under_test = ProjectConversationModel
+
+    create_fields = {
+        "project_id": None,  # populated from the project parent
+        "conversation_id": None,  # populated from the conversation parent
+    }
+    update_fields = {}
+    unique_fields = []
+
+    parent_entities = [
+        ParentEntity(
+            name="project",
+            foreign_key="project_id",
+            nullable=False,
+            system=False,
+            path_level=None,
+            test_class=TestProjectEndpoints,
+        ),
+        ParentEntity(
+            name="conversation",
+            foreign_key="conversation_id",
+            nullable=False,
+            system=False,
+            path_level=None,
+            test_class=EXT_ConversationEndpointTests,
+        ),
+    ]
+
+    skip_tests = [
+        SkipThisTest(name="test_PUT_200", details="A link has nothing to update"),
+        SkipThisTest(name="test_PUT_200_batch", details="A link has nothing to update"),
+    ]
+
+    def create_payload(
+        self,
+        name=None,
+        parent_ids=None,
+        team_id=None,
+        minimal=False,
+        invalid_data=False,
+    ):
+        """Project-conversation link payload (raw dict; framework wraps it)."""
+        parent_ids = parent_ids or {}
+        payload = {}
+        for key in ("project_id", "conversation_id"):
+            if key in parent_ids:
+                payload[key] = parent_ids[key]
+        if invalid_data:
+            payload["conversation_id"] = 12345  # wrong type
         return payload
 
 

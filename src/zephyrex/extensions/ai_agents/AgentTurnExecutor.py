@@ -17,14 +17,27 @@ activities are theirs, under their permissions. The turn's lifecycle is the
 server's bookkeeping, written as ROOT once the requester has been shown to
 see the instance.
 
-The model transport (``chat_fn``) defaults to native chat over the agent's
-rotation; a caller may hand in another implementing the same contract.
+The model transport (``chat_fn``) defaults to native chat over the provider
+instances the agent is pinned to (``ProviderInstanceAgent``, restricted by
+``ProviderInstanceAgentAbility``), or, pinned to none, its rotation; a
+caller may hand in another implementing the same contract.
 """
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from fastapi import HTTPException
 
@@ -47,6 +60,8 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     ConversationAgentManager,
     InvocationInstanceManager,
     InvocationTriggerManager,
+    ProviderInstanceAgentAbilityManager,
+    ProviderInstanceAgentManager,
     tool_names,
 )
 from zephyrex.extensions.ai_memories.BLL_AI_Memories import MemoryManager
@@ -57,6 +72,7 @@ from zephyrex.extensions.ExternalErrors import (
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Extensions import AbilityManager, ExtensionManager
+from zephyrex.logic.BLL_Providers import ProviderInstanceManager, RotationManager
 
 # The model transport: (messages, tools) -> {"message": {role, content,
 # tool_calls, reasoning}, ...}. Failures raise (typed external errors).
@@ -655,33 +671,88 @@ class AgentTurnExecutor:
         return "\n".join(f"- {m.content}" for m in memories if m.content) or "none"
 
     def _make_rotation_chat(self, agent: Any, acting: str) -> ChatTransport:
-        """Native chat over the agent's rotation, failing over across its
-        model instances; tokens used are recorded against the agent's
-        owner."""
+        """Native chat, failing over across model instances: the agent's
+        pinned provider instances when it has any, else its rotation.
+        Tokens used are recorded against the agent's owner."""
 
         async def chat(
             messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]]
         ) -> Dict[str, Any]:
-            if not agent.rotation_id:
-                raise PermanentExternalError("the agent has no rotation configured")
-            from zephyrex.extensions.ai.EXT_AI import EXT_AI
-            from zephyrex.logic.BLL_Providers import RotationManager
+            from zephyrex.extensions.ai.EXT_AI import CHAT, EXT_AI
 
-            rotation = RotationManager(
-                requester_id=acting,
-                target_id=agent.rotation_id,
-                model_registry=self.model_registry,
-            )
+            rotation = self._thinking_rotation(agent, acting, CHAT)
             answer: Dict[str, Any] = await rotation.arotate(
-                EXT_AI.provider_call("chat"),
+                EXT_AI.provider_call(CHAT),
                 messages,
                 tools,
                 requester_id=acting,
-                ability="chat",
+                ability=CHAT,
             )
             return answer
 
         return chat
+
+    def _thinking_rotation(self, agent: Any, acting: str, ability: str) -> Any:
+        """What the agent thinks over for ``ability``: its usable pinned
+        instances, overriding its rotation, or (pinned to none) its
+        rotation. A pinned agent none of whose instances is usable, or an
+        agent with neither, cannot think: a permanent error."""
+        pinned = self._as(ProviderInstanceAgentManager, acting).pinned(agent.id)
+        if pinned:
+            usable = self._usable_pinned(agent, acting, pinned, ability)
+            if not usable:
+                raise PermanentExternalError(
+                    f"none of the agent's {len(pinned)} pinned provider instances "
+                    f"can be used for {ability}: each is disabled, deleted, no "
+                    "longer visible to its owner, not allowed that ability, or "
+                    "does not offer it"
+                )
+            return PinnedInstanceRotation(
+                model_registry=self.model_registry,
+                requester_id=acting,
+                agent_id=agent.id,
+                instance_ids=usable,
+            )
+        if not agent.rotation_id:
+            raise PermanentExternalError("the agent has no rotation configured")
+        return RotationManager(
+            requester_id=acting,
+            target_id=agent.rotation_id,
+            model_registry=self.model_registry,
+        )
+
+    def _usable_pinned(
+        self, agent: Any, acting: str, pinned: List[str], ability: str
+    ) -> List[str]:
+        """The pinned instances (in order) a turn may think on now: still
+        visible to the agent's owner (so not deleted), enabled, allowed the
+        ability by the agent's restrictions, and of a provider offering it."""
+        from zephyrex.extensions.ai.EXT_AI import EXT_AI
+
+        restricted = self._as(ProviderInstanceAgentAbilityManager, acting).allowed(
+            agent.id
+        )
+        ability_ids = catalog_ability_ids(self.model_registry, EXT_AI.name, ability)
+        instances = self._as(ProviderInstanceManager, acting)
+        usable: List[str] = []
+        for instance_id in pinned:
+            try:
+                instance = instances.get(id=instance_id)
+            except HTTPException as error:
+                if error.status_code != 404:
+                    raise
+                continue
+            if instance.enabled is False:
+                continue
+            if instance_id in restricted and not restricted[instance_id] & ability_ids:
+                continue
+            try:
+                provider = EXT_AI.provider_class_for(instance)
+            except LookupError:
+                continue
+            if ability in provider._abilities:
+                usable.append(instance_id)
+        return usable
 
     def _resolve_conversation(self, turn: TurnContext) -> Optional[str]:
         """The conversation to speak into: the triggering message's, else
@@ -787,8 +858,10 @@ SELF_ABILITY_SIGNATURES: Dict[str, Callable[..., Any]] = {
 }
 
 
-def ensure_ability(model_registry: Any, name: str) -> str:
-    """The id of this extension's Ability row called ``name``, made (with
+def ensure_ability(
+    model_registry: Any, name: str, extension: str = EXTENSION_NAME
+) -> str:
+    """The id of ``extension``'s Ability row called ``name``, made (with
     the extension's row) if the registry was never seeded with it.
 
     A turn's root activity is typed by ``thinking_turn``, so the row must
@@ -798,9 +871,96 @@ def ensure_ability(model_registry: Any, name: str) -> str:
     system = env("SYSTEM_ID")
     extensions = ExtensionManager(requester_id=system, model_registry=model_registry)
     abilities = AbilityManager(requester_id=system, model_registry=model_registry)
-    found = extensions.list(name=EXTENSION_NAME)
-    extension_id = found[0].id if found else extensions.create(name=EXTENSION_NAME).id
+    found = extensions.list(name=extension)
+    extension_id = found[0].id if found else extensions.create(name=extension).id
     existing = abilities.list(name=name, extension_id=extension_id)
     if existing:
         return str(existing[0].id)
     return str(abilities.create(name=name, extension_id=extension_id, meta=True).id)
+
+
+def catalog_ability_ids(model_registry: Any, extension: str, name: str) -> Set[str]:
+    """The ids of ``extension``'s Ability rows called ``name`` (none where
+    it was never seeded)."""
+    system = env("SYSTEM_ID")
+    found = ExtensionManager(requester_id=system, model_registry=model_registry).list(
+        name=extension
+    )
+    if not found:
+        return set()
+    return {
+        str(row.id)
+        for row in AbilityManager(
+            requester_id=system, model_registry=model_registry
+        ).list(name=name, extension_id=found[0].id)
+    }
+
+
+@dataclass(frozen=True)
+class PinnedLink:
+    """One step of a :class:`PinnedInstanceRotation`, shaped as the rows a
+    rotation walks."""
+
+    id: str
+    provider_instance_id: str
+    parent_id: Optional[str] = None
+
+
+class PinnedInstanceRotation(RotationManager):
+    """A rotation over the provider instances an agent is pinned to, in
+    order, instead of a stored rotation's: the framework's retry, failover
+    and typed-error policy, applied to them. Each is read as the agent's
+    owner when tried."""
+
+    def __init__(
+        self,
+        model_registry: Any,
+        requester_id: str,
+        agent_id: str,
+        instance_ids: List[str],
+    ) -> None:
+        super().__init__(
+            model_registry=model_registry,
+            requester_id=requester_id,
+            target_id=f"pinned instances of agent {agent_id}",
+        )
+        self._links = [
+            PinnedLink(id=f"{agent_id}:{instance_id}", provider_instance_id=instance_id)
+            for instance_id in instance_ids
+        ]
+
+    def _get_ordered_rotation_provider_instances(self) -> List[PinnedLink]:
+        return list(self._links)
+
+
+async def fire_turn(
+    model_registry: Any,
+    agent_id: str,
+    payload: Optional[str],
+    *,
+    trigger_id: Optional[str] = None,
+    trigger_message_id: Optional[str] = None,
+    executor: Optional[AgentTurnExecutor] = None,
+) -> Any:
+    """One turn of the agent, its owner's: made as them, run, and returned
+    finished (succeeded or failed). HTTPException when the turn cannot be
+    made (the agent is gone, or its owner may no longer run it)."""
+    root = env("ROOT_ID")
+    agent = AgentManager(requester_id=root, model_registry=model_registry).get(
+        id=agent_id
+    )
+    owner = agent.user_id or root
+    instances = InvocationInstanceManager(
+        requester_id=owner, model_registry=model_registry
+    )
+    instance = instances.create(
+        agent_id=agent.id,
+        invocation_trigger_id=trigger_id,
+        trigger_message_id=trigger_message_id,
+        payload=payload,
+    )
+    runner = executor or AgentTurnExecutor(
+        model_registry=model_registry, requester_id=owner
+    )
+    await runner.run(instance.id)
+    return instances.get(id=instance.id)

@@ -9,11 +9,15 @@ access from it, so only someone who may edit an agent configures it.
 
 A turn is one :class:`InvocationInstanceModel`; what fires turns is an
 :class:`InvocationTriggerModel`: a cron schedule, a timer (a delay, an
-interval, or a one-shot at ``due_at``), or a conversation message. A task is a
-trigger whose payload is its instructions, with a due time and a priority. A
-turn's activities hang off its instance and inherit access from it.
+interval, or a one-shot at ``due_at``), a conversation message, a signed
+webhook call or an email (see EventSources). A task is a trigger whose
+payload is its instructions, with a due time and a priority. A turn's
+activities hang off its instance and inherit access from it. An agent
+pinned to provider instances (:class:`ProviderInstanceAgentModel`) thinks
+only on them.
 
-Projects belong to their creator and group context prompts and providers.
+Projects belong to their creator and group context prompts, providers and
+conversations.
 
 Every record a create or update references is read as the requester, so no
 one can point their records at something they cannot see. The system
@@ -21,15 +25,18 @@ catalogs (abilities, extensions, providers), which anyone may reference,
 are read as SYSTEM.
 """
 
+import json
+import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
 from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Set
 
 from croniter import croniter
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from pydantic import BaseModel as RouteModel
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager, PromptModel
@@ -40,9 +47,13 @@ from zephyrex.extensions.conversations.BLL_Conversations import (
     ConversationModel,
     MessageManager,
 )
+from zephyrex.extensions.email.InboundEmail import InboundEmail, on_inbound_email
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
+from zephyrex.lib.InboundSecurity import rate_limit
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.SecretEncryption import encrypt_secret
+from zephyrex.lib.SessionCookies import accept_cross_site_writes
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -85,12 +96,29 @@ HIGHEST_PRIORITY = 1
 LOWEST_PRIORITY = 5
 DEFAULT_PRIORITY = 3
 
-# The event sources a trigger can listen to: the ones something fires.
-EventSource = Literal["conversation_message"]
+# The event sources a trigger can listen to: the ones something fires. A
+# conversation message fires through the message hook, a webhook through
+# the trigger's signed endpoint, an email through the email extension's
+# inbound hook (see EventSources).
+EventSource = Literal["conversation_message", "webhook", "email"]
 InvocationType = Literal["schedule", "timer", "event"]
+WEBHOOK, EMAIL = "webhook", "email"
+# What an email trigger's event_filter may match on, besides its address.
+EMAIL_FILTER_KEYS = frozenset({"from", "subject"})
+# The domain email triggers' addresses are at; unset, there are none.
+EMAIL_DOMAIN_SETTING = "AI_AGENTS_EMAIL_DOMAIN"
+# Random bytes in an email trigger's address: it is unguessable, so only
+# who it is given to can wake the agent by mail.
+EMAIL_ADDRESS_TOKEN_BYTES = 12
+# Calls a webhook trigger takes from one address in a minute.
+WEBHOOK_RATE_LIMIT = "60/min"
+WEBHOOK_PATH = "/{trigger_id}/webhook"
 
 # Trigger bookkeeping only the monitor (ROOT) writes.
 TRIGGER_BOOKKEEPING = ("last_fired_at", "next_fire_at", "fire_count")
+# Written by the server alone: a webhook's (encrypted) secret, and an email
+# trigger's address.
+TRIGGER_SERVER_FIELDS = ("webhook_secret", "email_address")
 # A turn's lifecycle, which only the executor writes.
 TURN_LIFECYCLE = ("status", "error", "started_at", "completed_at")
 PENDING = "pending"
@@ -151,11 +179,15 @@ def _catalog(manager_class: Any, source: AbstractBLLManager) -> Any:
     )
 
 
-def _ai_agents_loaded(manager: AbstractBLLManager) -> bool:
+def loaded_in(model_registry: Any) -> bool:
     """Hooks are registered process-wide; they act only in apps that load
     this extension."""
-    registry = getattr(manager.model_registry, "extension_registry", None)
+    registry = getattr(model_registry, "extension_registry", None)
     return registry is not None and EXTENSION_NAME in registry.extension_names
+
+
+def _ai_agents_loaded(manager: AbstractBLLManager) -> bool:
+    return loaded_in(manager.model_registry)
 
 
 class ActivityState(IntEnum):
@@ -257,8 +289,10 @@ class InvocationTriggerModel(
       the first tick after it.
     - ``timer``: after ``interval_seconds`` and every ``interval_seconds``
       after that, or (``one_shot``) once; with ``due_at``, first at it.
-    - ``event``: when ``event_source`` happens (a user's message in a
-      conversation the agent takes part in).
+    - ``event``: when ``event_source`` happens: a user's message in a
+      conversation the agent takes part in, a signed call to the trigger's
+      webhook (its secret is ``webhook_secret``, write-only), or an email
+      to the trigger's ``email_address`` that its ``event_filter`` matches.
 
     A task is a trigger: its ``invocation_payload`` is the instructions, and
     ``due_at`` and ``priority`` say when it is due and how urgent it is. Each
@@ -304,13 +338,22 @@ class InvocationTriggerModel(
     fire_count: int = Field(
         0, description="Set by the server: how many times it has fired"
     )
+    # Write-only: excluded from every serialization; the endpoint reads it.
+    webhook_secret: Optional[str] = Field(
+        None,
+        exclude=True,
+        description="Set by the server: the webhook's signing secret, encrypted",
+    )
+    email_address: Optional[str] = Field(
+        None, description="Set by the server: where mail wakes an email trigger"
+    )
 
     table_comment: ClassVar[str] = (
         "An InvocationTrigger is a standing listener that triggers an Agent to "
         "take a turn - on a schedule (cron), a timer (interval or one-shot), or "
-        "an event (a conversation message). It fires many times; each firing "
-        "is an InvocationInstance. A task is a trigger: instructions as its "
-        "payload, with a due time and a priority."
+        "an event (a conversation message, a signed webhook call, an email). "
+        "It fires many times; each firing is an InvocationInstance. A task is "
+        "a trigger: instructions as its payload, with a due time and a priority."
     )
     permission_references: ClassVar[List[str]] = ["agent"]
 
@@ -335,6 +378,7 @@ class InvocationTriggerModel(
             DEFAULT_PRIORITY, ge=HIGHEST_PRIORITY, le=LOWEST_PRIORITY
         )
         next_fire_at: Optional[datetime] = Field(None, description="Set by the server")
+        email_address: Optional[str] = Field(None, description="Set by the server")
 
     class Update(BaseModel):
         invocation_type: Optional[InvocationType] = Field(None)
@@ -350,6 +394,8 @@ class InvocationTriggerModel(
         last_fired_at: Optional[datetime] = Field(None, description="Set by the server")
         next_fire_at: Optional[datetime] = Field(None, description="Set by the server")
         fire_count: Optional[int] = Field(None, description="Set by the server")
+        webhook_secret: Optional[str] = Field(None, description="Set by the server")
+        email_address: Optional[str] = Field(None, description="Set by the server")
 
     class Search(
         ApplicationModel.Search,
@@ -362,6 +408,7 @@ class InvocationTriggerModel(
         enabled: Optional[bool] = None
         event_source: Optional[StringSearchModel] = None
         priority: Optional[NumericalSearchModel] = None
+        email_address: Optional[StringSearchModel] = None
 
 
 def first_fire(fields: Dict[str, Any]) -> Optional[datetime]:
@@ -397,6 +444,68 @@ def check_trigger(fields: Dict[str, Any]) -> None:
     elif kind == "event":
         if not fields.get("event_source"):
             refuse("An event trigger needs an event_source")
+        if fields.get("event_source") == EMAIL:
+            email_filter(fields.get("event_filter"))
+
+
+def email_filter(text: Optional[str]) -> Dict[str, str]:
+    """An email trigger's ``event_filter``: a JSON object whose ``from`` (an
+    address, or ``@domain``) and ``subject`` (a phrase it contains) a
+    message must match. 422 for anything else."""
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if (
+        not isinstance(parsed, dict)
+        or not set(parsed) <= EMAIL_FILTER_KEYS
+        or not all(isinstance(value, str) and value for value in parsed.values())
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="An email trigger's event_filter is a JSON object of "
+            '"from" and/or "subject" strings',
+        )
+    return parsed
+
+
+def email_trigger_address() -> str:
+    """A new, unguessable address at the configured domain. 422 when no
+    domain is configured: mail could never reach the trigger."""
+    domain = env(EMAIL_DOMAIN_SETTING).strip().lower()
+    if not domain:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Email triggers need {EMAIL_DOMAIN_SETTING}, the domain "
+            "their mail arrives at",
+        )
+    return f"agent-{secrets.token_hex(EMAIL_ADDRESS_TOKEN_BYTES)}@{domain}"
+
+
+class NoParameters(RouteModel):
+    """An action that takes nothing but its path."""
+
+
+class WebhookEvent(RouteModel):
+    """Any JSON object: the event, exactly as its sender signed it."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class WebhookFired(RouteModel):
+    invocation_instance_id: str = Field(description="The turn the call fired")
+    status: str = Field(description="How the turn ended")
+
+
+class WebhookSecret(RouteModel):
+    trigger_id: str
+    secret: str = Field(
+        description="Shown once: signs every call to the trigger's webhook"
+    )
+    timestamp_header: str
+    signature_header: str
 
 
 class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
@@ -408,38 +517,122 @@ class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Triggers owned by the requester, in their agent's team, first
-        due when their ``due_at`` says."""
+        due when their ``due_at`` says; an email trigger gets its address."""
         parse = self.model_registry.apply(self.Model).Create
 
         def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
             fields = _in_agents_team(self, _owned_by(self.requester.id)(fields))
-            for field in TRIGGER_BOOKKEEPING:
+            for field in (*TRIGGER_BOOKKEEPING, *TRIGGER_SERVER_FIELDS):
                 fields.pop(field, None)
             spec = parse(**fields).model_dump()
             check_trigger(spec)
             fields["next_fire_at"] = first_fire(spec)
+            if _listens_to(spec, EMAIL):
+                fields["email_address"] = email_trigger_address()
             return fields
 
         return super().create(**_each(kwargs, prepare))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """Owner, team and agent stay; bookkeeping is the monitor's (ROOT);
-        a new ``due_at`` or schedule moves the next firing."""
+        a new ``due_at`` or schedule moves the next firing; a trigger turned
+        to email gets its address. The webhook secret is written only by
+        :meth:`rotate_webhook_secret`."""
         kwargs.pop("user_id", None)
         kwargs.pop("team_id", None)
+        kwargs.pop("webhook_secret", None)
         if not _server_side(self.requester.id):
-            for field in TRIGGER_BOOKKEEPING:
+            for field in (*TRIGGER_BOOKKEEPING, "email_address"):
                 kwargs.pop(field, None)
             changes = (
                 self.model_registry.apply(self.Model)
                 .Update(**kwargs)
                 .model_dump(exclude_unset=True)
             )
-            merged = {**self.get(id=id).model_dump(), **changes}
+            current = self.get(id=id)
+            merged = {**current.model_dump(), **changes}
             check_trigger(merged)
             if {"due_at", "cron", "invocation_type"} & changes.keys():
                 kwargs["next_fire_at"] = first_fire(merged)
+            if _listens_to(merged, EMAIL) and not current.email_address:
+                kwargs["email_address"] = email_trigger_address()
         return super().update(id, **kwargs)
+
+    def rotate_webhook_secret(self, id: str) -> WebhookSecret:
+        """A new signing secret for a webhook trigger, which only someone
+        who may edit it gets; the old one stops working. It is kept
+        encrypted and never shown again."""
+        from zephyrex.extensions.ai_agents.EventSources import (
+            SIGNATURE_HEADER,
+            TIMESTAMP_HEADER,
+            new_webhook_secret,
+        )
+
+        trigger = _visible(self, id, "Invocation trigger not found")
+        if not _listens_to(trigger.model_dump(), WEBHOOK):
+            raise HTTPException(
+                status_code=422, detail="Only a webhook trigger has a secret"
+            )
+        secret = new_webhook_secret()
+        super().update(id, webhook_secret=encrypt_secret(secret))
+        return WebhookSecret(
+            trigger_id=id,
+            secret=secret,
+            timestamp_header=TIMESTAMP_HEADER,
+            signature_header=SIGNATURE_HEADER,
+        )
+
+    @custom_route(
+        method="POST",
+        path="/{trigger_id}/webhook-secret",
+        input_model=NoParameters,
+        output_model=WebhookSecret,
+        authentication_type="jwt",
+        openapi_tags=("Agent Invocation Trigger Management",),
+        summary="A new signing secret for a webhook trigger, shown once",
+        expose_in=(ExposeIn.REST,),
+    )
+    def webhook_secret_route(self, trigger_id: str) -> WebhookSecret:
+        return self.rotate_webhook_secret(trigger_id)
+
+    @custom_route(
+        method="POST",
+        path=WEBHOOK_PATH,
+        input_model=WebhookEvent,
+        output_model=WebhookFired,
+        authentication_type="none",
+        openapi_tags=("Agent Invocation Trigger Management",),
+        summary="Fire a webhook trigger: a POST signed with its secret",
+        description=(
+            "The body is a JSON object. The X-Zephyrex-Signature header is "
+            "sha256=<hex HMAC-SHA256 of '<X-Zephyrex-Timestamp>.' + the raw "
+            "body>, keyed by the trigger's secret; the timestamp (Unix "
+            "seconds) must be recent. The body is handed to the agent's "
+            "turn, which runs as the agent's owner. 401 for a bad, stale or "
+            "replayed signature."
+        ),
+        expose_in=(ExposeIn.REST,),
+    )
+    @rate_limit(WEBHOOK_RATE_LIMIT, scope="(ip, endpoint)")
+    async def webhook_route(self, trigger_id: str, request: Request) -> WebhookFired:
+        from zephyrex.extensions.ai_agents.EventSources import receive_webhook
+
+        return await receive_webhook(self.model_registry, trigger_id, request)
+
+
+def _listens_to(fields: Dict[str, Any], source: str) -> bool:
+    return bool(
+        fields.get("invocation_type") == "event"
+        and fields.get("event_source") == source
+    )
+
+
+# A webhook is called by another server, which has no session here: the
+# call is authenticated by its signature alone, never a cookie.
+accept_cross_site_writes(
+    re.escape(InvocationTriggerManager.prefix or "")
+    + WEBHOOK_PATH.replace("{trigger_id}", "[^/]+")
+)
 
 
 def _in_agents_team(
@@ -734,7 +927,9 @@ class ProviderInstanceAgentModel(
     metaclass=ModelMeta,
 ):
     table_comment: ClassVar[str] = (
-        "A ProviderInstanceAgent represents a link between a ProviderInstance and an Agent."
+        "A ProviderInstanceAgent pins an Agent to a ProviderInstance: an agent "
+        "with any thinks only on those instances, in the order linked, instead "
+        "of its rotation."
     )
     permission_references: ClassVar[List[str]] = ["agent"]
 
@@ -755,12 +950,22 @@ class ProviderInstanceAgentModel(
 
 
 def _agent_and_instance_visible(manager: AbstractBLLManager, entity: Any) -> None:
-    _visible(_as(AgentManager, manager), entity.agent_id, "Agent not found")
+    """The agent is one the requester sees, and the instance one both they
+    and the agent's owner see: the owner's turns think on it."""
+    agent = _visible(_as(AgentManager, manager), entity.agent_id, "Agent not found")
     _visible(
         _as(ProviderInstanceManager, manager),
         entity.provider_instance_id,
         "Provider instance not found",
     )
+    if agent.user_id and agent.user_id != manager.requester.id:
+        _visible(
+            ProviderInstanceManager(
+                requester_id=agent.user_id, model_registry=manager.model_registry
+            ),
+            entity.provider_instance_id,
+            "Provider instance not found",
+        )
 
 
 class ProviderInstanceAgentManager(AbstractBLLManager, RouterMixin):
@@ -769,33 +974,61 @@ class ProviderInstanceAgentManager(AbstractBLLManager, RouterMixin):
     def create_validation(self, entity: Any) -> None:
         _agent_and_instance_visible(self, entity)
 
+    def pinned(self, agent_id: str) -> List[str]:
+        """The instances the agent is pinned to, in the order linked."""
+        ordered: List[str] = []
+        for link in self.list(
+            agent_id=agent_id, sort_by="created_at", sort_order="asc"
+        ):
+            if link.provider_instance_id not in ordered:
+                ordered.append(link.provider_instance_id)
+        return ordered
+
 
 class ProviderInstanceAgentAbilityModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
     AgentModel.Reference,
     ProviderInstanceModel.Reference,
+    AbilityModel.Reference,
     metaclass=ModelMeta,
 ):
-    state: bool = Field(default=False, description="State of the ability")
+    """What one of an agent's pinned instances may be used for. An instance
+    with no rows may be used for anything; one with rows only for the
+    abilities whose row has ``state`` true."""
+
+    state: bool = Field(
+        default=True, description="Whether the instance may be used for the ability"
+    )
 
     table_comment: ClassVar[str] = (
-        "Links provider instances to agent abilities and tracks their state"
+        "A ProviderInstanceAgentAbility restricts what one of an Agent's pinned "
+        "ProviderInstances is used for: with any rows, only the abilities whose "
+        "row has state true."
     )
     permission_references: ClassVar[List[str]] = ["agent"]
 
     class Create(
-        BaseModel, AgentModel.Reference.ID, ProviderInstanceModel.Reference.ID
+        BaseModel,
+        AgentModel.Reference.ID,
+        ProviderInstanceModel.Reference.ID,
+        AbilityModel.Reference.ID,
     ):
-        state: bool = Field(default=False, description="State of the ability")
+        state: bool = Field(
+            default=True,
+            description="Whether the instance may be used for the ability",
+        )
 
     class Update(BaseModel):
-        state: Optional[bool] = Field(None, description="State of the ability")
+        state: Optional[bool] = Field(
+            None, description="Whether the instance may be used for the ability"
+        )
 
     class Search(
         ApplicationModel.Search,
         AgentModel.Reference.ID.Search,
         ProviderInstanceModel.Reference.ID.Search,
+        AbilityModel.Reference.ID.Search,
     ):
         state: Optional[bool] = None
 
@@ -805,6 +1038,17 @@ class ProviderInstanceAgentAbilityManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity: Any) -> None:
         _agent_and_instance_visible(self, entity)
+        _visible(_catalog(AbilityManager, self), entity.ability_id, "Ability not found")
+
+    def allowed(self, agent_id: str) -> Dict[str, Set[str]]:
+        """Each restricted instance of the agent's: the ability ids it may
+        be used for. An instance not in it is unrestricted."""
+        found: Dict[str, Set[str]] = {}
+        for row in self.list(agent_id=agent_id):
+            abilities = found.setdefault(row.provider_instance_id, set())
+            if row.state:
+                abilities.add(row.ability_id)
+        return found
 
 
 class ProjectModel(
@@ -958,6 +1202,65 @@ class ProjectContextPromptManager(AbstractBLLManager, RouterMixin):
     def create_validation(self, entity: Any) -> None:
         _visible(_as(ProjectManager, self), entity.project_id, "Project not found")
         _visible(_as(PromptManager, self), entity.prompt_id, "Prompt not found")
+
+
+class ProjectConversationModel(
+    ApplicationModel.Optional,
+    UpdateMixinModel,
+    ProjectModel.Reference,
+    ConversationModel.Reference,
+    metaclass=ModelMeta,
+):
+    """A conversation filed in a project. Whoever sees the project sees its
+    links; linking or unlinking needs edit on the project, and a link is
+    only to a conversation the linker sees."""
+
+    table_comment: ClassVar[str] = (
+        "A ProjectConversation files a Conversation in a Project; it is seen "
+        "and changed through the project."
+    )
+    permission_references: ClassVar[List[str]] = ["project"]
+
+    class Create(BaseModel, ProjectModel.Reference.ID, ConversationModel.Reference.ID):
+        pass
+
+    class Update(BaseModel):
+        pass
+
+    class Search(
+        ApplicationModel.Search,
+        ProjectModel.Reference.ID.Search,
+        ConversationModel.Reference.ID.Search,
+    ):
+        pass
+
+
+class ProjectConversationManager(AbstractBLLManager, RouterMixin):
+    _model = ProjectConversationModel
+
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(ProjectManager, self), entity.project_id, "Project not found")
+        _visible(
+            _as(ConversationManager, self),
+            entity.conversation_id,
+            "Conversation not found",
+        )
+
+    def link(self, project_id: str, conversation_id: str) -> Any:
+        """File the conversation in the project; filing it twice is once."""
+        existing = self.list(project_id=project_id, conversation_id=conversation_id)
+        if existing:
+            return existing[0]
+        return self.create(project_id=project_id, conversation_id=conversation_id)
+
+    def unlink(self, project_id: str, conversation_id: str) -> int:
+        """Take the conversation out of the project; how many links went.
+        404 when the project is not one the requester sees."""
+        _visible(_as(ProjectManager, self), project_id, "Project not found")
+        links = self.list(project_id=project_id, conversation_id=conversation_id)
+        for link in links:
+            self.delete(id=link.id)
+        return len(links)
 
 
 class ActivityModel(
@@ -1337,14 +1640,14 @@ async def fire_conversation_message_turns(context: HookContext) -> None:
 
 
 async def _wake_agents_for(registry: Any, message: Any) -> None:
-    from zephyrex.extensions.ai_agents.AgentTurnExecutor import AgentTurnExecutor
+    from zephyrex.extensions.ai_agents.AgentTurnExecutor import fire_turn
+    from zephyrex.extensions.ai_agents.EventSources import count_firing
 
     root = env("ROOT_ID")
     seats = ConversationAgentManager(requester_id=root, model_registry=registry).list(
         conversation_id=message.conversation_id, active=True
     )
     triggers = InvocationTriggerManager(requester_id=root, model_registry=registry)
-    agents = AgentManager(requester_id=root, model_registry=registry)
     for seat in seats:
         listening = triggers.list(
             agent_id=seat.agent_id,
@@ -1354,28 +1657,35 @@ async def _wake_agents_for(registry: Any, message: Any) -> None:
         )
         if not seat.auto_respond and not listening:
             continue
-        agent = agents.get(id=seat.agent_id)
-        owner = agent.user_id or root
         try:
-            instance = InvocationInstanceManager(
-                requester_id=owner, model_registry=registry
-            ).create(
-                agent_id=agent.id,
-                invocation_trigger_id=listening[0].id if listening else None,
+            await fire_turn(
+                registry,
+                seat.agent_id,
+                message.content,
+                trigger_id=listening[0].id if listening else None,
                 trigger_message_id=message.id,
-                payload=message.content,
             )
         except HTTPException as refused:
             logger.warning(
                 "Agent %s cannot take a turn on message %s: %s",
-                agent.id,
+                seat.agent_id,
                 message.id,
                 refused.detail,
             )
             continue
-        await AgentTurnExecutor(model_registry=registry, requester_id=owner).run(
-            instance.id
-        )
+        if listening:
+            count_firing(registry, listening[0])
+
+
+@on_inbound_email
+async def fire_email_triggers(model_registry: Any, message: InboundEmail) -> None:
+    """Mail the email extension received wakes the agents whose email
+    triggers it is addressed to and matches (see EventSources)."""
+    if not loaded_in(model_registry):
+        return
+    from zephyrex.extensions.ai_agents.EventSources import receive_email
+
+    await receive_email(model_registry, message)
 
 
 def _created(result: Any) -> List[Any]:

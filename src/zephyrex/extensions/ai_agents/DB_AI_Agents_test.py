@@ -25,6 +25,7 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     InvocationTriggerModel,
     ProjectContextPromptModel,
     ProjectContextProviderModel,
+    ProjectConversationModel,
     ProjectModel,
     ProviderInstanceAgentAbilityModel,
     ProviderInstanceAgentModel,
@@ -208,6 +209,7 @@ class TestProviderInstanceAgentAbility(AbstractDBTest, ExtensionServerMixin):
     create_fields = {
         "provider_instance_id": lambda: str(uuid.uuid4()),
         "agent_id": lambda: str(uuid.uuid4()),
+        "ability_id": lambda: str(uuid.uuid4()),
         "state": False,
     }
     update_fields = {
@@ -223,6 +225,9 @@ class TestProviderInstanceAgentAbility(AbstractDBTest, ExtensionServerMixin):
             name="provider_instance",
             foreign_key="provider_instance_id",
             test_class=CoreProviderInstanceTests,
+        ),
+        ParentEntity(
+            name="ability", foreign_key="ability_id", test_class=CoreAbilityTests
         ),
     ]
 
@@ -274,6 +279,28 @@ class TestProjectContextPrompt(AbstractDBTest, ExtensionServerMixin):
             name="prompt",
             foreign_key="prompt_id",
             test_class=ExtPromptTests,
+        ),
+    ]
+
+
+class TestProjectConversation(AbstractDBTest, ExtensionServerMixin):
+    """Test ProjectConversationModel database operations."""
+
+    class_under_test = ProjectConversationModel
+    extension_class = EXT_AI_Agents
+
+    create_fields = {}
+    update_fields = {}
+    parent_entities = [
+        ParentEntity(
+            name="project",
+            foreign_key="project_id",
+            test_class=TestProject,
+        ),
+        ParentEntity(
+            name="conversation",
+            foreign_key="conversation_id",
+            test_class=ExtConversationTests,
         ),
     ]
 

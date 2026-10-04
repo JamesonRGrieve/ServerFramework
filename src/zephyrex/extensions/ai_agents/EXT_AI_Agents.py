@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Agents: configured identities that take turns, on a schedule, a timer,
-a task's due time or a conversation message, and act through the abilities
-they are granted (see BLL_AI_Agents and AgentTurnExecutor).
+a task's due time, a conversation message, a signed webhook call or an
+email, and act through the abilities they are granted (see BLL_AI_Agents,
+AgentTurnExecutor and EventSources).
 
 Abilities act for the user named by ``requester_id``, under that user's
 permissions. When an agent uses one as a tool, the turn fills
@@ -16,10 +17,12 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     DEFAULT_PRIORITY,
+    EMAIL_DOMAIN_SETTING,
     ActivityManager,
     AgentAbilityManager,
     AgentManager,
     InvocationTriggerManager,
+    ProjectConversationManager,
 )
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
@@ -56,19 +59,25 @@ def _when(text: Optional[str]) -> Optional[datetime]:
 class EXT_AI_Agents(AbstractStaticExtension):
     name: ClassVar[str] = "ai_agents"
     friendly_name: ClassVar[str] = "AI Agent Management"
-    version: ClassVar[str] = "2.0.0"
+    version: ClassVar[str] = "2.1.0"
     description: ClassVar[str] = (
-        "Agents that take turns on schedules, tasks and messages, acting "
-        "through the abilities they are granted"
+        "Agents that take turns on schedules, tasks, messages, webhooks and "
+        "email, acting through the abilities they are granted"
     )
 
-    _env: ClassVar[Dict[str, Any]] = {}
+    _env: ClassVar[Dict[str, Any]] = {EMAIL_DOMAIN_SETTING: ""}
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             EXT_Dependency(
                 name="ai",
                 friendly_name="AI",
                 reason="An agent thinks with the AI extension's chat models",
+            ),
+            EXT_Dependency(
+                name="email",
+                friendly_name="Email",
+                optional=True,
+                reason="Mail the email extension receives fires email triggers",
             ),
             EXT_Dependency(
                 name="conversations",
@@ -101,6 +110,8 @@ class EXT_AI_Agents(AbstractStaticExtension):
         "cancel_task",
         "grant_ability",
         "turn_activity",
+        "link_conversation",
+        "unlink_conversation",
         *EXECUTOR_ABILITIES,
     }
 
@@ -224,3 +235,31 @@ class EXT_AI_Agents(AbstractStaticExtension):
         """What an agent did in a turn: its activities as trees."""
         activities: ActivityManager = cls.as_requester(ActivityManager, requester_id)
         return activities.hierarchy(invocation_instance_id)
+
+    @classmethod
+    def project_conversations(cls, requester_id: str) -> ProjectConversationManager:
+        manager: ProjectConversationManager = cls.as_requester(
+            ProjectConversationManager, requester_id
+        )
+        return manager
+
+    @classmethod
+    @ability("link_conversation")
+    async def link_conversation(
+        cls, requester_id: str, project_id: str, conversation_id: str
+    ) -> Dict[str, Any]:
+        """File a conversation the user sees in a project they may edit."""
+        return _row(
+            cls.project_conversations(requester_id).link(project_id, conversation_id)
+        )
+
+    @classmethod
+    @ability("unlink_conversation")
+    async def unlink_conversation(
+        cls, requester_id: str, project_id: str, conversation_id: str
+    ) -> Dict[str, Any]:
+        """Take a conversation out of a project the user may edit."""
+        removed = cls.project_conversations(requester_id).unlink(
+            project_id, conversation_id
+        )
+        return {"removed": removed}

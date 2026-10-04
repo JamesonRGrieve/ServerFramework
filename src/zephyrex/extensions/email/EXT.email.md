@@ -68,6 +68,19 @@ class AbstractEmailProvider(AbstractStaticProvider):
 
 Concrete providers must call `_validate_send_inputs` as the first statement of `send_email`; the inherited helper makes the same denial guarantees apply across every transport.
 
+### Inbound mail
+
+`InboundEmail.py` is the hook point received mail enters through. Whatever
+receives a message (a provider reading a mailbox, an endpoint a mail server
+delivers to) parses it with `InboundEmail.parse(raw, envelope_recipients)`
+(sender, every recipient lower-cased, subject, plain-text body, headers; at
+most 25 MiB) and calls `await receive_inbound_email(model_registry,
+message)`. Listeners registered with `on_inbound_email(listener)` are
+awaited as `listener(model_registry, message)` in registration order; one
+listener's failure is logged and the others still get the message. The
+`ai_agents` extension listens here to fire email triggers. No shipped
+provider or endpoint calls it yet: the providers above are send-only.
+
 ### Hook-based integration
 
 The extension auto-sends invitation emails via `BLL_Auth.InviteeManager.create` (`AFTER` hook, priority 5):

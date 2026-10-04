@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ai_agents"
-version = "2.0.0"
-description = "Agents that take turns on schedules, tasks and messages, acting through the abilities they are granted"
+version = "2.1.0"
+description = "Agents that take turns on schedules, tasks, messages, webhooks and email, acting through the abilities they are granted"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_AI_Agents"
 minimum_framework_version = "0.0.0"
@@ -17,6 +17,10 @@ system_dependencies = []
 [[extension_dependencies]]
 name = "ai"
 optional = false
+
+[[extension_dependencies]]
+name = "email"
+optional = true
 
 [[extension_dependencies]]
 name = "conversations"

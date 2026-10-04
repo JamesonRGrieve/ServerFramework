@@ -22,12 +22,11 @@ from typing import Any, Callable, Dict, List, Optional
 from croniter import croniter
 from fastapi import HTTPException
 
-from zephyrex.extensions.ai_agents.AgentTurnExecutor import AgentTurnExecutor
-from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
-    AgentManager,
-    InvocationInstanceManager,
-    InvocationTriggerManager,
+from zephyrex.extensions.ai_agents.AgentTurnExecutor import (
+    AgentTurnExecutor,
+    fire_turn,
 )
+from zephyrex.extensions.ai_agents.BLL_AI_Agents import InvocationTriggerManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.AbstractService import AbstractService
@@ -119,28 +118,17 @@ class InvocationMonitorService(AbstractService):
         return False
 
     async def _fire(self, trigger: Any, now: datetime) -> None:
-        """A turn for the trigger, owned by its agent's owner; then the
-        trigger's bookkeeping and next firing."""
-        agent = AgentManager(
-            requester_id=self.requester_id, model_registry=self.model_registry
-        ).get(id=trigger.agent_id)
-        # Made as the owner, whose turn it is: they record its activities.
-        instance = InvocationInstanceManager(
-            requester_id=agent.user_id or self.requester_id,
-            model_registry=self.model_registry,
-        ).create(
-            agent_id=trigger.agent_id,
-            invocation_trigger_id=trigger.id,
-            payload=trigger.invocation_payload,
+        """A turn for the trigger, its agent's owner's; then the trigger's
+        bookkeeping and next firing."""
+        await fire_turn(
+            self.model_registry,
+            trigger.agent_id,
+            trigger.invocation_payload,
+            trigger_id=trigger.id,
+            executor=(
+                self._executor_factory() if self._executor_factory is not None else None
+            ),
         )
-        executor = (
-            self._executor_factory()
-            if self._executor_factory is not None
-            else AgentTurnExecutor(
-                model_registry=self.model_registry, requester_id=self.requester_id
-            )
-        )
-        await executor.run(instance.id)
         self._triggers().update(id=trigger.id, **self._after_firing(trigger, now))
 
     @staticmethod
