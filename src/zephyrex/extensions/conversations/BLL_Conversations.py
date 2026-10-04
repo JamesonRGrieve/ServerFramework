@@ -16,13 +16,12 @@ removes anyone, and a participant may leave.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Callable, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel as RouteModel
 from pydantic import Field, model_validator
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import (
@@ -34,41 +33,18 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    created_records,
+    each_created,
+    owned_by,
+    server_side,
+)
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.pydantic2.registry import BaseModel
 
 MAX_THREAD_DEPTH = 10
 MAX_THREAD_MESSAGES = 1000
-
-
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
-
-
-def _created(result: Any) -> List[Any]:
-    return result if isinstance(result, list) else [result]
-
-
-def _authored_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-    """The author is the requester; ROOT and SYSTEM may name another."""
-
-    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-        if not _server_side(requester_id) or not fields.get("user_id"):
-            fields["user_id"] = requester_id
-        return fields
-
-    return prepare
 
 
 class ConversationModel(
@@ -201,8 +177,8 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs: Any) -> Any:
         """A conversation owned by its creator, who is its first participant.
         Agent association is the ``ai_agents`` extension's create hook."""
-        result = super().create(**_each(kwargs, _authored_by(self.requester.id)))
-        for conversation in _created(result):
+        result = super().create(**each_created(kwargs, owned_by(self.requester.id)))
+        for conversation in created_records(result):
             self.add_participant(
                 conversation_id=conversation.id, user_id=conversation.user_id
             )
@@ -212,7 +188,7 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
         """Only the owner deletes a conversation."""
         conversation = self.get(id=id)
         if (
-            not _server_side(self.requester.id)
+            not server_side(self.requester.id)
             and conversation.user_id != self.requester.id
         ):
             raise HTTPException(
@@ -240,7 +216,7 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
     def remove_participant(self, conversation_id: str, user_id: str) -> None:
         """The owner removes anyone; a participant may leave."""
         conversation = self.get(id=conversation_id)
-        if not _server_side(self.requester.id) and self.requester.id not in (
+        if not server_side(self.requester.id) and self.requester.id not in (
             conversation.user_id,
             user_id,
         ):
@@ -376,7 +352,7 @@ class ConversationUserManager(AbstractBLLManager, RouterMixin):
         conversations = ConversationManager(
             requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
-        for membership in _created(result):
+        for membership in created_records(result):
             owner = conversations.get(id=membership.conversation_id).user_id
             if owner != membership.user_id:
                 _grant(
@@ -480,14 +456,8 @@ class MessageManager(AbstractBLLManager, RouterMixin):
         """Messages by the requester (ROOT and SYSTEM name the author, or
         none). Agent replies to new messages are the ``ai_agents``
         extension's create hook."""
-        requester_id = self.requester.id
-
-        def authored(fields: Dict[str, Any]) -> Dict[str, Any]:
-            if not _server_side(requester_id) or "user_id" not in fields:
-                fields["user_id"] = requester_id
-            return fields
-
-        return super().create(**_each(kwargs, authored))
+        authored = owned_by(self.requester.id, server_may_leave_unowned=True)
+        return super().create(**each_created(kwargs, authored))
 
     def create_agent_message(self, **kwargs: Any) -> Any:
         """A message an agent posts, with no author, into a conversation
@@ -499,7 +469,7 @@ class MessageManager(AbstractBLLManager, RouterMixin):
     def update(self, id: str, **kwargs: Any) -> Any:
         """Only the author edits a message; an edit is stamped."""
         message = self.get(id=id)
-        if not _server_side(self.requester.id) and message.user_id != self.requester.id:
+        if not server_side(self.requester.id) and message.user_id != self.requester.id:
             raise HTTPException(
                 status_code=403, detail="Only the author edits a message"
             )
@@ -511,7 +481,7 @@ class MessageManager(AbstractBLLManager, RouterMixin):
     def delete(self, id: str) -> None:
         """The author or the conversation's owner deletes a message."""
         message = self.get(id=id)
-        if _server_side(self.requester.id) or message.user_id == self.requester.id:
+        if server_side(self.requester.id) or message.user_id == self.requester.id:
             super().delete(id)
             return
         conversation = ConversationManager(
@@ -654,11 +624,11 @@ class FeedbackManager(AbstractBLLManager, RouterMixin):
         ).get(id=entity.message_id)
 
     def create(self, **kwargs: Any) -> Any:
-        return super().create(**_each(kwargs, _authored_by(self.requester.id)))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def _own(self, id: str) -> None:
         if (
-            not _server_side(self.requester.id)
+            not server_side(self.requester.id)
             and self.get(id=id).user_id != self.requester.id
         ):
             raise HTTPException(status_code=403, detail="Feedback is its author's")
@@ -768,7 +738,7 @@ class ArtifactManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Artifacts by the requester, each in its message's conversation."""
-        authored = _authored_by(self.requester.id)
+        authored = owned_by(self.requester.id)
         messages = MessageManager(
             requester_id=self.requester.id, model_registry=self.model_registry
         )
@@ -785,7 +755,7 @@ class ArtifactManager(AbstractBLLManager, RouterMixin):
                 fields["conversation_id"] = message.conversation_id
             return fields
 
-        return super().create(**_each(kwargs, placed))
+        return super().create(**each_created(kwargs, placed))
 
 
 def _visible_user(model_registry: Any, requester_id: str, user_id: str) -> None:

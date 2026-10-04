@@ -33,14 +33,13 @@ requester when the step is saved, and as the chain's owner when it runs.
 import json
 import re
 from datetime import datetime
-from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel as RouteModel
 from pydantic import Field, ValidationError
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ai_agents.AbilityInvoker import NEVER_AGENT_INVOCABLE
 from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager, PromptModel
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
@@ -54,6 +53,13 @@ from zephyrex.logic.AbstractLogicManager import (
     NameMixinModel,
     StringSearchModel,
     UpdateMixinModel,
+)
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    OWNERSHIP_FIELDS,
+    each_created,
+    owned_by,
+    server_side,
+    without,
 )
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 from zephyrex.logic.BLL_Extensions import AbilityManager, AbilityModel
@@ -139,31 +145,6 @@ class ChainCancelledError(ChainError):
     """The run was cancelled."""
 
     kind = "cancelled"
-
-
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
-
-
-def _owned_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-    """The owner is the requester; ROOT and SYSTEM may name another."""
-
-    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-        if not _server_side(requester_id) or not fields.get("user_id"):
-            fields["user_id"] = requester_id
-        return fields
-
-    return prepare
 
 
 def _as(manager_class: Any, source: AbstractBLLManager) -> Any:
@@ -402,13 +383,11 @@ class ChainManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Chains owned by the requester (ROOT and SYSTEM may name another)."""
-        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """A chain's owner and team are not changed by an update."""
-        kwargs.pop("user_id", None)
-        kwargs.pop("team_id", None)
-        return super().update(id, **kwargs)
+        return super().update(id, **without(kwargs, OWNERSHIP_FIELDS))
 
     async def run(self, chain_id: str, inputs: Optional[Dict[str, Any]]) -> Any:
         """Run the chain now with ``inputs`` as its starting variables; the
@@ -607,19 +586,18 @@ class ChainRunManager(AbstractBLLManager, RouterMixin):
         """Runs started by the requester; every run starts pending."""
 
         def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-            fields = _owned_by(self.requester.id)(fields)
+            fields = owned_by(self.requester.id)(fields)
             fields["status"] = PENDING
             fields["inputs"] = check_inputs(fields.get("inputs"))
             return fields
 
-        return super().create(**_each(kwargs, prepare))
+        return super().create(**each_created(kwargs, prepare))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """A run's lifecycle is the engine's (ROOT) to record; a user may
         only ask it to stop."""
-        if not _server_side(self.requester.id):
-            for field in RUN_LIFECYCLE:
-                kwargs.pop(field, None)
+        if not server_side(self.requester.id):
+            without(kwargs, RUN_LIFECYCLE)
             if kwargs.get("cancel_requested") is not True:
                 kwargs.pop("cancel_requested", None)
         return super().update(id, **kwargs)
@@ -724,7 +702,7 @@ class ChainStepResultManager(AbstractBLLManager, RouterMixin):
         SYSTEM create them. A result inherits access from its run alone, so
         whoever may see the run sees what ROOT recorded, and none of them
         may change it."""
-        if not _server_side(self.requester.id):
+        if not server_side(self.requester.id):
             raise HTTPException(
                 status_code=403, detail="A run's step results are the server's"
             )

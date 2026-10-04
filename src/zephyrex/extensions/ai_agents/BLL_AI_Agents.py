@@ -31,14 +31,13 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
-from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Set
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Set
 
 from croniter import croniter
 from fastapi import HTTPException, Request
 from pydantic import BaseModel as RouteModel
 from pydantic import ConfigDict, Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager, PromptModel
 from zephyrex.extensions.conversations.BLL_Conversations import (
     ArtifactManager,
@@ -54,6 +53,7 @@ from zephyrex.lib.InboundSecurity import rate_limit
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.SecretEncryption import encrypt_secret
 from zephyrex.lib.SessionCookies import accept_cross_site_writes
+from zephyrex.lib.SignedRequests import SIGNATURE_HEADER, TIMESTAMP_HEADER
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -66,6 +66,15 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
     hook_bll,
+)
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    OWNERSHIP_FIELDS,
+    created_records,
+    each_created,
+    owned_by,
+    server_only,
+    server_side,
+    without,
 )
 from zephyrex.logic.BLL_Auth import (
     TeamManager,
@@ -122,31 +131,6 @@ TRIGGER_SERVER_FIELDS = ("webhook_secret", "email_address")
 # A turn's lifecycle, which only the executor writes.
 TURN_LIFECYCLE = ("status", "error", "started_at", "completed_at")
 PENDING = "pending"
-
-
-def _server_side(requester_id: str) -> bool:
-    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
-    return is_root_id(requester_id) or is_system_id(requester_id)
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
-
-
-def _owned_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-    """The owner is the requester; ROOT and SYSTEM may name another."""
-
-    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-        if not _server_side(requester_id) or not fields.get("user_id"):
-            fields["user_id"] = requester_id
-        return fields
-
-    return prepare
 
 
 def _not_found(detail: str) -> HTTPException:
@@ -521,9 +505,8 @@ class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
         parse = self.model_registry.apply(self.Model).Create
 
         def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-            fields = _in_agents_team(self, _owned_by(self.requester.id)(fields))
-            for field in (*TRIGGER_BOOKKEEPING, *TRIGGER_SERVER_FIELDS):
-                fields.pop(field, None)
+            fields = _in_agents_team(self, owned_by(self.requester.id)(fields))
+            without(fields, (*TRIGGER_BOOKKEEPING, *TRIGGER_SERVER_FIELDS))
             spec = parse(**fields).model_dump()
             check_trigger(spec)
             fields["next_fire_at"] = first_fire(spec)
@@ -531,19 +514,16 @@ class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
                 fields["email_address"] = email_trigger_address()
             return fields
 
-        return super().create(**_each(kwargs, prepare))
+        return super().create(**each_created(kwargs, prepare))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """Owner, team and agent stay; bookkeeping is the monitor's (ROOT);
         a new ``due_at`` or schedule moves the next firing; a trigger turned
         to email gets its address. The webhook secret is written only by
         :meth:`rotate_webhook_secret`."""
-        kwargs.pop("user_id", None)
-        kwargs.pop("team_id", None)
-        kwargs.pop("webhook_secret", None)
-        if not _server_side(self.requester.id):
-            for field in (*TRIGGER_BOOKKEEPING, "email_address"):
-                kwargs.pop(field, None)
+        without(kwargs, (*OWNERSHIP_FIELDS, "webhook_secret"))
+        if not server_side(self.requester.id):
+            without(kwargs, (*TRIGGER_BOOKKEEPING, "email_address"))
             changes = (
                 self.model_registry.apply(self.Model)
                 .Update(**kwargs)
@@ -562,11 +542,7 @@ class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
         """A new signing secret for a webhook trigger, which only someone
         who may edit it gets; the old one stops working. It is kept
         encrypted and never shown again."""
-        from zephyrex.extensions.ai_agents.EventSources import (
-            SIGNATURE_HEADER,
-            TIMESTAMP_HEADER,
-            new_webhook_secret,
-        )
+        from zephyrex.extensions.ai_agents.EventSources import new_webhook_secret
 
         trigger = _visible(self, id, "Invocation trigger not found")
         if not _listens_to(trigger.model_dump(), WEBHOOK):
@@ -748,18 +724,17 @@ class InvocationInstanceManager(AbstractBLLManager, RouterMixin):
         starts pending."""
 
         def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-            fields = _in_agents_team(self, _owned_by(self.requester.id)(fields))
+            fields = _in_agents_team(self, owned_by(self.requester.id)(fields))
             fields["status"] = PENDING
             return fields
 
-        return super().create(**_each(kwargs, prepare))
+        return super().create(**each_created(kwargs, prepare))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """A turn's lifecycle is the executor's (ROOT) to record."""
-        if not _server_side(self.requester.id):
-            for field in TURN_LIFECYCLE:
-                kwargs.pop(field, None)
-        return super().update(id, **kwargs)
+        return super().update(
+            id, **server_only(self.requester.id, kwargs, TURN_LIFECYCLE)
+        )
 
 
 class TurnRequest(RouteModel):
@@ -798,12 +773,11 @@ class AgentManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Agents owned by the requester (ROOT and SYSTEM may name another)."""
-        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """An agent's owner and team are not changed by an update."""
-        kwargs.pop("user_id", None)
-        kwargs.pop("team_id", None)
+        without(kwargs, OWNERSHIP_FIELDS)
         if kwargs.get("rotation_id"):
             _visible(
                 _as(RotationManager, self), kwargs["rotation_id"], "Rotation not found"
@@ -1109,13 +1083,12 @@ class ProjectManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Projects owned by the requester (ROOT and SYSTEM may name another)."""
-        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """A project's owner and team are not changed by an update; a new
         parent is one the requester sees, and not the project itself."""
-        kwargs.pop("user_id", None)
-        kwargs.pop("team_id", None)
+        without(kwargs, OWNERSHIP_FIELDS)
         if kwargs.get("parent_id"):
             if kwargs["parent_id"] == id:
                 raise HTTPException(
@@ -1634,7 +1607,7 @@ async def fire_conversation_message_turns(context: HookContext) -> None:
     reply never wakes an agent."""
     if not _ai_agents_loaded(context.manager):
         return
-    for message in _created(context.result):
+    for message in created_records(context.result):
         if message.user_id:
             await _wake_agents_for(context.manager.model_registry, message)
 
@@ -1688,11 +1661,6 @@ async def fire_email_triggers(model_registry: Any, message: InboundEmail) -> Non
     await receive_email(model_registry, message)
 
 
-def _created(result: Any) -> List[Any]:
-    """What a create made: one record, or a batch's."""
-    return result if isinstance(result, list) else [result]
-
-
 @hook_bll(TeamManager.create, timing=HookTiming.AFTER, priority=10)
 def create_agent_on_team_creation(context: HookContext) -> None:
     """Every new team gets an agent, its creator's, marked favourite."""
@@ -1702,7 +1670,7 @@ def create_agent_on_team_creation(context: HookContext) -> None:
         requester_id=context.manager.requester.id,
         model_registry=context.manager.model_registry,
     )
-    for team in _created(context.result):
+    for team in created_records(context.result):
         agents.create(name=f"{team.name} Agent", team_id=team.id, favourite=True)
 
 
@@ -1717,7 +1685,7 @@ def associate_agent_with_conversation(context: HookContext) -> None:
     seats = ConversationAgentManager(requester_id=requester_id, model_registry=registry)
     agents = AgentManager(requester_id=requester_id, model_registry=registry)
     memberships = UserTeamManager(requester_id=requester_id, model_registry=registry)
-    for conversation in _created(context.result):
+    for conversation in created_records(context.result):
         if seats.list(conversation_id=conversation.id, active=True):
             continue
         team_agents = (

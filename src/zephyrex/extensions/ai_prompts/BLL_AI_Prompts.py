@@ -13,13 +13,12 @@ arguments.
 """
 
 import re
-from typing import Any, Callable, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -29,6 +28,12 @@ from zephyrex.logic.AbstractLogicManager import (
     NameMixinModel,
     StringSearchModel,
     UpdateMixinModel,
+)
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    OWNERSHIP_FIELDS,
+    each_created,
+    owned_by,
+    without,
 )
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
@@ -51,24 +56,6 @@ def fill(content: str, values: Dict[str, Any]) -> str:
         ),
         content,
     )
-
-
-def _owned_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-        server_side = is_root_id(requester_id) or is_system_id(requester_id)
-        if not server_side or not fields.get("user_id"):
-            fields["user_id"] = requester_id
-        return fields
-
-    return prepare
-
-
-def _each(
-    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
-    if isinstance(kwargs.get("entities"), list):
-        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
-    return prepare(dict(kwargs))
 
 
 class PromptModel(
@@ -151,13 +138,11 @@ class PromptManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Prompts owned by the requester (ROOT and SYSTEM may name another)."""
-        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """A prompt's owner and team are not changed by an update."""
-        kwargs.pop("user_id", None)
-        kwargs.pop("team_id", None)
-        return super().update(id, **kwargs)
+        return super().update(id, **without(kwargs, OWNERSHIP_FIELDS))
 
     def defaults(self, prompt_id: str) -> Dict[str, Optional[str]]:
         """Each of the prompt's arguments and its default (None: required)."""
