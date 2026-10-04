@@ -1103,6 +1103,94 @@ class ProviderInstanceModel(
 OPERATOR_SCOPES = frozenset({"root", "system"})
 
 
+class ProviderInstanceChildManager(AbstractBLLManager):
+    """A row that belongs to one provider instance (its settings, its
+    usage, its enabled abilities). Providers read these on the server's
+    behalf as ROOT, so a row on an instance shapes what that instance does
+    (a planted ``api_base`` would send its credential elsewhere). The model
+    inherits access from the instance (``permission_references``), and
+    writing one takes what changing the instance takes:
+
+    - the instance is visible to the requester, or it is not found (404);
+    - a root- or system-scoped instance speaks for the operator, so only
+      ROOT and SYSTEM write its rows (403);
+    - anyone else needs edit rights on the instance (403);
+    - a row never moves to another instance (400).
+    """
+
+    def _require_writable_instance(self, provider_instance_id: Optional[str]) -> None:
+        from zephyrex.database.StaticPermissions import (
+            is_root_id,
+            is_system_id,
+            user_can_edit,
+        )
+
+        if not provider_instance_id:
+            raise HTTPException(
+                status_code=400, detail="provider_instance_id is required"
+            )
+        requester_id = self.requester.id
+        base = self.model_registry.DB.manager.Base
+        instance_db = ProviderInstanceModel.DB(base)
+        instance = instance_db.get(
+            requester_id=requester_id,
+            model_registry=self.model_registry,
+            id=provider_instance_id,
+            return_type="dto",
+            override_dto=ProviderInstanceModel,
+            allow_nonexistent=True,
+        )
+        if instance is None:
+            raise HTTPException(status_code=404, detail="Provider instance not found")
+        if is_root_id(requester_id) or is_system_id(requester_id):
+            return
+        if instance.scope in OPERATOR_SCOPES:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Only the operator configures {instance.scope}-scoped instances",
+            )
+        session = self.model_registry.DB.session()
+        try:
+            editable = user_can_edit(
+                requester_id,
+                instance_db,
+                provider_instance_id,
+                session,
+                declarative_base=base,
+            )
+        finally:
+            session.close()
+        if not editable:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to change this provider instance",
+            )
+
+    def _require_writable_row(self, id: str, moved_to: Optional[str] = None) -> Any:
+        """The row ``id`` (404 when invisible), once its instance is one
+        the requester may change and ``moved_to`` (if given) is that same
+        instance."""
+        existing = self.get(id=id)
+        if moved_to is not None and moved_to != existing.provider_instance_id:
+            raise HTTPException(
+                status_code=400,
+                detail="A row stays on its provider instance",
+            )
+        self._require_writable_instance(existing.provider_instance_id)
+        return existing
+
+    def create_validation(self, entity: Any) -> None:
+        self._require_writable_instance(entity.provider_instance_id)
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        self._require_writable_row(id, kwargs.get("provider_instance_id"))
+        return super().update(id, **kwargs)
+
+    def delete(self, id: str) -> None:
+        self._require_writable_row(id)
+        super().delete(id)
+
+
 class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
     _model = ProviderInstanceModel
 
@@ -1237,6 +1325,7 @@ class ProviderInstanceUsageModel(
     table_comment: ClassVar[str] = (
         "A ProviderInstanceUsage represents a User's usage of a provider. If team_id is also populated, it was used on behalf of a team by a user. Lack of a record means a user has never used the ProviderInstance. Note that ProviderInstances lower on a rotation may be seldom/never used."
     )
+    permission_references: ClassVar[List[str]] = ["provider_instance"]
 
     class Create(BaseModel):
         provider_instance_id: str
@@ -1263,8 +1352,13 @@ class ProviderInstanceUsageModel(
         value: Optional[NumericalSearchModel] | None = None
 
 
-class ProviderInstanceUsageManager(AbstractBLLManager, RouterMixin):
+class ProviderInstanceUsageManager(ProviderInstanceChildManager, RouterMixin):
+    """Usage is recorded by the server (as ROOT) against the user a call
+    ran for; anyone else records it only on an instance they may change,
+    and only as themselves."""
+
     _model = ProviderInstanceUsageModel
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
     # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/provider/instance/usage"
@@ -1292,6 +1386,7 @@ class ProviderInstanceSettingModel(
     table_comment: ClassVar[str] = (
         "A ProviderInstanceSetting represents a non-default configuration setting for a User or Team's instance of an Provider."
     )
+    permission_references: ClassVar[List[str]] = ["provider_instance"]
 
     # ``str | None``: in a model body ``Optional`` is the nested class.
     @field_serializer("value")
@@ -1323,7 +1418,7 @@ class ProviderInstanceSettingModel(
         value: Optional[StringSearchModel] | None = None
 
 
-class ProviderInstanceSettingManager(AbstractBLLManager, RouterMixin):
+class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
     _model = ProviderInstanceSettingModel
 
     # RouterMixin configuration
@@ -1333,26 +1428,14 @@ class ProviderInstanceSettingManager(AbstractBLLManager, RouterMixin):
     factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
     auth_dependency: ClassVar[Optional[str]] = "get_auth_user"
 
-    def create_validation(self, entity):
-        """Validate provider instance setting creation"""
+    def create_validation(self, entity: Any) -> None:
+        """A setting has a key, on an instance the requester may change."""
         if not entity.key:
             raise HTTPException(
                 status_code=400,
                 detail="Setting key is required",
             )
-        # Check that provider instance exists (use ROOT_ID to bypass permission filtering)
-        if entity.provider_instance_id:
-            provider_instance = ProviderInstanceModel.DB(
-                self.model_registry.DB.manager.Base
-            ).get(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                id=entity.provider_instance_id,
-            )
-            if not provider_instance:
-                raise HTTPException(
-                    status_code=404, detail="Provider instance not found"
-                )
+        super().create_validation(entity)
 
     def _declared_secret(
         self, provider_instance_id: Optional[str], key: Optional[str]
@@ -1457,6 +1540,7 @@ class ProviderInstanceExtensionAbilityModel(
     table_comment: ClassVar[str] = (
         "A ProviderInstanceExtensionAbility represents whether an ability is enabled for that ProviderInstance. Forced abilities are always enabled downstream (Companies can force all Users and their Agents within Team Scope to use them, and Users can force their own Agents to use them). Nonpresence of a record is equivalent to state=False, forced=False."
     )
+    permission_references: ClassVar[List[str]] = ["provider_instance"]
 
     class Create(BaseModel):
         provider_instance_id: str
@@ -1480,8 +1564,31 @@ class ProviderInstanceExtensionAbilityModel(
         forced: Optional[bool] | None = None
 
 
-class ProviderInstanceExtensionAbilityManager(AbstractBLLManager, RouterMixin):
+class ProviderInstanceExtensionAbilityManager(
+    ProviderInstanceChildManager, RouterMixin
+):
     _model = ProviderInstanceExtensionAbilityModel
+
+    def _require_visible_ability(self, ability_id: Optional[str]) -> None:
+        """The ability enabled must be one the requester can see (404)."""
+        if ability_id and not ProviderExtensionAbilityModel.DB(
+            self.model_registry.DB.manager.Base
+        ).exists(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=ability_id,
+        ):
+            raise HTTPException(
+                status_code=404, detail="Provider extension ability not found"
+            )
+
+    def create_validation(self, entity: Any) -> None:
+        super().create_validation(entity)
+        self._require_visible_ability(entity.provider_extension_ability_id)
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        self._require_visible_ability(kwargs.get("provider_extension_ability_id"))
+        return super().update(id, **kwargs)
 
     # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/extension/ability/provider/instance"
