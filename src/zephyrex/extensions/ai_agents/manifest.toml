@@ -5,11 +5,27 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ai_agents"
-version = "1.0.0"
-description = "AI agent management extension providing agent creation, configuration, and activity tracking through AI framework"
+version = "2.0.0"
+description = "Agents that take turns on schedules, tasks and messages, acting through the abilities they are granted"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_AI_Agents"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["croniter>=6.0.0"]
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "ai"
+optional = false
+
+[[extension_dependencies]]
+name = "conversations"
+optional = false
+
+[[extension_dependencies]]
+name = "ai_prompts"
+optional = false
+
+[[extension_dependencies]]
+name = "ai_memories"
+optional = false

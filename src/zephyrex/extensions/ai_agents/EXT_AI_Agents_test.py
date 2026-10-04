@@ -1,237 +1,165 @@
-from typing import List
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The extension's abilities, acting for the user they name.
+
+Before this they were stand-ins: manage_agents reported zero agents,
+configure_agent_providers and manage_agent_abilities said they had done what
+they had not, and track_agent_activities returned no activities. Tasks
+(the ai_tasks extension's) were never run by anything."""
+
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 
-from zephyrex.extensions.AbstractEXTTest import (
-    AbstractEXTTest,
-    ExtensionTestConfig,
-    ExtensionTestType,
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.ai_agents.AgentTurnExecutor import ensure_ability
+from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    AgentAbilityManager,
+    AgentManager,
 )
 from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 
 
-class TestEXTAIAgents(AbstractEXTTest):
-    """
-    Test suite for EXT_AI_Agents extension.
-
-    Tests extension initialization, agent management capabilities, abilities, and BLL manager integration.
-    Focuses on testing agent functionality, project management, activity tracking, and static extension
-    metadata rather than component loading.
-
-    Test areas:
-    - Extension metadata and configuration
-    - Agent management capabilities and abilities
-    - BLL manager registration and integration
-    - Activity type management and seeding
-    - Agent commands and operations
-    - Extension lifecycle and configuration validation
-    """
-
-    # Configure the test class
+class TestAbilities(ExtensionServerMixin):
     extension_class = EXT_AI_Agents
-    test_config = ExtensionTestConfig(
-        test_types={
-            ExtensionTestType.STRUCTURE,
-            ExtensionTestType.METADATA,
-            ExtensionTestType.DEPENDENCIES,
-            ExtensionTestType.ABILITIES,
-            ExtensionTestType.ENVIRONMENT,
-        },
-        expected_abilities={
-            "manage_agents",
-            "configure_agent_providers",
-            "track_agent_activities",
-            "manage_agent_abilities",
-        },
-    )
 
-    # Abilities implemented as @ability methods on the extension class (the
-    # management/meta abilities). Checked for callability in
-    # test_static_extension_abilities.
-    expected_method_abilities = [
-        "manage_agents",
-        "configure_agent_providers",
-        "track_agent_activities",
-        "manage_agent_abilities",
-    ]
-
-    # The full ability name set the extension seeds — the method abilities above
-    # plus the turn executor's intrinsic/self abilities (thinking_turn is the
-    # turn's root Activity; speak/memorize/trim/recall/abilities are executor-
-    # handled). These are seeded as Ability rows (for grants + Activity.ability_id)
-    # without a method on the class, so they are asserted as the set, not probed
-    # as callables.
-    expected_abilities = [
-        "manage_agents",
-        "configure_agent_providers",
-        "track_agent_activities",
-        "manage_agent_abilities",
-        "thinking_turn",
-        "speak",
-        "memorize",
-        "trim",
-        "recall",
-        "abilities",
-    ]
-
-    expected_managers = [
-        "AgentManager",
-        "ProviderInstanceAgentManager",
-        "ProviderInstanceAgentAbilityManager",
-        "ProjectManager",
-        "ProjectContextProviderManager",
-        "ProjectContextPromptManager",
-        "AgentContextPromptManager",
-        "ActivityTypeManager",
-        "ActivityManager",
-    ]
-
-    expected_commands = [
-        "rename_agent",
-        "update_agent_image",
-        "toggle_favorite",
-        "set_provider_instance",
-        "enable_ability",
-        "disable_ability",
-        "create_activity",
-    ]
-
-    # Tests to skip
-    _skip_tests: List[str] = []
-
-    def test_extension_has_dependencies(self):
-        """
-        Test that the extension has proper dependencies defined.
-        """
-        assert hasattr(self.extension_class, "dependencies")
-        dependencies = self.extension_class.dependencies
-
-        # Check that it has extension dependencies
-        assert hasattr(dependencies, "ext")
-        ext_deps = dependencies.ext
-        assert len(ext_deps) >= 3
-
-        dep_names = [dep.name for dep in ext_deps]
-        assert "ai" in dep_names
-        assert "ai_prompts" in dep_names
-        assert "conversations" in dep_names
-
-    def test_extension_metadata(self):
-        """Test extension metadata and basic attributes"""
-        assert self.extension_class.name == "ai_agents"
-        assert self.extension_class.version == "1.0.0"
-        assert "AI agent management" in self.extension_class.description
-        assert hasattr(self.extension_class, "dependencies")
-
-    def test_dependencies_structure(self):
-        """Test that dependencies are properly structured"""
-        # Check extension dependencies
-        dependencies = self.extension_class.dependencies
-        ext_deps = dependencies.ext
-        dep_names = [dep.name for dep in ext_deps]
-        assert sorted(dep_names) == [
-            "ai",
-            "ai_memories",
-            "ai_prompts",
-            "conversations",
-        ]
-
-        # Check that all extension dependencies are required (not optional)
-        for dep in ext_deps:
-            assert dep.optional is False
-
-        # Check pip dependencies
-        pip_deps = dependencies.pip
-        assert len(pip_deps) >= 1
-
-        pip_dep_names = [dep.name for dep in pip_deps]
-        assert "tiktoken" in pip_dep_names
-
-        # Check sys dependencies
-        sys_deps = dependencies.sys
-        assert len(sys_deps) == 0  # AI Agents has no system dependencies
-
-    def test_static_extension_abilities(self):
-        """Test that static extension has ability methods"""
-        # Only the meta/management abilities are implemented as methods; the
-        # executor-handled self abilities are seeded names without a class method.
-        for ability in self.expected_method_abilities:
-            assert hasattr(self.extension_class, ability)
-            assert callable(getattr(self.extension_class, ability))
-
-    def test_abilities_have_decorator(self):
-        """Test that ability methods have the @ability decorator"""
-        # The _abilities class variable should contain all abilities
-        assert hasattr(self.extension_class, "_abilities")
-        abilities = self.extension_class._abilities
-        assert isinstance(abilities, set)
-        assert abilities == set(self.expected_abilities)
-
-    def test_no_commands_in_static_extension(self):
-        """Test that static extension doesn't have commands"""
-        # Static extensions like EXT_AI_Agents don't have commands
-        # Commands would be in the BLL layer
-        pass
-
-    def test_static_extension_inheritance(self):
-        """Test that extension inherits from AbstractStaticExtension"""
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            AbstractStaticExtension,
+    def _agent(self, user, model_registry):
+        return AgentManager(requester_id=user.id, model_registry=model_registry).create(
+            name=f"Agent {uuid.uuid4()}"
         )
 
-        assert issubclass(self.extension_class, AbstractStaticExtension)
+    def test_every_ability_is_declared(self):
+        assert {
+            "list_agents",
+            "take_turn",
+            "schedule_task",
+            "list_tasks",
+            "cancel_task",
+            "grant_ability",
+            "turn_activity",
+            "thinking_turn",
+            "speak",
+        } <= EXT_AI_Agents.abilities
 
-    def test_extension_metadata_fields(self):
-        """Test that extension has all required metadata fields"""
-        assert hasattr(self.extension_class, "name")
-        assert hasattr(self.extension_class, "friendly_name")
-        assert hasattr(self.extension_class, "version")
-        assert hasattr(self.extension_class, "description")
+    async def test_an_ability_needs_a_requester(self, server):
+        with pytest.raises(HTTPException) as refused:
+            await EXT_AI_Agents.list_agents("")
+        assert refused.value.status_code == 400
 
-        assert self.extension_class.name == "ai_agents"
-        assert self.extension_class.friendly_name == "AI Agent Management"
-        assert self.extension_class.version == "1.0.0"
+    async def test_list_agents_is_the_users(self, admin_a, admin_b, model_registry):
+        mine = self._agent(admin_a, model_registry)
+        theirs = self._agent(admin_b, model_registry)
+        ids = {a["id"] for a in await EXT_AI_Agents.list_agents(admin_a.id)}
+        assert mine.id in ids and theirs.id not in ids
 
-    def test_extension_class_variables(self):
-        """Test that extension has expected class variables"""
-        assert hasattr(self.extension_class, "_abilities")
-        assert hasattr(self.extension_class, "_env")
-        assert hasattr(self.extension_class, "dependencies")
+    async def test_a_one_shot_task(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        due = datetime.now(timezone.utc) + timedelta(days=1)
+        task = await EXT_AI_Agents.schedule_task(
+            admin_a.id, agent.id, "send the summary", due_at=due.isoformat(), priority=1
+        )
+        assert (task["invocation_type"], task["one_shot"], task["priority"]) == (
+            "timer",
+            True,
+            1,
+        )
+        assert task["invocation_payload"] == "send the summary"
+        assert datetime.fromisoformat(task["next_fire_at"]).replace(
+            tzinfo=timezone.utc
+        ) == due.replace(tzinfo=timezone.utc)
 
-    def test_extension_env_vars(self):
-        """Test that extension has environment variables"""
-        assert hasattr(self.extension_class, "_env")
-        env_vars = self.extension_class._env
-        assert isinstance(env_vars, dict)
+    async def test_a_scheduled_task_starts_after_its_due_time(
+        self, admin_a, model_registry
+    ):
+        agent = self._agent(admin_a, model_registry)
+        task = await EXT_AI_Agents.schedule_task(
+            admin_a.id,
+            agent.id,
+            "weekly review",
+            due_at="2030-01-01T00:00:00+00:00",
+            cron="0 9 * * 1",
+        )
+        assert task["invocation_type"] == "schedule"
+        assert task["next_fire_at"].startswith("2030-01-07T09:00")
 
-        # AI Agents extension should have agent-related env vars
-        expected_env_vars = [
-            "AI_AGENTS_MAX_MEMORY",
-            "AI_AGENTS_DEFAULT_MODEL",
-            "AI_AGENTS_ACTIVITY_LOGGING",
-        ]
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"instructions": " ", "due_at": "2030-01-01T00:00:00"},
+            {"instructions": "x"},
+            {"instructions": "x", "due_at": "next tuesday"},
+        ],
+    )
+    async def test_a_task_that_cannot_fire_is_refused(
+        self, fields, admin_a, model_registry
+    ):
+        agent = self._agent(admin_a, model_registry)
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_AI_Agents.schedule_task(admin_a.id, agent.id, **fields)
 
-        for env_var in expected_env_vars:
-            assert env_var in env_vars, f"Missing environment variable: {env_var}"
+    async def test_a_bad_cron_is_422(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        with pytest.raises(HTTPException) as refused:
+            await EXT_AI_Agents.schedule_task(
+                admin_a.id, agent.id, "x", cron="not a cron"
+            )
+        assert refused.value.status_code == 422
 
-    def test_extension_type_properties(self):
-        """Test extension type properties"""
-        # Static extensions don't have these properties by default
-        # They would be set in concrete implementations if needed
-        pass
+    async def test_tasks_most_urgent_first_and_cancelled(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        soon = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        later = await EXT_AI_Agents.schedule_task(
+            admin_a.id, agent.id, "later", due_at=soon, priority=4
+        )
+        urgent = await EXT_AI_Agents.schedule_task(
+            admin_a.id, agent.id, "urgent", due_at=soon, priority=1
+        )
+        listed = await EXT_AI_Agents.list_tasks(admin_a.id, agent.id)
+        assert [t["id"] for t in listed] == [urgent["id"], later["id"]]
+        await EXT_AI_Agents.cancel_task(admin_a.id, urgent["id"])
+        listed = await EXT_AI_Agents.list_tasks(admin_a.id, agent.id)
+        assert [t["id"] for t in listed] == [later["id"]]
 
-    def test_expected_managers_list(self):
-        """Test that the extension defines expected managers"""
-        # The extension should have a way to define which managers it expects to register
-        # This helps ensure the BLL managers are properly structured
-        assert len(self.expected_managers) > 0
-        assert "AgentManager" in self.expected_managers
-        assert "ProjectManager" in self.expected_managers
-        assert "ActivityManager" in self.expected_managers
+    async def test_no_tasks_on_someone_elses_agent(
+        self, admin_a, admin_b, model_registry
+    ):
+        agent = self._agent(admin_a, model_registry)
+        with pytest.raises(HTTPException) as refused:
+            await EXT_AI_Agents.schedule_task(
+                admin_b.id, agent.id, "x", due_at="2030-01-01T00:00:00"
+            )
+        assert refused.value.status_code in (403, 404)
 
-    def test_extension_abilities_list(self):
-        """Test that the extension defines expected abilities"""
-        assert len(self.expected_abilities) > 0
-        for ability in self.expected_abilities:
-            assert isinstance(ability, str)
-            assert len(ability) > 0
+    async def test_grant_and_revoke(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        ability_id = ensure_ability(model_registry, "list_agents")
+        grants = AgentAbilityManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        await EXT_AI_Agents.grant_ability(admin_a.id, agent.id, ability_id)
+        assert [g.name for g in grants.grants(agent.id)] == ["list_agents"]
+        await EXT_AI_Agents.grant_ability(
+            admin_a.id, agent.id, ability_id, enabled=False
+        )
+        assert grants.grants(agent.id) == []
+
+    async def test_take_turn_and_its_activity(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        turn = await EXT_AI_Agents.take_turn(admin_a.id, agent.id, "hello")
+        # No rotation to think with: the turn is recorded, and failed.
+        assert (turn["status"], turn["error"]) == (
+            "failed",
+            "the agent has no rotation configured",
+        )
+        trees = await EXT_AI_Agents.turn_activity(admin_a.id, turn["id"])
+        [root] = trees.values()
+        assert root["activity"]["title"] == "Thinking turn"
+
+    async def test_no_one_reads_anothers_turn(self, admin_a, admin_b, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        turn = await EXT_AI_Agents.take_turn(admin_a.id, agent.id)
+        with pytest.raises(HTTPException) as refused:
+            await EXT_AI_Agents.turn_activity(admin_b.id, turn["id"])
+        assert refused.value.status_code == 404

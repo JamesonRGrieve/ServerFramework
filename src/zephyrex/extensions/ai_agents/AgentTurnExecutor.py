@@ -1,35 +1,43 @@
-"""Agent turn execution — the thinking-turn loop.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""One agent turn: the thinking-turn loop over one InvocationInstance.
 
-Runs one agent turn (one :class:`InvocationInstanceModel`):
+1. The system prompt is the agent's context prompts (or a default) with the
+   turn's state filled in; the model is offered the agent's granted tools.
+2. The model is called, and each tool it asks for is run, until it answers
+   without asking or ``max_steps`` round trips have passed.
+3. Every tool call is a child Activity of the turn's root ``thinking_turn``
+   Activity; the root records the model's reasoning and final answer.
+4. ``speak`` (posting a message), ``memorize``, ``trim``, ``recall`` and
+   ``abilities`` are performed here, since they need the turn; every other
+   tool is an extension ability run by :class:`AbilityInvoker`.
+5. The instance records running, then succeeded or failed.
 
-1. builds the system prompt from the thinking-turn prompt + injected state +
-   the agent's granted tool catalog;
-2. calls the model and drives a native tool-call loop, bounded by ``max_steps``;
-3. records every tool call as a child :class:`ActivityModel` under the turn's
-   root ``thinking_turn`` Activity;
-4. handles the ``speak`` ability specially — it produces an operator-facing
-   Message (the only thing a turn renders as a chat bubble); every other tool
-   routes through the access-gated :class:`AbilityInvoker`;
-5. records the instance lifecycle (running -> succeeded/failed).
+The turn acts as the agent's owner: tools, messages, memories and the turn's
+activities are theirs, under their permissions. The turn's lifecycle is the
+server's bookkeeping, written as ROOT once the requester has been shown to
+see the instance.
 
-The model transport (``chat_fn``) is injectable: it defaults to a rotation-based
-native chat over the agent's provider instances, but a caller (or a test) may
-supply one directly to drive the loop deterministically. Everything else —
-prompt assembly, the loop, the access gate, Activity/Message writes, the
-instance lifecycle — runs for real against the database.
+The model transport (``chat_fn``) defaults to native chat over the agent's
+rotation; a caller may hand in another implementing the same contract.
 """
 
 import json
+import re
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
+
+from fastapi import HTTPException
 
 from zephyrex.extensions.ai_agents.AbilityInvoker import (
     AbilityAccessDenied,
     AbilityInvoker,
     ToolInvocationError,
     ability_to_tool_schema,
+    coerce_arguments,
 )
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    EXTENSION_NAME,
+    AbilityGrant,
     ActivityManager,
     ActivityState,
     AgentAbilityManager,
@@ -38,70 +46,56 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     AgentMemoryManager,
     ConversationAgentManager,
     InvocationInstanceManager,
+    InvocationTriggerManager,
+    tool_names,
 )
 from zephyrex.extensions.ai_memories.BLL_AI_Memories import MemoryManager
+from zephyrex.extensions.ExternalErrors import (
+    BaseExternalError,
+    PermanentExternalError,
+)
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+from zephyrex.logic.BLL_Extensions import AbilityManager, ExtensionManager
 
-# The model transport: (messages, tools) -> {"success", "message"} or
-# {"success": False, "error"}.
+# The model transport: (messages, tools) -> {"message": {role, content,
+# tool_calls, reasoning}, ...}. Failures raise (typed external errors).
 ChatTransport = Callable[
     [List[Dict[str, Any]], Optional[List[Dict[str, Any]]]], Awaitable[Dict[str, Any]]
 ]
+ToolCall = Tuple[Optional[str], Optional[str], Any]
 
 # Long-term memories a recall returns, and that a turn's prompt carries.
 RECALL_LIMIT = 5
 PROMPT_MEMORY_LIMIT = 10
+RECENT_TURNS = 5
 
-# Bounded tool loop: how many model<->tool round trips a single turn may take
-# before it is forced to conclude. Prevents a runaway tool-calling turn.
+# Model <-> tool round trips a turn may take before it must conclude.
 DEFAULT_MAX_STEPS = 8
 
-# The ability whose invocation the turn's root Activity represents. Never a
-# callable tool (see AbilityInvoker.NEVER_AGENT_INVOCABLE).
 THINKING_TURN_ABILITY = "thinking_turn"
-
-# The sole operator-communication ability. Handled by the executor (it creates a
-# Message), not routed through the general invoker, because it needs turn context
-# (conversation, instance) the invoker does not carry.
 SPEAK_ABILITY = "speak"
-
-# Memory abilities, also executor-handled ("self" abilities that operate on the
-# agent's own memory): memorize (short-term key/value or long-term store), trim
-# (drop short-term keys), recall (search long-term memory).
 MEMORIZE_ABILITY = "memorize"
 TRIM_ABILITY = "trim"
 RECALL_ABILITY = "recall"
-
-# Discovery ability: lets a turn enumerate/search the abilities it is entitled to
-# use (its own granted, invocable set), so the model can find its capabilities at
-# runtime rather than relying solely on the static prompt. Executor-handled: it
-# needs the turn's allowlist + invoker to introspect the callable catalog.
 ABILITIES_ABILITY = "abilities"
-
-# Abilities the executor performs itself rather than routing through the general
-# AbilityInvoker (they need turn/agent context the invoker does not carry).
 SELF_ABILITIES = frozenset(
-    {
-        SPEAK_ABILITY,
-        MEMORIZE_ABILITY,
-        TRIM_ABILITY,
-        RECALL_ABILITY,
-        ABILITIES_ABILITY,
-    }
+    {SPEAK_ABILITY, MEMORIZE_ABILITY, TRIM_ABILITY, RECALL_ABILITY, ABILITIES_ABILITY}
 )
 
-# Reserved short-term memory keys hold executor-internal working state (e.g. the
-# set of abilities discovered via `abilities`), surfaced through dedicated prompt
-# placeholders rather than the general short-term memory view. They are excluded
-# from {{SHORT_TERM_MEMORIES}} so they never read as ordinary agent notes.
+# Reserved short-term memory keys hold the executor's working state (the
+# abilities discovered with `abilities`); they surface through their own
+# placeholder, never as the agent's notes.
 RESERVED_MEMORY_PREFIX = "__"
 SEARCHED_ABILITIES_KEY = "__searched_abilities__"
 
-# Committed, generic fallback used when no thinking-turn prompt is configured for
-# the agent (the private per-deployment prompt lives, gitignored, in the
-# ai_prompts seed dir and is layered in as an agent context prompt). Uses the
-# same {VARIABLE} placeholders so state injection works either way.
+NATIVE = "native"
+IN_BAND = "in_band"
+IN_BAND_CALL = re.compile(r"```tool\b\s*(.*?)```", re.DOTALL)
+UNFILLED_PLACEHOLDER = re.compile(r"\{\{[A-Za-z_][A-Za-z0-9_]*\}\}")
+
+# Used when the agent has no context prompts; the same {VARIABLE}s as a
+# configured thinking-turn prompt, so state is filled in either way.
 DEFAULT_THINKING_TURN_PROMPT = (
     "You are an autonomous agent taking one turn. Think about the current state, "
     "then act only through the tools you have been granted; you may call several, "
@@ -117,8 +111,42 @@ DEFAULT_THINKING_TURN_PROMPT = (
 )
 
 
+class TurnContext:
+    """What a turn's tools need: the instance, its root activity, the agent,
+    who it acts as, and what it may use."""
+
+    def __init__(
+        self,
+        instance: Any,
+        root: Any,
+        agent: Any,
+        acting: str,
+        allowed: Dict[str, AbilityGrant],
+        invoker: AbilityInvoker,
+    ) -> None:
+        self.instance = instance
+        self.root = root
+        self.agent = agent
+        self.acting = acting
+        self.allowed = allowed
+        self.invoker = invoker
+
+    def ability_id(self, tool: Optional[str]) -> str:
+        """The Ability an activity for ``tool`` is typed by: the grant's,
+        else (an ungranted call) the turn's own."""
+        grant = self.allowed.get(tool or "")
+        return grant.ability_id if grant else str(self.root.ability_id)
+
+    def self_ability(self, tool: str) -> Optional[str]:
+        """The executor ability ``tool`` names, if it names one."""
+        grant = self.allowed.get(tool)
+        if grant and grant.extension == EXTENSION_NAME and grant.name in SELF_ABILITIES:
+            return grant.name
+        return None
+
+
 class AgentTurnExecutor:
-    """Executes a single agent turn against an InvocationInstance."""
+    """Runs turns as ``requester_id``, who must see the turn's instance."""
 
     def __init__(
         self,
@@ -126,136 +154,98 @@ class AgentTurnExecutor:
         requester_id: str,
         chat_fn: Optional[ChatTransport] = None,
         max_steps: int = DEFAULT_MAX_STEPS,
-        tool_mode: str = "native",
+        tool_mode: str = NATIVE,
     ) -> None:
         self.model_registry = model_registry
         self.requester_id = requester_id
         self._chat_fn_override = chat_fn
         self.max_steps = max_steps
-        # "native"  -> pass a tools=[...] catalog, read structured tool_calls.
-        # "in_band" -> pass no tools; the model expresses tool calls as fenced
-        #              ```tool JSON blocks in its text, which we parse. Needed
-        #              for models/backends without native function-calling.
+        # NATIVE passes a tools=[...] catalog and reads structured tool_calls;
+        # IN_BAND passes none and parses ```tool JSON blocks from the text,
+        # for models without native function-calling.
         self.tool_mode = tool_mode
 
-    # -- public entrypoint -------------------------------------------------
+    def _as(self, manager_class: Any, requester_id: str) -> Any:
+        return manager_class(
+            requester_id=requester_id, model_registry=self.model_registry
+        )
+
+    def _bookkeeping(self, manager_class: Any) -> Any:
+        return self._as(manager_class, env("ROOT_ID"))
 
     async def run(self, invocation_instance_id: str) -> Dict[str, Any]:
-        """Run the turn for ``invocation_instance_id`` and return a summary.
-
-        Turn failures are captured onto the instance (status='failed', error)
-        and returned as ``{"status": "failed", ...}`` rather than raised, so a
-        single bad turn never crashes the driver that scheduled it.
-        """
-        instances = InvocationInstanceManager(
-            requester_id=self.requester_id, model_registry=self.model_registry
+        """Run the turn and return a summary. A failed turn is recorded on
+        its instance (status 'failed', error) and returned, never raised, so
+        one bad turn never stops what scheduled it."""
+        instance = self._as(InvocationInstanceManager, self.requester_id).get(
+            id=invocation_instance_id
         )
-        instance = instances.get(id=invocation_instance_id)
-        instances.update(
-            id=instance.id,
-            status="running",
-            started_at=datetime.now(timezone.utc),
+        lifecycle = self._bookkeeping(InvocationInstanceManager)
+        lifecycle.update(
+            id=instance.id, status="running", started_at=datetime.now(timezone.utc)
         )
-
         try:
             summary = await self._run_turn(instance)
-            instances.update(
-                id=instance.id,
-                status="succeeded",
-                completed_at=datetime.now(timezone.utc),
-            )
-            return {"status": "succeeded", **summary}
-        except Exception as exc:  # a turn failure must not crash the driver
-            logger.error(f"Agent turn {instance.id} failed: {exc}")
-            instances.update(
-                id=instance.id,
-                status="failed",
-                error=str(exc),
-                completed_at=datetime.now(timezone.utc),
-            )
-            return {"status": "failed", "error": str(exc)}
+        except (BaseExternalError, HTTPException, ToolInvocationError) as failed:
+            reason = failed.detail if isinstance(failed, HTTPException) else str(failed)
+            return self._failed(lifecycle, instance.id, str(reason))
+        except Exception:  # the task-runner boundary: record, never propagate
+            logger.exception("Agent turn %s failed", instance.id)
+            return self._failed(lifecycle, instance.id, "internal error")
+        lifecycle.update(
+            id=instance.id, status="succeeded", completed_at=datetime.now(timezone.utc)
+        )
+        return {"status": "succeeded", **summary}
 
-    # -- turn body ---------------------------------------------------------
+    @staticmethod
+    def _failed(lifecycle: Any, instance_id: str, reason: str) -> Dict[str, Any]:
+        logger.warning("Agent turn %s failed: %s", instance_id, reason)
+        lifecycle.update(
+            id=instance_id,
+            status="failed",
+            error=reason,
+            completed_at=datetime.now(timezone.utc),
+        )
+        return {"status": "failed", "error": reason}
 
     async def _run_turn(self, instance: Any) -> Dict[str, Any]:
-        agent = AgentManager(
-            requester_id=self.requester_id, model_registry=self.model_registry
-        ).get(id=instance.agent_id)
-
-        # The turn acts under the agent's own identity so tool calls and message
-        # writes are ACL-scoped to what the agent's owner may reach.
-        acting_requester = getattr(agent, "user_id", None) or self.requester_id
-
-        ability_ids = AgentAbilityManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        ).enabled_abilities(agent.id)
-        allowed = set(ability_ids.keys())
-
-        # thinking_turn is intrinsic (not a granted tool) but its Ability id is
-        # required for every turn's root Activity — ensure the row exists.
-        if THINKING_TURN_ABILITY not in ability_ids:
-            ability_ids[THINKING_TURN_ABILITY] = ensure_ability(
-                self.model_registry, THINKING_TURN_ABILITY
-            )
-
+        agent = self._as(AgentManager, self.requester_id).get(id=instance.agent_id)
+        acting = agent.user_id or self.requester_id
+        allowed = tool_names(self._as(AgentAbilityManager, acting).grants(agent.id))
         invoker = AbilityInvoker(
-            model_registry=self.model_registry,
-            requester_id=acting_requester,
-            provider_instance_resolver=self._make_provider_instance_resolver(
-                acting_requester
-            ),
+            model_registry=self.model_registry, requester_id=acting
         )
-
-        system_prompt = self._build_system_prompt(agent, instance, acting_requester)
-        in_band = self.tool_mode == "in_band"
-        # Native mode passes a tool catalog; in-band mode passes none (the model
-        # writes tool calls as text) and appends the in-band call convention +
-        # the granted tool list to the system prompt.
-        tools = None if in_band else self._build_tools(invoker, allowed)
-        if in_band:
-            system_prompt = system_prompt + self._in_band_tool_instructions(
-                invoker, allowed
-            )
-
-        root_ability_id = self._ability_id(THINKING_TURN_ABILITY, ability_ids)
-        activities = ActivityManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        )
+        activities = self._as(ActivityManager, acting)
         root = activities.create(
             invocation_instance_id=instance.id,
-            ability_id=root_ability_id,
+            ability_id=ensure_ability(self.model_registry, THINKING_TURN_ABILITY),
             title="Thinking turn",
             body="",
         )
+        turn = TurnContext(instance, root, agent, acting, allowed, invoker)
 
-        chat_fn = self._chat_fn_override or self._make_rotation_chat(
-            agent, acting_requester
-        )
+        in_band = self.tool_mode == IN_BAND
+        system_prompt = self._build_system_prompt(agent, instance, acting)
+        tools = None if in_band else self._build_tools(turn)
+        if in_band:
+            system_prompt += self._in_band_tool_instructions(turn)
+        chat_fn = self._chat_fn_override or self._make_rotation_chat(agent, acting)
 
-        kickoff = instance.payload or "Take your turn."
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": kickoff},
+            {"role": "user", "content": instance.payload or "Take your turn."},
         ]
-
         final_content = ""
         final_reasoning = ""
         spoke = False
         tool_calls_made = 0
 
         for _step in range(self.max_steps):
-            result = await chat_fn(messages, tools)
-            if not result.get("success"):
-                raise ToolInvocationError(result.get("error", "model call failed"))
-            message = result["message"]
+            message = (await chat_fn(messages, tools))["message"]
             content = message.get("content")
-            # Capture the model's deliberation (when a provider exposes it) so
-            # the turn's thought is recorded even on a tool-call turn where
-            # content is empty. In in-band mode the thought is the content with
-            # the ```tool blocks stripped out.
             final_reasoning = message.get("reasoning") or final_reasoning
             messages.append(self._assistant_message_dict(message))
-
+            calls: List[ToolCall]
             if in_band:
                 calls = self._parse_in_band_calls(content)
                 if content:
@@ -267,38 +257,23 @@ class AgentTurnExecutor:
                 ]
                 if content:
                     final_content = content
-
             if not calls:
                 break
 
             in_band_results: List[str] = []
             for call_id, name, arguments in calls:
                 tool_calls_made += 1
-                tool_result, did_speak = await self._dispatch_tool(
-                    name=name,
-                    arguments=arguments,
-                    allowed=allowed,
-                    ability_ids=ability_ids,
-                    invoker=invoker,
-                    instance=instance,
-                    root=root,
-                    agent=agent,
-                    acting_requester=acting_requester,
-                )
+                result, did_speak = await self._dispatch_tool(name, arguments, turn)
                 spoke = spoke or did_speak
                 if in_band:
-                    in_band_results.append(f"{name}: {tool_result}")
+                    in_band_results.append(f"{name}: {result}")
                 else:
                     messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": tool_result,
-                        }
+                        {"role": "tool", "tool_call_id": call_id, "content": result}
                     )
             if in_band:
-                # No tool role without native tools: feed results back as a
-                # user turn so the model can continue.
+                # Without native tools there is no tool role: the results
+                # come back as the next user message.
                 messages.append(
                     {
                         "role": "user",
@@ -306,12 +281,12 @@ class AgentTurnExecutor:
                     }
                 )
 
-        body_sections = [
+        body = "\n\n".join(
             section.strip()
             for section in (final_reasoning, final_content)
             if section and section.strip()
-        ]
-        activities.update(id=root.id, body="\n\n".join(body_sections) or "(no output)")
+        )
+        activities.update(id=root.id, body=body or "(no output)")
         return {
             "instance_id": instance.id,
             "root_activity_id": root.id,
@@ -319,464 +294,264 @@ class AgentTurnExecutor:
             "tool_calls": tool_calls_made,
         }
 
-    # -- tool dispatch -----------------------------------------------------
-
-    async def _dispatch_tool(
-        self,
-        name: Optional[str],
-        arguments: Any,
-        allowed: set,
-        ability_ids: Dict[str, str],
-        invoker: AbilityInvoker,
-        instance: Any,
-        root: Any,
-        agent: Any,
-        acting_requester: str,
-    ) -> Any:
-        """Dispatch one tool call. Returns ``(result_text, did_speak)``.
-
-        Executor-handled "self" abilities (speak, memorize, trim, recall) are
-        performed here (they need turn/agent context); everything else routes
-        through the access-gated invoker. All are gated: a call the agent is not
-        permitted is refused, recorded, and fed back to the model, never
-        silently performed.
-        """
-        if not name:
-            return "Tool call refused: it named no ability.", False
-
-        activities = ActivityManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        )
-
-        if name in SELF_ABILITIES:
-            if not invoker.is_allowed(name, allowed):
-                activities.create(
-                    invocation_instance_id=instance.id,
-                    ability_id=self._ability_id(
-                        name, ability_ids, fallback=root.ability_id
-                    ),
-                    parent_id=root.id,
-                    title=f"Denied: {name}",
-                    body=f"Agent is not permitted to use {name}",
-                    state=ActivityState.ERROR,
-                )
-                return f"Refused: you are not permitted to use {name}.", False
-            if name == SPEAK_ABILITY:
-                return await self._do_speak(
-                    arguments, instance, root, agent, acting_requester, ability_ids
-                )
-            if name == MEMORIZE_ABILITY:
-                return (
-                    await self._do_memorize(
-                        arguments, instance, root, agent, acting_requester, ability_ids
-                    ),
-                    False,
-                )
-            if name == TRIM_ABILITY:
-                return (
-                    self._do_trim(
-                        arguments, instance, root, agent, acting_requester, ability_ids
-                    ),
-                    False,
-                )
-            if name == RECALL_ABILITY:
-                return (
-                    await self._do_recall(
-                        arguments, instance, root, agent, acting_requester, ability_ids
-                    ),
-                    False,
-                )
-            if name == ABILITIES_ABILITY:
-                return (
-                    self._do_abilities(
-                        arguments,
-                        instance,
-                        root,
-                        agent,
-                        acting_requester,
-                        ability_ids,
-                        allowed,
-                        invoker,
-                    ),
-                    False,
-                )
-
-        child_ability_id = self._ability_id(name, ability_ids, fallback=root.ability_id)
-        try:
-            outcome = await invoker.invoke(name, arguments, allowed)
-        except AbilityAccessDenied as denied:
-            # Security event: record it and tell the model, do not perform it.
-            activities.create(
-                invocation_instance_id=instance.id,
-                ability_id=child_ability_id,
-                parent_id=root.id,
-                title=f"Denied: {name}",
-                body=str(denied),
-                state=ActivityState.ERROR,
-            )
-            return f"Refused: {denied}", False
-
-        success = outcome.get("success")
-        content = outcome.get("content") if success else outcome.get("error")
-        activities.create(
-            invocation_instance_id=instance.id,
-            ability_id=child_ability_id,
-            parent_id=root.id,
-            title=str(name),
-            body=self._stringify(content),
-            state=ActivityState.SUCCESS if success else ActivityState.ERROR,
-        )
-        return self._stringify(content), False
-
-    async def _do_speak(
-        self,
-        arguments: Any,
-        instance: Any,
-        root: Any,
-        agent: Any,
-        acting_requester: str,
-        ability_ids: Dict[str, str],
-    ) -> Any:
-        """Create an operator-facing Message and record a speak Activity."""
-        args = self._parse_arguments(arguments)
-        # Accept "message"/"content" (native tool schema) or "body" (sentience).
-        text = args.get("message") or args.get("content") or args.get("body") or ""
-        if not text:
-            return "Nothing was said (empty message).", False
-
-        conversation_id = args.get("conversation_id") or self._resolve_conversation(
-            instance, agent, acting_requester
-        )
-        activities = ActivityManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        )
-        speak_ability_id = self._ability_id(
-            SPEAK_ABILITY, ability_ids, fallback=root.ability_id
-        )
-
-        if not conversation_id:
-            activities.create(
-                invocation_instance_id=instance.id,
-                ability_id=speak_ability_id,
-                parent_id=root.id,
-                title="speak",
-                body=text,
-                state=ActivityState.WARNING,
-            )
-            return "No conversation available to speak into; message not sent.", False
-
-        from zephyrex.extensions.conversations.BLL_Conversations import (
-            ConversationManager,
-        )
-
-        conversations = ConversationManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        )
-        # Agent messages carry no author — this is also the loop guard the
-        # conversation-message hook relies on to avoid re-triggering itself on
-        # the agent's own reply.
-        message_fields: Dict[str, Any] = {
-            "conversation_id": conversation_id,
-            "content": text,
-        }
-        # Link the message back to this turn when the field is available (added
-        # to MessageModel by the ai_agents augmentation hook).
-        try:
-            conversations.messages.create_agent_message(
-                invocation_instance_id=instance.id, **message_fields
-            )
-        except TypeError:
-            conversations.messages.create_agent_message(**message_fields)
-
-        activities.create(
-            invocation_instance_id=instance.id,
-            ability_id=speak_ability_id,
-            parent_id=root.id,
-            title="speak",
-            body=text,
-            state=ActivityState.SUCCESS,
-        )
-        return "Message sent.", True
-
-    # -- memory (self) abilities ------------------------------------------
-
-    def _long_term(self, acting_requester: str) -> MemoryManager:
-        """Long-term memory (the ai_memories store), kept for the agent's
-        user."""
-        return MemoryManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        )
-
-    def _memory_manager(self, acting_requester: str) -> AgentMemoryManager:
-        return AgentMemoryManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        )
-
-    def _record_self_activity(
-        self, name, body, instance, root, acting_requester, ability_ids, state
+    def _record(
+        self, turn: TurnContext, tool: str, title: str, body: str, state: ActivityState
     ) -> None:
-        ActivityManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        ).create(
-            invocation_instance_id=instance.id,
-            ability_id=self._ability_id(name, ability_ids, fallback=root.ability_id),
-            parent_id=root.id,
-            title=name,
+        self._as(ActivityManager, turn.acting).create(
+            invocation_instance_id=turn.instance.id,
+            ability_id=turn.ability_id(tool),
+            parent_id=turn.root.id,
+            title=title,
             body=body,
             state=state,
         )
 
-    async def _do_memorize(
-        self, arguments, instance, root, agent, acting_requester, ability_ids
+    async def _dispatch_tool(
+        self, name: Optional[str], arguments: Any, turn: TurnContext
+    ) -> Tuple[str, bool]:
+        """Run one tool call: ``(what to tell the model, whether it spoke)``.
+
+        A call the agent may not make is refused, recorded and told to the
+        model; a tool that cannot run is recorded as an error and its reason
+        told to the model; neither ends the turn."""
+        if not name:
+            return "Tool call refused: it named no ability.", False
+        if not turn.invoker.is_allowed(name, turn.allowed):
+            self._record(
+                turn,
+                name,
+                f"Denied: {name}",
+                f"The agent may not use {name}",
+                ActivityState.ERROR,
+            )
+            return f"Refused: you are not permitted to use {name}.", False
+        try:
+            args = coerce_arguments(arguments)
+            performed = turn.self_ability(name)
+            if performed == SPEAK_ABILITY:
+                return await self._do_speak(args, turn, name)
+            if performed is not None:
+                return await self._do_self(performed, args, turn, name), False
+            outcome = self._stringify(
+                await turn.invoker.invoke(name, args, turn.allowed)
+            )
+        except AbilityAccessDenied as denied:
+            self._record(
+                turn, name, f"Denied: {name}", str(denied), ActivityState.ERROR
+            )
+            return f"Refused: {denied}", False
+        except ToolInvocationError as failed:
+            self._record(turn, name, name, str(failed), ActivityState.ERROR)
+            return f"Failed: {failed}", False
+        self._record(turn, name, name, outcome, ActivityState.SUCCESS)
+        return outcome, False
+
+    async def _do_self(
+        self, ability: str, args: Dict[str, Any], turn: TurnContext, tool: str
     ) -> str:
-        """Save a memory: short-term (keyed working memory) by default, or
-        long-term (the ai_memories store) when ``long`` is true."""
-        args = self._parse_arguments(arguments)
-        key = args.get("key")
-        content = args.get("body") or args.get("content") or ""
-        long = bool(args.get("long"))
-        if not content:
-            return "Nothing memorized (empty content)."
-        if long:
-            await self._long_term(acting_requester).keep(agent.id, content, key=key)
-            result = f"Stored to long-term memory{f' under {key!r}' if key else ''}."
+        if ability == ABILITIES_ABILITY:
+            return self._do_abilities(args, turn, tool)
+        if ability == MEMORIZE_ABILITY:
+            result = await self._do_memorize(args, turn)
+        elif ability == TRIM_ABILITY:
+            result = self._do_trim(args, turn)
         else:
-            if not key:
-                return "Short-term memory requires a key."
-            self._memory_manager(acting_requester).remember(agent.id, key, content)
-            result = f"Remembered {key!r} in short-term memory."
-        self._record_self_activity(
-            MEMORIZE_ABILITY,
-            result,
-            instance,
-            root,
-            acting_requester,
-            ability_ids,
-            ActivityState.SUCCESS,
-        )
+            result = await self._do_recall(args, turn)
+        self._record(turn, tool, ability, result, ActivityState.SUCCESS)
         return result
 
-    def _do_trim(
-        self, arguments, instance, root, agent, acting_requester, ability_ids
-    ) -> str:
-        """Drop short-term memory keys."""
-        args = self._parse_arguments(arguments)
+    async def _do_speak(
+        self, args: Dict[str, Any], turn: TurnContext, tool: str
+    ) -> Tuple[str, bool]:
+        """Post the agent's message in the conversation the turn is about
+        (or the one named), as the agent."""
+        from zephyrex.extensions.conversations.BLL_Conversations import MessageManager
+
+        text = args.get("message") or args.get("content") or args.get("body") or ""
+        if not text:
+            return "Nothing was said (empty message).", False
+        conversation_id = args.get("conversation_id") or self._resolve_conversation(
+            turn
+        )
+        if not conversation_id:
+            self._record(turn, tool, SPEAK_ABILITY, text, ActivityState.WARNING)
+            return "No conversation available to speak into; message not sent.", False
+        try:
+            self._as(MessageManager, turn.acting).create_agent_message(
+                conversation_id=conversation_id, content=text
+            )
+        except HTTPException as refused:
+            raise ToolInvocationError(f"speak refused: {refused.detail}") from None
+        self._record(turn, tool, SPEAK_ABILITY, text, ActivityState.SUCCESS)
+        return "Message sent.", True
+
+    def _long_term(self, acting: str) -> MemoryManager:
+        """Long-term memory (the ai_memories store), kept for the agent's
+        owner."""
+        manager: MemoryManager = self._as(MemoryManager, acting)
+        return manager
+
+    def _short_term(self, acting: str) -> AgentMemoryManager:
+        manager: AgentMemoryManager = self._as(AgentMemoryManager, acting)
+        return manager
+
+    async def _do_memorize(self, args: Dict[str, Any], turn: TurnContext) -> str:
+        """Short-term (keyed working memory) by default; long-term (the
+        ai_memories store) when ``long``."""
+        key = args.get("key") or None
+        content = args.get("body") or args.get("content") or ""
+        if not content:
+            return "Nothing memorized (empty content)."
+        if args.get("long"):
+            await self._long_term(turn.acting).keep(turn.agent.id, content, key=key)
+            return f"Stored to long-term memory{f' under {key!r}' if key else ''}."
+        if not key:
+            return "Short-term memory requires a key."
+        self._short_term(turn.acting).remember(turn.agent.id, key, content)
+        return f"Remembered {key!r} in short-term memory."
+
+    def _do_trim(self, args: Dict[str, Any], turn: TurnContext) -> str:
         keys = args.get("memories") or args.get("keys") or []
         if isinstance(keys, str):
             keys = [keys]
-        removed = self._memory_manager(acting_requester).forget(agent.id, keys)
-        result = (
+        removed = self._short_term(turn.acting).forget(turn.agent.id, list(keys))
+        return (
             f"Trimmed {removed} short-term memory entr{'y' if removed == 1 else 'ies'}."
         )
-        self._record_self_activity(
-            TRIM_ABILITY,
-            result,
-            instance,
-            root,
-            acting_requester,
-            ability_ids,
-            ActivityState.SUCCESS,
-        )
-        return result
 
-    async def _do_recall(
-        self, arguments, instance, root, agent, acting_requester, ability_ids
-    ) -> str:
-        """Search long-term memory and return the matches to the model."""
-        args = self._parse_arguments(arguments)
+    async def _do_recall(self, args: Dict[str, Any], turn: TurnContext) -> str:
         query = args.get("search") or args.get("query") or args.get("about") or ""
-        results = await self._long_term(acting_requester).recall(
-            agent.id, str(query), RECALL_LIMIT
+        found = await self._long_term(turn.acting).recall(
+            turn.agent.id, str(query), RECALL_LIMIT
         )
-        if results:
-            body = "\n".join(f"- {r.content}" for r in results)
-        else:
-            body = "(no matching long-term memories)"
-        self._record_self_activity(
-            RECALL_ABILITY,
-            body,
-            instance,
-            root,
-            acting_requester,
-            ability_ids,
-            ActivityState.SUCCESS,
-        )
-        return body
+        if not found:
+            return "(no matching long-term memories)"
+        return "\n".join(f"- {memory.content}" for memory in found)
 
-    def _do_abilities(
-        self,
-        arguments,
-        instance,
-        root,
-        agent,
-        acting_requester,
-        ability_ids,
-        allowed,
-        invoker,
-    ) -> str:
-        """Discover the abilities this agent is entitled to use.
-
-        Returns the agent's granted, invocable abilities (self abilities plus any
-        allowlisted extension abilities), optionally narrowed by a ``search``
-        term matched against each ability's name and description. Discovered
-        abilities are persisted to the reserved short-term key so they surface in
-        the prompt's "Searched Abilities" ({{IN_CONTEXT_ABILITIES}}) section on
-        subsequent turns, per the discovery design.
-        """
-        args = self._parse_arguments(arguments)
-        search = (
-            args.get("search") or args.get("query") or args.get("about") or ""
-        ).strip()
-
-        catalog = self._discoverable_abilities(allowed, invoker)
-        if search:
-            needle = search.lower()
-            matches = [
-                d
-                for d in catalog
-                if needle in d["name"].lower() or needle in d["description"].lower()
-            ]
-        else:
-            matches = catalog
-
+    def _do_abilities(self, args: Dict[str, Any], turn: TurnContext, tool: str) -> str:
+        """The tools the agent may use, optionally those whose name or
+        description contains ``search``; what is found is kept (under the
+        reserved short-term key) for later turns' prompts."""
+        search = str(args.get("search") or args.get("query") or args.get("about") or "")
+        needle = search.strip().lower()
+        matches = [
+            d
+            for d in self._discoverable_abilities(turn)
+            if not needle
+            or needle in d["name"].lower()
+            or needle in d["description"].lower()
+        ]
         if matches:
-            self._remember_searched_abilities(acting_requester, agent.id, matches)
-
-        payload = json.dumps(matches)
-        if matches:
+            self._remember_searched_abilities(turn, matches)
             names = ", ".join(d["name"] for d in matches)
-            body = f"Discovered {len(matches)} abilit{'y' if len(matches) == 1 else 'ies'}: {names}\n{payload}"
-        else:
             body = (
-                f"No abilities matched {search!r}."
-                if search
-                else "No abilities are currently available to you."
+                f"Discovered {len(matches)} abilit{'y' if len(matches) == 1 else 'ies'}: "
+                f"{names}\n{json.dumps(matches)}"
             )
-        self._record_self_activity(
-            ABILITIES_ABILITY,
-            body,
-            instance,
-            root,
-            acting_requester,
-            ability_ids,
-            ActivityState.SUCCESS,
-        )
-        return payload
+        elif needle:
+            body = f"No abilities matched {search!r}."
+        else:
+            body = "No abilities are currently available to you."
+        self._record(turn, tool, ABILITIES_ABILITY, body, ActivityState.SUCCESS)
+        return json.dumps(matches)
 
-    def _discoverable_abilities(
-        self, allowed: set, invoker: AbilityInvoker
-    ) -> List[Dict[str, Any]]:
-        """The agent's granted, invocable abilities as ``{name, description,
-        parameters}`` descriptors — self abilities described from their local
-        signatures, extension abilities introspected via the invoker."""
-        descriptors: List[Dict[str, Any]] = []
-        for name in sorted(allowed):
-            if not invoker.is_allowed(name, allowed):
-                continue
-            signature = SELF_ABILITY_SIGNATURES.get(name)
-            if signature is not None:
-                function = ability_to_tool_schema(name, signature)["function"]
-            else:
-                resolved = invoker.resolve(name)
-                if resolved is None:
-                    continue
-                function = ability_to_tool_schema(name, resolved.method)["function"]
-            descriptors.append(
-                {
-                    "name": function["name"],
-                    "description": function["description"],
-                    "parameters": function["parameters"],
-                }
-            )
-        return descriptors
+    def _discoverable_abilities(self, turn: TurnContext) -> List[Dict[str, Any]]:
+        """``{name, description, parameters}`` for each tool the agent may
+        use: executor abilities from their signatures, extension abilities
+        from their methods."""
+        found: List[Dict[str, Any]] = []
+        for tool in sorted(turn.allowed):
+            schema = self._tool_schema(tool, turn)
+            if schema is not None:
+                function = schema["function"]
+                found.append(
+                    {
+                        "name": function["name"],
+                        "description": function["description"],
+                        "parameters": function["parameters"],
+                    }
+                )
+        return found
+
+    def _tool_schema(self, tool: str, turn: TurnContext) -> Optional[Dict[str, Any]]:
+        if not turn.invoker.is_allowed(tool, turn.allowed):
+            return None
+        performed = turn.self_ability(tool)
+        if performed is not None:
+            return ability_to_tool_schema(tool, SELF_ABILITY_SIGNATURES[performed])
+        method = turn.invoker.resolve(turn.allowed[tool])
+        return None if method is None else ability_to_tool_schema(tool, method)
 
     def _remember_searched_abilities(
-        self, acting_requester: str, agent_id: str, matches: List[Dict[str, Any]]
+        self, turn: TurnContext, matches: List[Dict[str, Any]]
     ) -> None:
-        """Merge newly discovered abilities into the reserved short-term key
-        (dedup by name), so they persist into later turns' context."""
-        memory = self._memory_manager(acting_requester)
-        stored = memory.as_dict(agent_id).get(SEARCHED_ABILITIES_KEY)
+        """Merge newly discovered abilities into the reserved key, by name."""
+        memory = self._short_term(turn.acting)
+        stored = memory.as_dict(turn.agent.id).get(SEARCHED_ABILITIES_KEY)
         by_name: Dict[str, Dict[str, Any]] = {}
         if stored:
-            try:
-                for entry in json.loads(stored):
-                    if isinstance(entry, dict) and entry.get("name"):
-                        by_name[entry["name"]] = entry
-            except (json.JSONDecodeError, TypeError):
-                pass
+            for entry in json.loads(stored):
+                by_name[entry["name"]] = entry
         for descriptor in matches:
             by_name[descriptor["name"]] = descriptor
         memory.remember(
-            agent_id,
+            turn.agent.id,
             SEARCHED_ABILITIES_KEY,
             json.dumps(sorted(by_name.values(), key=lambda d: d["name"])),
         )
 
-    # -- prompt + tools ----------------------------------------------------
+    def _build_tools(self, turn: TurnContext) -> Optional[List[Dict[str, Any]]]:
+        """The model-facing tools: every granted tool that can run."""
+        tools = [
+            schema
+            for schema in (
+                self._tool_schema(tool, turn) for tool in sorted(turn.allowed)
+            )
+            if schema is not None
+        ]
+        return tools or None
 
-    def _build_system_prompt(
-        self, agent: Any, instance: Any, acting_requester: str
-    ) -> str:
-        """Assemble the turn's system prompt: base thinking-turn prompt (the
-        agent's configured context prompts, else the committed default) with the
-        current state injected into its {VARIABLE} placeholders."""
-        base = self._agent_context_prompt(agent, acting_requester)
-        if not base:
-            base = DEFAULT_THINKING_TURN_PROMPT
-
-        substitutions = {
+    def _build_system_prompt(self, agent: Any, instance: Any, acting: str) -> str:
+        """The agent's context prompts (else the default) with the turn's
+        state in their {VARIABLE} placeholders."""
+        base = "\n\n".join(
+            self._as(AgentContextPromptManager, acting).contents(agent.id)
+        )
+        substitutions: Dict[str, Any] = {
             "CURRENT_TIME": datetime.now(timezone.utc).isoformat(),
-            "INVOCATION_CONTEXT": self._invocation_context(instance),
-            "RECENT_ACTIVITY": self._recent_activity(agent, acting_requester),
-            "AGENT_MEMORY": self._agent_memory(agent, acting_requester),
+            "INVOCATION_CONTEXT": self._invocation_context(instance, acting),
+            "RECENT_ACTIVITY": self._recent_activity(agent, acting),
+            "AGENT_MEMORY": self._agent_memory(agent, acting),
             "ADDITIONAL_CONTEXT": instance.payload or "",
         }
-        # Also fill the richer {{PLACEHOLDER}} set used by the sentience-style
-        # prompt (time/cycle/sensory/previous-thought), so that prompt works
-        # verbatim under the new native-tool executor.
-        substitutions.update(
-            self._sentience_substitutions(agent, instance, acting_requester)
-        )
-        return self._inject(base, substitutions)
+        substitutions.update(self._sentience_substitutions(agent, instance, acting))
+        return self._inject(base or DEFAULT_THINKING_TURN_PROMPT, substitutions)
 
     def _sentience_substitutions(
-        self, agent: Any, instance: Any, acting_requester: str
+        self, agent: Any, instance: Any, acting: str
     ) -> Dict[str, Any]:
-        """Compute the sentience prompt's metadata / memory / continuity
-        placeholders from real turn state."""
-        import json
-
-        instances = InvocationInstanceManager(
-            requester_id=acting_requester, model_registry=self.model_registry
-        )
+        """The {{PLACEHOLDER}}s of the sentience-style prompt: timing,
+        continuity and memory, from the agent's real turns."""
         ordered = sorted(
-            instances.list(agent_id=agent.id),
-            key=lambda i: getattr(i, "created_at", None) or datetime.min,
+            self._as(InvocationInstanceManager, acting).list(agent_id=agent.id),
+            key=lambda i: i.created_at or datetime.min,
         )
         prior = None
         for turn in ordered:
             if turn.id == instance.id:
                 break
             prior = turn
-
         previous_thought = ""
         if prior is not None:
-            acts = ActivityManager(
-                requester_id=acting_requester, model_registry=self.model_registry
-            ).list(invocation_instance_id=prior.id)
-            roots = [a for a in acts if a.parent_id is None]
+            roots = [
+                a
+                for a in self._as(ActivityManager, acting).list(
+                    invocation_instance_id=prior.id
+                )
+                if a.parent_id is None
+            ]
             previous_thought = roots[0].body if roots else ""
-
-        sensory = json.dumps(
-            {
-                "invocation": self._invocation_context(instance),
-                "message": instance.payload or "",
-            }
-        )
-        short_term = self._memory_manager(acting_requester).as_dict(agent.id)
-        # Reserved keys (executor working state) surface through their own
-        # placeholders, not the general short-term memory view.
+        short_term = self._short_term(acting).as_dict(agent.id)
         visible_memory = {
             key: value
             for key, value in short_term.items()
@@ -786,58 +561,29 @@ class AgentTurnExecutor:
             "ITERATIONS": len(ordered),
             "TIMEZONE": "UTC",
             "START_TIME": datetime.now(timezone.utc).isoformat(),
-            "PREVIOUS_START_TIME": getattr(prior, "started_at", "") or "",
-            "PREVIOUS_END_TIME": getattr(prior, "completed_at", "") or "",
+            "PREVIOUS_START_TIME": (prior.started_at if prior else None) or "",
+            "PREVIOUS_END_TIME": (prior.completed_at if prior else None) or "",
             "MAXIMUM_CONTEXT_SIZE": "unknown",
             "CURRENT_CONTEXT_SIZE": "unknown",
             "IN_CONTEXT_ABILITIES": short_term.get(SEARCHED_ABILITIES_KEY, "[]"),
             "SHORT_TERM_MEMORIES": json.dumps(visible_memory),
-            "SENSORY_INPUTS": sensory,
+            "SENSORY_INPUTS": json.dumps(
+                {
+                    "invocation": self._invocation_context(instance, acting),
+                    "message": instance.payload or "",
+                }
+            ),
             "ABILITY_RESULTS": "[]",
             "PREVIOUS_THOUGHT": previous_thought,
-            "PREVIOUS_THOUGHTS": self._recent_activity(agent, acting_requester),
+            "PREVIOUS_THOUGHTS": self._recent_activity(agent, acting),
         }
 
-    def _agent_context_prompt(self, agent: Any, acting_requester: str) -> str:
-        """Concatenate the agent's linked context prompts (may be empty)."""
-        try:
-            links = AgentContextPromptManager(
-                requester_id=acting_requester, model_registry=self.model_registry
-            )
-            prompts = links.prompts
-            parts: List[str] = []
-            for link in links.list(agent_id=agent.id):
-                prompt = prompts.get(id=link.prompt_id)
-                content = getattr(prompt, "content", None)
-                if content:
-                    parts.append(content)
-            return "\n\n".join(parts)
-        except Exception as exc:  # context prompts are optional enrichment
-            logger.debug(f"No context prompts for agent {agent.id}: {exc}")
-            return ""
-
-    def _build_tools(
-        self, invoker: AbilityInvoker, allowed: set
-    ) -> Optional[List[Dict[str, Any]]]:
-        """Build the model-facing tool list: the invoker's resolvable, gated
-        extension tools plus the executor-handled self abilities (speak,
-        memorize, trim, recall, abilities) the agent is granted — the invoker
-        cannot resolve these to a callable, since the executor performs them."""
-        tools = invoker.build_tools(allowed)
-        for name, signature in SELF_ABILITY_SIGNATURES.items():
-            if name in allowed and invoker.is_allowed(name, allowed):
-                tools.append(ability_to_tool_schema(name, signature))
-        return tools or None
-
-    # -- in-band tooling (models without native function-calling) ---------
-
-    def _in_band_tool_instructions(self, invoker: AbilityInvoker, allowed: set) -> str:
-        """Appended to the system prompt in in-band mode: the concrete call
-        format plus the abilities callable this cycle."""
-        callable_names = sorted(
-            name for name in allowed if invoker.is_allowed(name, allowed)
+    def _in_band_tool_instructions(self, turn: TurnContext) -> str:
+        """For in-band mode: how to call a tool, and which may be called."""
+        callable_tools = sorted(
+            tool for tool in turn.allowed if turn.invoker.is_allowed(tool, turn.allowed)
         )
-        listed = ", ".join(callable_names) if callable_names else "(none)"
+        listed = ", ".join(callable_tools) if callable_tools else "(none)"
         return (
             "\n\n# Tool Call Format\n"
             "To use an ability, emit one or more fenced code blocks with the "
@@ -852,263 +598,136 @@ class AgentTurnExecutor:
         )
 
     @staticmethod
-    def _parse_in_band_calls(text: Optional[str]):
-        """Parse ```tool fenced JSON blocks into ``(id, name, args)`` tuples.
-
-        Accepts ``{"ability"|"tool": name, "args": {...}}`` and the single-key
-        ``{name: {...}}`` / ``{name: {"args": {...}}}`` shapes.
-        """
-        import re
-
-        if not text:
-            return []
-        calls = []
-        for match in re.finditer(r"```tool\b\s*(.*?)```", text, re.DOTALL):
-            block = match.group(1).strip()
+    def _parse_in_band_calls(text: Optional[str]) -> List[ToolCall]:
+        """```tool fenced JSON blocks as ``(id, name, args)`` calls, from
+        ``{"ability"|"tool": name, "args": {...}}`` or ``{name: {...}}``."""
+        calls: List[ToolCall] = []
+        for match in IN_BAND_CALL.finditer(text or ""):
             try:
-                obj = json.loads(block)
-            except (json.JSONDecodeError, TypeError):
+                block = json.loads(match.group(1).strip())
+            except json.JSONDecodeError:
                 continue
-            if not isinstance(obj, dict):
+            if not isinstance(block, dict):
                 continue
-            name = None
-            args: Dict[str, Any] = {}
-            if obj.get("ability") or obj.get("tool"):
-                name = obj.get("ability") or obj.get("tool")
-                args = obj.get("args") or {}
-            elif len(obj) == 1:
-                name = next(iter(obj))
-                value = obj[name]
-                if isinstance(value, dict):
-                    args = value.get("args", value)
+            name = block.get("ability") or block.get("tool")
+            args: Any = block.get("args") or {}
+            if not name and len(block) == 1:
+                name, value = next(iter(block.items()))
+                args = value.get("args", value) if isinstance(value, dict) else {}
             if name and isinstance(args, dict):
                 calls.append((None, name, args))
         return calls
 
     @staticmethod
     def _strip_tool_blocks(text: str) -> str:
-        """Remove ```tool blocks so the recorded thought is just the monologue."""
-        import re
+        """The monologue without its ```tool blocks."""
+        return IN_BAND_CALL.sub("", text).strip()
 
-        return re.sub(r"```tool\b\s*.*?```", "", text, flags=re.DOTALL).strip()
-
-    # -- state injection helpers ------------------------------------------
-
-    def _invocation_context(self, instance: Any) -> str:
-        if getattr(instance, "trigger_message_id", None):
+    def _invocation_context(self, instance: Any, acting: str) -> str:
+        if instance.trigger_message_id:
             return f"a conversation message ({instance.trigger_message_id})"
-        if getattr(instance, "invocation_trigger_id", None):
-            return f"a configured trigger ({instance.invocation_trigger_id})"
+        if instance.invocation_trigger_id:
+            trigger = self._as(InvocationTriggerManager, acting).get(
+                id=instance.invocation_trigger_id
+            )
+            due = f", due {trigger.due_at.isoformat()}" if trigger.due_at else ""
+            return (
+                f"a configured {trigger.invocation_type} trigger ({trigger.id}, "
+                f"priority {trigger.priority}{due})"
+            )
         return "an ad-hoc invocation"
 
-    def _recent_activity(self, agent: Any, acting_requester: str) -> str:
-        """A short, best-effort summary of the agent's recent turns."""
-        try:
-            instances = InvocationInstanceManager(
-                requester_id=acting_requester, model_registry=self.model_registry
-            )
-            recent = instances.list(agent_id=agent.id)
-            recent = sorted(
-                recent,
-                key=lambda i: getattr(i, "created_at", None) or datetime.min,
-                reverse=True,
-            )[:5]
-            if not recent:
-                return "none yet"
-            return "; ".join(f"{getattr(i, 'status', '?')} turn" for i in recent)
-        except Exception:
-            return "unavailable"
+    def _recent_activity(self, agent: Any, acting: str) -> str:
+        """The outcomes of the agent's last few turns."""
+        recent = sorted(
+            self._as(InvocationInstanceManager, acting).list(agent_id=agent.id),
+            key=lambda i: i.created_at or datetime.min,
+            reverse=True,
+        )[:RECENT_TURNS]
+        if not recent:
+            return "none yet"
+        return "; ".join(f"{turn.status} turn" for turn in recent)
 
-    def _agent_memory(self, agent: Any, acting_requester: str) -> str:
-        """Long-term memory injected into the prompt: the agent's most recent
-        memories from the ai_memories store (recall on demand is the
-        `recall` ability)."""
-        memories = self._long_term(acting_requester).recent(
-            agent.id, PROMPT_MEMORY_LIMIT
-        )
+    def _agent_memory(self, agent: Any, acting: str) -> str:
+        """The agent's most recent long-term memories (``recall`` searches
+        the rest)."""
+        memories = self._long_term(acting).recent(agent.id, PROMPT_MEMORY_LIMIT)
         return "\n".join(f"- {m.content}" for m in memories if m.content) or "none"
 
-    # -- model transport ---------------------------------------------------
-
-    def _make_rotation_chat(self, agent: Any, acting_requester: str) -> ChatTransport:
-        """Default chat transport: native chat over the agent's rotation, with
-        the rotation's failover across the agent's model instances. The
-        tokens each turn uses are recorded against the agent's user."""
+    def _make_rotation_chat(self, agent: Any, acting: str) -> ChatTransport:
+        """Native chat over the agent's rotation, failing over across its
+        model instances; tokens used are recorded against the agent's
+        owner."""
 
         async def chat(
             messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]]
         ) -> Dict[str, Any]:
-            rotation_id = getattr(agent, "rotation_id", None)
-            if not rotation_id:
-                return {"success": False, "error": "agent has no rotation configured"}
+            if not agent.rotation_id:
+                raise PermanentExternalError("the agent has no rotation configured")
             from zephyrex.extensions.ai.EXT_AI import EXT_AI
             from zephyrex.logic.BLL_Providers import RotationManager
 
             rotation = RotationManager(
-                requester_id=acting_requester,
-                target_id=rotation_id,
+                requester_id=acting,
+                target_id=agent.rotation_id,
                 model_registry=self.model_registry,
             )
-            try:
-                answer = await rotation.arotate(
-                    EXT_AI.provider_call("chat"),
-                    messages,
-                    tools,
-                    requester_id=acting_requester,
-                    ability="chat",
-                )
-            except Exception as exc:
-                return {"success": False, "error": str(exc)}
-            return {"success": True, **answer}
+            answer: Dict[str, Any] = await rotation.arotate(
+                EXT_AI.provider_call("chat"),
+                messages,
+                tools,
+                requester_id=acting,
+                ability="chat",
+            )
+            return answer
 
         return chat
 
-    def _make_provider_instance_resolver(
-        self, acting_requester: str
-    ) -> Callable[[str, str], Optional[Any]]:
-        """Resolve (provider_class, instance) for a provider ability the agent
-        may use. Best-effort: finds an enabled provider instance whose provider
-        implements the ability; returns None (→ safe tool failure) if none."""
+    def _resolve_conversation(self, turn: TurnContext) -> Optional[str]:
+        """The conversation to speak into: the triggering message's, else
+        one the agent actively takes part in."""
+        from zephyrex.extensions.conversations.BLL_Conversations import MessageManager
 
-        def resolve(extension_name: str, ability_name: str):
+        if turn.instance.trigger_message_id:
             try:
-                registry = getattr(self.model_registry, "extension_registry", None)
-                if registry is None:
-                    return None
-                name_map = getattr(registry, "_extension_name_map", {})
-                ext_cls = name_map.get(extension_name)
-                if ext_cls is None:
-                    return None
-                providers = [
-                    p
-                    for p in (getattr(ext_cls, "providers", []) or [])
-                    if ability_name in getattr(p, "_abilities", set())
-                ]
-                if not providers:
-                    return None
-                from zephyrex.logic.BLL_Providers import ProviderInstanceManager
-
-                instances = ProviderInstanceManager(
-                    requester_id=acting_requester, model_registry=self.model_registry
-                ).list(enabled=True)
-                for provider_cls in providers:
-                    pname = getattr(provider_cls, "name", "").lower()
-                    for inst in instances or []:
-                        if (getattr(inst, "model_name", "") or "").lower() == pname:
-                            return provider_cls, inst
-                return None
-            except Exception:
-                return None
-
-        return resolve
-
-    # -- misc helpers ------------------------------------------------------
-
-    def _resolve_conversation(
-        self, instance: Any, agent: Any, acting_requester: str
-    ) -> Optional[str]:
-        """Pick the conversation to speak into: the triggering message's
-        conversation, else one the agent actively participates in."""
-        trigger_message_id = getattr(instance, "trigger_message_id", None)
-        if trigger_message_id:
-            try:
-                from zephyrex.extensions.conversations.BLL_Conversations import (
-                    MessageManager,
+                message = self._as(MessageManager, turn.acting).get(
+                    id=turn.instance.trigger_message_id
                 )
-
-                message = MessageManager(
-                    requester_id=acting_requester, model_registry=self.model_registry
-                ).get(id=trigger_message_id)
-                if getattr(message, "conversation_id", None):
-                    return str(message.conversation_id)
-            except Exception:
-                pass
-        try:
-            links = ConversationAgentManager(
-                requester_id=acting_requester, model_registry=self.model_registry
-            ).list(agent_id=agent.id, active=True)
-            if links:
-                return str(links[0].conversation_id)
-        except Exception:
-            pass
-        return None
-
-    def _resolve_ability_id(self, name: Optional[str]) -> Optional[str]:
-        """Resolve an ability name to its seeded Ability id (ROOT-scoped)."""
-        if not name:
-            return None
-        try:
-            from zephyrex.logic.BLL_Extensions import AbilityManager
-
-            matches = AbilityManager(
-                requester_id=env("ROOT_ID"), model_registry=self.model_registry
-            ).list(name=name)
-            return matches[0].id if matches else None
-        except Exception:
-            return None
+                return str(message.conversation_id)
+            except HTTPException as error:
+                if error.status_code != 404:
+                    raise
+        seats = self._as(ConversationAgentManager, turn.acting).list(
+            agent_id=turn.agent.id, active=True
+        )
+        return str(seats[0].conversation_id) if seats else None
 
     @staticmethod
-    def _ability_id(
-        name: Optional[str],
-        ability_ids: Dict[str, str],
-        fallback: Optional[str] = None,
-    ) -> str:
-        """Resolve an ability name to its id from the pre-built grant map,
-        falling back to a provided id (typically the root's) then to the
-        intrinsic thinking_turn id."""
-        if name and name in ability_ids:
-            return ability_ids[name]
-        if fallback:
-            return fallback
-        return ability_ids.get(THINKING_TURN_ABILITY, "")
-
-    @staticmethod
-    def _assistant_message_dict(message: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalise an assistant chat message for appending to the history."""
-        out: Dict[str, Any] = {
-            "role": "assistant",
-            "content": message.get("content"),
-        }
+    def _assistant_message_dict(message: Mapping[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"role": "assistant", "content": message.get("content")}
         if message.get("tool_calls"):
             out["tool_calls"] = message["tool_calls"]
         return out
 
     @staticmethod
-    def _parse_arguments(arguments: Any) -> Dict[str, Any]:
-        if isinstance(arguments, dict):
-            return arguments
-        if isinstance(arguments, str) and arguments.strip():
-            try:
-                parsed = json.loads(arguments)
-                return parsed if isinstance(parsed, dict) else {}
-            except json.JSONDecodeError:
-                return {}
-        return {}
-
-    @staticmethod
     def _stringify(value: Any) -> str:
         if isinstance(value, str):
             return value
-        try:
-            return json.dumps(value, default=str)
-        except (TypeError, ValueError):
-            return str(value)
+        return json.dumps(value, default=str)
 
     @staticmethod
-    def _inject(template: str, substitutions: Dict[str, str]) -> str:
-        """Fill ``{KEY}`` and ``{{KEY}}`` placeholders, then strip any unfilled
-        ``{{KEY}}`` so raw templates never reach the model. Bare ``{``/``}`` (e.g.
-        JSON braces in the prompt) are left untouched."""
-        import re
-
+    def _inject(template: str, substitutions: Mapping[str, Any]) -> str:
+        """Fill ``{KEY}`` and ``{{KEY}}``, then drop unfilled ``{{KEY}}``s so
+        a raw template never reaches the model. Other braces (JSON in the
+        prompt) are left alone."""
         result = template
         for key, value in substitutions.items():
             result = result.replace("{{" + key + "}}", str(value))
             result = result.replace("{" + key + "}", str(value))
-        return re.sub(r"\{\{[A-Za-z_][A-Za-z0-9_]*\}\}", "", result)
+        return UNFILLED_PLACEHOLDER.sub("", result)
 
 
-def _speak_signature(message: str, conversation_id: str = ""):
+def _speak_signature(message: str, conversation_id: str = "") -> None:
     """Send a message to the operator/conversation. Use only when you have
     something worth their attention.
 
@@ -1119,7 +738,7 @@ def _speak_signature(message: str, conversation_id: str = ""):
     """
 
 
-def _memorize_signature(body: str, key: str = "", long: bool = False):
+def _memorize_signature(body: str, key: str = "", long: bool = False) -> None:
     """Save a memory. Short-term (default) is keyed working memory; set long=true
     to store it durably in long-term memory.
 
@@ -1131,7 +750,7 @@ def _memorize_signature(body: str, key: str = "", long: bool = False):
     """
 
 
-def _trim_signature(memories: list):
+def _trim_signature(memories: List[str]) -> None:
     """Remove entries from short-term working memory by key.
 
     Args:
@@ -1139,7 +758,7 @@ def _trim_signature(memories: list):
     """
 
 
-def _recall_signature(search: str = ""):
+def _recall_signature(search: str = "") -> None:
     """Search long-term memory for entries relevant to a query.
 
     Args:
@@ -1147,7 +766,7 @@ def _recall_signature(search: str = ""):
     """
 
 
-def _abilities_signature(search: str = ""):
+def _abilities_signature(search: str = "") -> None:
     """Discover the abilities available to you. Returns each ability's name,
     purpose, and parameters so you can call it.
 
@@ -1157,9 +776,8 @@ def _abilities_signature(search: str = ""):
     """
 
 
-# Signature sources for the executor-handled self abilities. Introspected into
-# tool schemas (native mode) and discovery descriptors (the `abilities` tool);
-# never called. Order controls the native tool-list order.
+# The executor abilities' tool schemas come from these signatures; they are
+# never called.
 SELF_ABILITY_SIGNATURES: Dict[str, Callable[..., Any]] = {
     SPEAK_ABILITY: _speak_signature,
     MEMORIZE_ABILITY: _memorize_signature,
@@ -1169,38 +787,20 @@ SELF_ABILITY_SIGNATURES: Dict[str, Callable[..., Any]] = {
 }
 
 
-def ensure_ability(
-    model_registry: Any, name: str, extension_name: str = "ai_agents"
-) -> str:
-    """Get-or-create a seeded Ability row by name, returning its id.
+def ensure_ability(model_registry: Any, name: str) -> str:
+    """The id of this extension's Ability row called ``name``, made (with
+    the extension's row) if the registry was never seeded with it.
 
-    The turn executor relies on the ``thinking_turn`` (and, when granted,
-    ``speak``) Ability rows existing so a turn's Activities can carry the
-    required ``ability_id``. Ability seeding from the extension registry is not
-    guaranteed to have populated a given registry, so this makes the executor
-    self-sufficient: it resolves the row by name and, if absent, creates it
-    (creating the owning Extension row too when necessary). Idempotent — a
-    second call finds the existing row. All writes are ROOT-scoped since
-    Abilities/Extensions are system entities.
-    """
-    from zephyrex.logic.BLL_Extensions import AbilityManager, ExtensionManager
-
-    ability_manager = AbilityManager(
-        requester_id=env("ROOT_ID"), model_registry=model_registry
-    )
-    existing = ability_manager.list(name=name)
+    A turn's root activity is typed by ``thinking_turn``, so the row must
+    exist even where seeding has not run. Abilities and extensions are
+    system records: SYSTEM writes them, as seeding does, so every user may
+    read them (a ROOT-made row is ROOT's alone)."""
+    system = env("SYSTEM_ID")
+    extensions = ExtensionManager(requester_id=system, model_registry=model_registry)
+    abilities = AbilityManager(requester_id=system, model_registry=model_registry)
+    found = extensions.list(name=EXTENSION_NAME)
+    extension_id = found[0].id if found else extensions.create(name=EXTENSION_NAME).id
+    existing = abilities.list(name=name, extension_id=extension_id)
     if existing:
         return str(existing[0].id)
-
-    extension_manager = ExtensionManager(
-        requester_id=env("ROOT_ID"), model_registry=model_registry
-    )
-    ext_matches = extension_manager.list(name=extension_name)
-    extension_id = (
-        ext_matches[0].id
-        if ext_matches
-        else extension_manager.create(name=extension_name).id
-    )
-    return str(
-        ability_manager.create(name=name, extension_id=extension_id, meta=True).id
-    )
+    return str(abilities.create(name=name, extension_id=extension_id, meta=True).id)

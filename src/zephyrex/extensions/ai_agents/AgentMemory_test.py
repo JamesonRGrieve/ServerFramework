@@ -1,80 +1,73 @@
-"""Tests for short-term agent memory (context management).
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Short-term agent memory: keyed, upserted, pruned, the agent's own."""
 
-Exercises the real AgentMemoryManager against a live registry: upsert semantics
-(remember), the {key: content} view (as_dict) used for prompt injection, and
-pruning (forget).
-"""
-
-import os
 import uuid
 
 import pytest
+from fastapi import HTTPException
 
-from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager, AgentMemoryManager
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager, AgentMemoryManager
+from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
 
 
 class TestAgentMemory(ExtensionServerMixin):
-    @pytest.fixture(scope="module")
-    def server(self):
-        from fastapi.testclient import TestClient
+    extension_class = EXT_AI_Agents
 
-        from conftest import CORE_COMPANION_EXTENSIONS
-        from zephyrex.app import instance
-        from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
+    def _agent(self, user, model_registry):
+        return AgentManager(requester_id=user.id, model_registry=model_registry).create(
+            name=f"Agent {uuid.uuid4()}"
+        )
 
-        prepare_test_registry()
-        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-        prefix = f"test.agent_memory.{worker_id}" if worker_id else "test.agent_memory"
-        wanted = ("ai_agents", "ai", "conversations", "ai_prompts", "ai_memories")
-        names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
-        yield TestClient(instance(db_prefix=prefix, extensions=",".join(names)))
-
-    def _agent(self, admin_a, model_registry):
-        with AgentManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as agents:
-            return agents.create(name=f"Agent {uuid.uuid4()}", user_id=admin_a.id)
+    def _memory(self, user, model_registry):
+        return AgentMemoryManager(requester_id=user.id, model_registry=model_registry)
 
     def test_remember_and_as_dict(self, admin_a, model_registry):
         agent = self._agent(admin_a, model_registry)
-        with AgentMemoryManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as mem:
-            mem.remember(agent.id, "operator_name", "James")
-            mem.remember(agent.id, "goal", "be helpful")
-            assert mem.as_dict(agent.id) == {
-                "operator_name": "James",
-                "goal": "be helpful",
-            }
+        memory = self._memory(admin_a, model_registry)
+        memory.remember(agent.id, "operator_name", "James")
+        memory.remember(agent.id, "goal", "be helpful")
+        assert memory.as_dict(agent.id) == {
+            "operator_name": "James",
+            "goal": "be helpful",
+        }
 
-    def test_remember_upserts(self, admin_a, model_registry):
+    def test_remember_replaces(self, admin_a, model_registry):
         agent = self._agent(admin_a, model_registry)
-        with AgentMemoryManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as mem:
-            mem.remember(agent.id, "mood", "curious")
-            mem.remember(agent.id, "mood", "focused")  # same key -> update
-            d = mem.as_dict(agent.id)
-            assert d == {"mood": "focused"}  # not duplicated
+        memory = self._memory(admin_a, model_registry)
+        memory.remember(agent.id, "mood", "curious")
+        memory.remember(agent.id, "mood", "focused")
+        assert memory.as_dict(agent.id) == {"mood": "focused"}
+
+    def test_a_key_is_the_agents_once(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        memory = self._memory(admin_a, model_registry)
+        memory.create(agent_id=agent.id, key="k", content="one")
+        with pytest.raises(HTTPException) as refused:
+            memory.create(agent_id=agent.id, key="k", content="two")
+        assert refused.value.status_code == 409
 
     def test_forget(self, admin_a, model_registry):
         agent = self._agent(admin_a, model_registry)
-        with AgentMemoryManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as mem:
-            mem.remember(agent.id, "a", "1")
-            mem.remember(agent.id, "b", "2")
-            removed = mem.forget(agent.id, ["a"])
-            assert removed == 1
-            assert mem.as_dict(agent.id) == {"b": "2"}
+        memory = self._memory(admin_a, model_registry)
+        memory.remember(agent.id, "a", "1")
+        memory.remember(agent.id, "b", "2")
+        assert memory.forget(agent.id, ["a"]) == 1
+        assert memory.as_dict(agent.id) == {"b": "2"}
 
-    def test_memory_is_agent_scoped(self, admin_a, model_registry):
-        a1 = self._agent(admin_a, model_registry)
-        a2 = self._agent(admin_a, model_registry)
-        with AgentMemoryManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as mem:
-            mem.remember(a1.id, "k", "for-a1")
-            assert mem.as_dict(a1.id) == {"k": "for-a1"}
-            assert mem.as_dict(a2.id) == {}
+    def test_memory_is_per_agent(self, admin_a, model_registry):
+        first, second = (self._agent(admin_a, model_registry) for _ in range(2))
+        memory = self._memory(admin_a, model_registry)
+        memory.remember(first.id, "k", "for the first")
+        assert memory.as_dict(second.id) == {}
+
+    def test_another_user_neither_reads_nor_writes_it(
+        self, admin_a, admin_b, model_registry
+    ):
+        agent = self._agent(admin_a, model_registry)
+        self._memory(admin_a, model_registry).remember(agent.id, "secret", "s")
+        stranger = self._memory(admin_b, model_registry)
+        assert stranger.as_dict(agent.id) == {}
+        with pytest.raises(HTTPException) as refused:
+            stranger.create(agent_id=agent.id, key="planted", content="x")
+        assert refused.value.status_code in (403, 404)

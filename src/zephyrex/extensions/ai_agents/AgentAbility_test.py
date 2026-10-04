@@ -1,120 +1,75 @@
-"""Tests for the AgentAbility allowlist (the agent's default-deny tool grant).
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The agent's ability grants: its default-deny tool allowlist."""
 
-Exercises the real model/manager against a live registry with seeded Ability
-rows (no mocks): granting an ability, the enabled/disabled distinction, and the
-``enabled_ability_names`` helper that feeds ``AbilityInvoker``'s access gate.
-"""
-
-import os
 import uuid
 
 import pytest
+from fastapi import HTTPException
 
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.ai_agents.AgentTurnExecutor import ensure_ability
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    AbilityGrant,
     AgentAbilityManager,
     AgentManager,
 )
-from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.lib.Environment import env
+from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
 
 
 class TestAgentAbility(ExtensionServerMixin):
-    """The agent tool allowlist, tested end-to-end against seeded abilities."""
+    extension_class = EXT_AI_Agents
 
-    @pytest.fixture(scope="module")
-    def server(self):
-        from fastapi.testclient import TestClient
-
-        from conftest import CORE_COMPANION_EXTENSIONS
-        from zephyrex.app import instance
-        from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
-
-        prepare_test_registry()
-        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-        prefix = (
-            f"test.agent_ability.{worker_id}" if worker_id else "test.agent_ability"
+    def _agent(self, user, model_registry):
+        return AgentManager(requester_id=user.id, model_registry=model_registry).create(
+            name=f"Agent {uuid.uuid4()}"
         )
-        wanted = (
-            "ai_agents",
-            "ai",
-            "email",
-            "conversations",
-            "ai_prompts",
-            "ai_memories",
+
+    def _grants(self, user, model_registry):
+        return AgentAbilityManager(requester_id=user.id, model_registry=model_registry)
+
+    def test_no_grants_no_tools(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        assert self._grants(admin_a, model_registry).grants(agent.id) == []
+
+    def test_a_grant_names_its_ability_and_extension(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        ability_id = ensure_ability(model_registry, "list_agents")
+        grants = self._grants(admin_a, model_registry)
+        link = grants.create(agent_id=agent.id, ability_id=ability_id)
+        assert link.enabled is True
+        assert grants.grants(agent.id) == [
+            AbilityGrant(
+                ability_id=ability_id, name="list_agents", extension="ai_agents"
+            )
+        ]
+
+    def test_a_disabled_grant_grants_nothing(self, admin_a, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        grants = self._grants(admin_a, model_registry)
+        grants.create(
+            agent_id=agent.id,
+            ability_id=ensure_ability(model_registry, "list_agents"),
+            enabled=False,
         )
-        names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
-        app = instance(db_prefix=prefix, extensions=",".join(names))
-        yield TestClient(app)
+        assert grants.grants(agent.id) == []
 
-    def _an_ability(self, model_registry, name="email_status"):
-        """Fetch a real seeded Ability row by name (ROOT-scoped)."""
-        from zephyrex.logic.BLL_Extensions import AbilityManager
+    @pytest.mark.parametrize("missing", ["agent_id", "ability_id"])
+    def test_a_missing_reference_is_404(self, missing, admin_a, model_registry):
+        fields = {
+            "agent_id": self._agent(admin_a, model_registry).id,
+            "ability_id": ensure_ability(model_registry, "list_agents"),
+            missing: "does-not-exist",
+        }
+        with pytest.raises(HTTPException) as refused:
+            self._grants(admin_a, model_registry).create(**fields)
+        assert refused.value.status_code == 404
 
-        with AbilityManager(
-            requester_id=env("ROOT_ID"), model_registry=model_registry
-        ) as abilities:
-            matches = abilities.list(name=name)
-        assert matches, f"expected a seeded ability named {name!r}"
-        return matches[0]
-
-    def test_default_deny_no_links(self, admin_a, model_registry):
-        with AgentManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as agents:
-            agent = agents.create(name=f"Agent {uuid.uuid4()}")
-        with AgentAbilityManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as links:
-            # No grants → empty allowlist. This is the default-deny floor.
-            assert links.enabled_ability_names(agent.id) == set()
-
-    def test_grant_enables_ability_name(self, admin_a, model_registry):
-        ability = self._an_ability(model_registry)
-        with AgentManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as agents:
-            agent = agents.create(name=f"Agent {uuid.uuid4()}")
-        with AgentAbilityManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as links:
-            link = links.create(agent_id=agent.id, ability_id=ability.id)
-            assert link.enabled is True
-            assert links.enabled_ability_names(agent.id) == {ability.name}
-
-    def test_disabled_grant_excluded(self, admin_a, model_registry):
-        ability = self._an_ability(model_registry)
-        with AgentManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as agents:
-            agent = agents.create(name=f"Agent {uuid.uuid4()}")
-        with AgentAbilityManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as links:
-            links.create(agent_id=agent.id, ability_id=ability.id, enabled=False)
-            # A disabled grant confers no access.
-            assert links.enabled_ability_names(agent.id) == set()
-
-    def test_grant_unknown_ability_rejected(self, admin_a, model_registry):
-        from fastapi import HTTPException
-
-        with AgentManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as agents:
-            agent = agents.create(name=f"Agent {uuid.uuid4()}")
-        with AgentAbilityManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as links:
-            with pytest.raises(HTTPException) as exc:
-                links.create(agent_id=agent.id, ability_id="does-not-exist")
-            assert exc.value.status_code == 404
-
-    def test_grant_unknown_agent_rejected(self, admin_a, model_registry):
-        from fastapi import HTTPException
-
-        ability = self._an_ability(model_registry)
-        with AgentAbilityManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as links:
-            with pytest.raises(HTTPException) as exc:
-                links.create(agent_id="does-not-exist", ability_id=ability.id)
-            assert exc.value.status_code == 404
+    def test_only_who_may_edit_the_agent_grants(self, admin_a, admin_b, model_registry):
+        agent = self._agent(admin_a, model_registry)
+        with pytest.raises(HTTPException) as refused:
+            self._grants(admin_b, model_registry).create(
+                agent_id=agent.id,
+                ability_id=ensure_ability(model_registry, "list_agents"),
+            )
+        assert refused.value.status_code in (403, 404)
+        assert self._grants(admin_a, model_registry).grants(agent.id) == []

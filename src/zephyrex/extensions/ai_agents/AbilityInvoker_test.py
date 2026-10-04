@@ -1,220 +1,155 @@
-"""Tests for the access-controlled ability invoker.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The invoker: an agent's granted extension abilities as tools.
 
-Pure tests cover schema introspection, the access gate, and argument coercion.
-Integration tests resolve and invoke *real* seeded abilities against a live
-extension registry (no mocks): ``text_generation`` (a provider ability) for
-resolution/schema, and ``email_status`` (a local meta ability that reads env)
-for a full gated invocation with no external call.
-"""
+Holes these close: a tool's schema offered the model ``requester_id`` (and
+provider abilities' ``bonded_instance``), so the model chose whose
+permissions a tool ran with; and abilities were resolved by name alone, so
+two extensions' abilities of one name (ai's ``speak`` and the agents'
+``speak``) were the same tool."""
 
-import os
+import uuid
+from typing import Optional
 
 import pytest
 
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.ai_agents.AbilityInvoker import (
+    NEVER_AGENT_INVOCABLE,
     AbilityAccessDenied,
     AbilityInvoker,
-    NEVER_AGENT_INVOCABLE,
     ToolInvocationError,
     ability_to_tool_schema,
+    coerce_arguments,
 )
-from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    AbilityGrant,
+    AgentManager,
+    tool_names,
+)
+from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
 
 
-class TestAbilityToolSchema:
-    """Pure introspection of an ability callable into a tool schema."""
+def grant(name: str, extension: str = "ai_agents") -> AbilityGrant:
+    return AbilityGrant(ability_id=str(uuid.uuid4()), name=name, extension=extension)
 
-    def test_schema_from_provider_ability(self):
-        from zephyrex.extensions.ai.PRV_Bifrost_AI import BifrostProvider
 
-        schema = ability_to_tool_schema(
-            "text_generation", BifrostProvider.generate_text
-        )
-        assert schema["type"] == "function"
-        fn = schema["function"]
-        assert fn["name"] == "text_generation"
-        props = fn["parameters"]["properties"]
-        # The calling-convention param and **kwargs are excluded...
-        assert "bonded_instance" not in props
-        assert "kwargs" not in props
-        # ...the real model-facing params are present and typed...
-        assert props["prompt"] == {"type": "string"}
-        assert props["max_tokens"] == {"type": "integer"}
-        assert props["temperature"] == {"type": "number"}
-        # ...only the no-default, non-optional param is required.
-        assert fn["parameters"]["required"] == ["prompt"]
+class TestToolSchema:
+    def test_the_requester_is_not_the_models_to_choose(self):
+        schema = ability_to_tool_schema("list_agents", EXT_AI_Agents.list_agents)
+        assert schema["function"]["parameters"]["properties"] == {}
 
-    def test_schema_description_from_docstring(self):
-        def sample(cls, target: str):
+    def test_parameters_and_required(self):
+        schema = ability_to_tool_schema("take_turn", EXT_AI_Agents.take_turn)
+        parameters = schema["function"]["parameters"]
+        assert parameters["properties"] == {
+            "agent_id": {"type": "string"},
+            "payload": {"type": "string"},
+        }
+        assert parameters["required"] == ["agent_id"]
+
+    def test_description_is_the_first_paragraph(self):
+        def sample(cls, target: str, maybe: Optional[int] = None) -> None:
             """Do a sample thing.
 
-            Longer detail that should not be in the description.
-            """
+            Detail left out."""
 
-        schema = ability_to_tool_schema("sample", sample)
-        assert schema["function"]["description"] == "Do a sample thing."
-        assert schema["function"]["parameters"]["required"] == ["target"]
+        function = ability_to_tool_schema("sample", sample)["function"]
+        assert function["description"] == "Do a sample thing."
+        assert function["parameters"]["required"] == ["target"]
+        assert function["parameters"]["properties"]["maybe"] == {"type": "integer"}
 
-    def test_schema_optional_param_not_required(self):
-        from typing import Optional
 
-        def sample(self, needed: str, maybe: Optional[int] = None):
-            """x"""
-
-        schema = ability_to_tool_schema("sample", sample)
-        assert schema["function"]["parameters"]["required"] == ["needed"]
-        assert schema["function"]["parameters"]["properties"]["maybe"] == {
-            "type": "integer"
+class TestToolNames:
+    def test_a_unique_name_is_the_tool(self):
+        assert set(tool_names([grant("speak"), grant("embed", "ai")])) == {
+            "speak",
+            "embed",
         }
 
-
-class TestAccessGate:
-    """The default-deny gate, tested in isolation (no registry needed)."""
-
-    def _invoker(self):
-        return AbilityInvoker(model_registry=None, requester_id="req")
-
-    def test_denied_when_not_in_allowlist(self):
-        assert self._invoker().is_allowed("web_search", set()) is False
-
-    def test_allowed_when_in_allowlist(self):
-        assert self._invoker().is_allowed("web_search", {"web_search"}) is True
-
-    def test_global_denylist_overrides_allowlist(self):
-        # An ability on the never-grantable set is refused even if granted.
-        name = next(iter(NEVER_AGENT_INVOCABLE))
-        assert self._invoker().is_allowed(name, {name}) is False
-
-    @pytest.mark.asyncio
-    async def test_invoke_denied_without_grant_before_resolution(self):
-        # The gate fires before any resolution/execution: even with no registry,
-        # a non-allowed ability raises AbilityAccessDenied, not a resolve error.
-        invoker = self._invoker()
-        with pytest.raises(AbilityAccessDenied):
-            await invoker.invoke("web_search", {}, allowed=set())
-
-    @pytest.mark.asyncio
-    async def test_invoke_denied_for_denylisted_even_if_granted(self):
-        invoker = self._invoker()
-        name = next(iter(NEVER_AGENT_INVOCABLE))
-        with pytest.raises(AbilityAccessDenied):
-            await invoker.invoke(name, {}, allowed={name})
+    def test_shared_names_are_qualified_by_extension(self):
+        ours, theirs = grant("speak"), grant("speak", "ai")
+        named = tool_names([ours, theirs])
+        assert named == {"ai_agents__speak": ours, "ai__speak": theirs}
 
 
-class TestArgumentCoercion:
-    def test_none_arguments(self):
-        assert AbilityInvoker._coerce_arguments(None) == {}
+class TestArguments:
+    @pytest.mark.parametrize(
+        "given,expected",
+        [(None, {}), ("  ", {}), ('{"q": "x"}', {"q": "x"}), ({"a": 1}, {"a": 1})],
+    )
+    def test_coerced(self, given, expected):
+        assert coerce_arguments(given) == expected
 
-    def test_empty_string(self):
-        assert AbilityInvoker._coerce_arguments("   ") == {}
-
-    def test_json_string(self):
-        assert AbilityInvoker._coerce_arguments('{"q": "x", "n": 3}') == {
-            "q": "x",
-            "n": 3,
-        }
-
-    def test_dict_passthrough(self):
-        assert AbilityInvoker._coerce_arguments({"a": 1}) == {"a": 1}
-
-    def test_invalid_json_raises(self):
+    @pytest.mark.parametrize("given", ["{not json}", "[1, 2]"])
+    def test_refused(self, given):
         with pytest.raises(ToolInvocationError):
-            AbilityInvoker._coerce_arguments("{not json}")
-
-    def test_non_object_json_raises(self):
-        with pytest.raises(ToolInvocationError):
-            AbilityInvoker._coerce_arguments("[1, 2, 3]")
+            coerce_arguments(given)
 
 
-class TestAbilityInvokerIntegration(ExtensionServerMixin):
-    """Resolve and invoke real seeded abilities against a live registry."""
+class TestGate:
+    invoker = AbilityInvoker(model_registry=None, requester_id="someone")
 
-    @pytest.fixture(scope="module")
-    def server(self):
-        from fastapi.testclient import TestClient
+    def test_ungranted_is_refused(self):
+        assert not self.invoker.is_allowed("list_agents", {})
 
-        from conftest import CORE_COMPANION_EXTENSIONS
-        from zephyrex.app import instance
-        from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
-
-        prepare_test_registry()
-        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-        prefix = (
-            f"test.ability_invoker.{worker_id}" if worker_id else "test.ability_invoker"
+    def test_granted_is_allowed(self):
+        assert self.invoker.is_allowed(
+            "list_agents", {"list_agents": grant("list_agents")}
         )
-        wanted = (
-            "ai_agents",
-            "ai",
-            "email",
-            "conversations",
-            "ai_prompts",
-            "ai_memories",
+
+    @pytest.mark.parametrize("name", sorted(NEVER_AGENT_INVOCABLE))
+    def test_never_invocable_even_granted(self, name):
+        assert not self.invoker.is_allowed(name, {name: grant(name)})
+
+    async def test_refused_before_anything_resolves(self):
+        with pytest.raises(AbilityAccessDenied):
+            await self.invoker.invoke("list_agents", {}, {})
+
+
+class TestInvoking(ExtensionServerMixin):
+    extension_class = EXT_AI_Agents
+
+    def _agent(self, user, model_registry):
+        return AgentManager(requester_id=user.id, model_registry=model_registry).create(
+            name=f"Agent {uuid.uuid4()}"
         )
-        names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
-        app = instance(db_prefix=prefix, extensions=",".join(names))
-        yield TestClient(app)
 
-    def test_registry_has_abilities(self, model_registry):
-        registry = getattr(model_registry, "extension_registry", None)
-        assert registry is not None, "model_registry must expose extension_registry"
-
-    def test_resolve_provider_ability(self, model_registry):
-        invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        resolved = invoker.resolve("text_generation")
-        assert resolved is not None
-        assert resolved.kind == "provider"
-        assert callable(resolved.method)
-
-    def test_resolve_unknown_ability_returns_none(self, model_registry):
-        invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        assert invoker.resolve("no_such_ability_xyz") is None
-
-    def test_build_tools_only_includes_allowed_resolvable(self, model_registry):
-        invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        tools = invoker.build_tools({"text_generation", "no_such_ability_xyz"})
-        names = {t["function"]["name"] for t in tools}
-        assert "text_generation" in names
-        assert "no_such_ability_xyz" not in names  # unresolvable → omitted
-
-    def test_build_tools_excludes_denylisted(self, model_registry):
-        invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        denied = next(iter(NEVER_AGENT_INVOCABLE))
-        tools = invoker.build_tools({denied, "text_generation"})
-        names = {t["function"]["name"] for t in tools}
-        assert denied not in names
-
-    @pytest.mark.asyncio
-    async def test_invoke_meta_ability_when_allowed(self, model_registry):
-        # email_status is a real, local meta ability (reads env, no network).
-        invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        result = await invoker.invoke("email_status", {}, allowed={"email_status"})
-        assert result["success"] is True
-        assert isinstance(result["content"], dict)
-        assert result["content"]["extension"] == "email"
-
-    @pytest.mark.asyncio
-    async def test_invoke_provider_ability_without_resolver_fails_safely(
-        self, model_registry
+    async def test_runs_as_the_turns_requester_whatever_the_model_says(
+        self, admin_a, admin_b, model_registry
     ):
-        # A permitted provider ability with no instance resolver must fail as a
-        # captured tool error (never silently reach for an arbitrary instance),
-        # so the turn can feed the failure back to the model instead of crashing.
-        invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        result = await invoker.invoke(
-            "text_generation",
-            {"prompt": "hi"},
-            allowed={"text_generation"},
+        mine = self._agent(admin_a, model_registry)
+        theirs = self._agent(admin_b, model_registry)
+        tools = {"list_agents": grant("list_agents")}
+        invoker = AbilityInvoker(model_registry=model_registry, requester_id=admin_a.id)
+        listed = await invoker.invoke(
+            "list_agents", {"requester_id": admin_b.id}, tools
         )
-        assert result["success"] is False
-        assert "resolver" in result["error"].lower()
+        ids = {agent["id"] for agent in listed}
+        assert mine.id in ids and theirs.id not in ids
 
-    @pytest.mark.asyncio
-    async def test_invoke_unresolvable_allowed_ability_fails_safely(
-        self, model_registry
-    ):
-        # Granted but unresolvable → captured failure, not a raised error.
-        invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        result = await invoker.invoke(
-            "no_such_ability_xyz", {}, allowed={"no_such_ability_xyz"}
+    async def test_resolves_by_extension(self, model_registry):
+        invoker = AbilityInvoker(model_registry=model_registry, requester_id="x")
+        assert invoker.resolve(grant("list_agents")) is not None
+        assert invoker.resolve(grant("list_agents", "ai")) is None
+        assert invoker.resolve(grant("no_such_ability")) is None
+
+    def test_tools_are_the_granted_that_run(self, model_registry):
+        invoker = AbilityInvoker(model_registry=model_registry, requester_id="x")
+        tools = invoker.build_tools(
+            {
+                "list_agents": grant("list_agents"),
+                "no_such_ability": grant("no_such_ability"),
+                "take_turn": grant("take_turn"),
+            }
         )
-        assert result["success"] is False
+        assert [t["function"]["name"] for t in tools] == ["list_agents"]
+
+    async def test_a_wrong_call_is_a_tool_error(self, admin_a, model_registry):
+        invoker = AbilityInvoker(model_registry=model_registry, requester_id=admin_a.id)
+        tools = {"turn_activity": grant("turn_activity")}
+        with pytest.raises(ToolInvocationError, match="called wrongly"):
+            await invoker.invoke("turn_activity", {"nope": 1}, tools)
+        with pytest.raises(ToolInvocationError, match="refused"):
+            await invoker.invoke(
+                "turn_activity", {"invocation_instance_id": "missing"}, tools
+            )

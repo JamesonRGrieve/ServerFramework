@@ -1,28 +1,30 @@
-"""Background service that drives autonomous agent turns.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The monitor that wakes agents on their schedules, timers and tasks.
 
-``InvocationMonitorService`` polls the standing :class:`InvocationTriggerModel`
-listeners on an interval and fires the ones that are due — creating an
-:class:`InvocationInstanceModel` (a turn) for each and running it through the
-:class:`AgentTurnExecutor`. This is what makes an agent "wake up every 5
-minutes": a ``timer`` trigger with ``interval_seconds=300``.
+``InvocationMonitorService`` polls the enabled ``schedule`` and ``timer``
+triggers and fires those that are due, most urgent first: each firing is an
+:class:`InvocationInstanceModel` run by the :class:`AgentTurnExecutor`, and
+then the trigger's next firing is worked out. A timer with
+``interval_seconds=300`` wakes its agent every five minutes; a one-shot task
+fires once, at its ``due_at``. ``event`` triggers are fired by what they
+listen to (a conversation message), never by the poller.
 
-Only ``schedule`` and ``timer`` triggers are polled here. ``event`` triggers
-(email / conversation message / webhook) are driven by hooks and webhook
-handlers, not this poller.
-
-Work is sharded across uvicorn workers by a consistent hash of the trigger id
-(mirroring ``ai_tasks.SVC_AI_Tasks.TaskMonitorService``) so multiple workers do
-not fire the same trigger.
+Triggers are sharded across uvicorn workers by a hash of their id, so two
+workers never fire the same one.
 """
 
 import os
 import socket
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+from croniter import croniter
+from fastapi import HTTPException
 
 from zephyrex.extensions.ai_agents.AgentTurnExecutor import AgentTurnExecutor
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    AgentManager,
     InvocationInstanceManager,
     InvocationTriggerManager,
 )
@@ -30,14 +32,20 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.AbstractService import AbstractService
 
-# How often the monitor polls for due triggers. This is the poll cadence, not
-# an agent's turn cadence — a timer trigger's own ``interval_seconds`` governs
-# how often that agent actually fires.
+# How often the monitor looks for due triggers; a trigger's own schedule
+# decides how often its agent wakes.
 DEFAULT_POLL_INTERVAL_SECONDS = 60
+POLLED_TYPES = ("timer", "schedule")
+
+
+def as_utc(value: datetime) -> datetime:
+    """A naive timestamp (SQLite drops the zone) read as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 class InvocationMonitorService(AbstractService):
-    """Polls due invocation triggers and runs an agent turn for each."""
+    """Fires due triggers, as ``requester_id`` (ROOT, to see every agent's);
+    each turn acts as its agent's owner."""
 
     def __init__(
         self,
@@ -45,123 +53,86 @@ class InvocationMonitorService(AbstractService):
         model_registry: Optional[Any] = None,
         interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS,
         executor_factory: Optional[Callable[[], AgentTurnExecutor]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             requester_id=requester_id, interval_seconds=interval_seconds, **kwargs
         )
         self.model_registry = model_registry
-        # Injectable for tests (drive turns with a scripted chat transport);
-        # defaults to a rotation-backed executor.
+        # A caller may run turns through another executor (a different model
+        # transport); by default each runs over its agent's rotation.
         self._executor_factory = executor_factory
         self.total_workers = int(env("UVICORN_WORKERS", "1") or "1")
-        self.worker_id = self._compute_worker_id()
+        self.worker_id = self._shard(
+            f"{socket.gethostname()}:{os.getpid()}:{os.getppid()}"
+        )
 
-    # -- worker sharding ---------------------------------------------------
-
-    def _compute_worker_id(self) -> int:
-        """Derive a stable worker index from process identity, for sharding."""
-        unique = f"{socket.gethostname()}:{os.getpid()}:{os.getppid()}"
-        return int(sha256(unique.encode()).hexdigest()[-1], 16) % self.total_workers
+    def _shard(self, key: str) -> int:
+        return int(sha256(key.encode()).hexdigest()[-1], 16) % self.total_workers
 
     def _owns(self, trigger_id: str) -> bool:
-        """Whether this worker owns the trigger, via consistent hashing."""
-        shard = (
-            int(sha256(trigger_id.encode()).hexdigest()[-1], 16) % self.total_workers
-        )
-        return shard == self.worker_id
+        return self._shard(trigger_id) == self.worker_id
 
-    # -- polling -----------------------------------------------------------
+    def _triggers(self) -> InvocationTriggerManager:
+        return InvocationTriggerManager(
+            requester_id=self.requester_id, model_registry=self.model_registry
+        )
 
     async def update(self) -> None:
-        """Poll for due triggers this worker owns and fire each."""
-        try:
-            due = self._due_triggers(self._now())
-        except Exception as exc:
-            logger.error(f"Invocation monitor poll failed: {exc}")
-            self._handle_failure(exc)
-            return
-
-        for trigger in due:
-            if not self._owns(trigger.id):
-                continue
+        """Fire every due trigger this worker owns, most urgent first."""
+        now = datetime.now(timezone.utc)
+        due = [
+            trigger
+            for trigger in self._triggers().list(enabled=True)
+            if trigger.invocation_type in POLLED_TYPES
+            and self._owns(trigger.id)
+            and self._is_due(trigger, now)
+        ]
+        for trigger in due_triggers_first(due, now):
             try:
-                await self._fire(trigger)
-            except Exception as exc:  # one bad trigger must not stop the sweep
-                logger.error(f"Failed firing invocation trigger {trigger.id}: {exc}")
-
-    def _due_triggers(self, now: datetime) -> List[Any]:
-        triggers = InvocationTriggerManager(
-            requester_id=self.requester_id, model_registry=self.model_registry
-        ).list(enabled=True)
-        return [t for t in triggers if self._is_due(t, now)]
+                await self._fire(trigger, now)
+            except HTTPException as refused:
+                # The agent is gone, or its owner may no longer run it: the
+                # trigger can never fire again, so it stops.
+                logger.warning(
+                    "Disabling invocation trigger %s: %s", trigger.id, refused.detail
+                )
+                self._triggers().update(id=trigger.id, enabled=False)
+            except Exception:  # one trigger's failure must not stop the sweep
+                logger.exception("Failed firing invocation trigger %s", trigger.id)
+                # Not retried every poll: it next fires when it is next due.
+                self._triggers().update(
+                    id=trigger.id, **self._after_firing(trigger, now)
+                )
 
     def _is_due(self, trigger: Any, now: datetime) -> bool:
-        """Whether a trigger should fire now. Only timer/schedule are polled."""
-        kind = getattr(trigger, "invocation_type", None)
-        if kind == "timer":
-            if not getattr(trigger, "interval_seconds", None):
-                return False
-            next_fire = getattr(trigger, "next_fire_at", None)
-            return next_fire is None or self._as_aware(next_fire) <= now
-        if kind == "schedule":
-            return self._cron_due(trigger, now)
+        """A trigger with a next firing is due once it has passed. A timer
+        without one fires now; a schedule without one is given its next
+        tick, and waits for it."""
+        if trigger.next_fire_at is not None:
+            return as_utc(trigger.next_fire_at) <= now
+        if trigger.invocation_type == "timer":
+            return True
+        self._triggers().update(
+            id=trigger.id, next_fire_at=croniter(trigger.cron, now).get_next(datetime)
+        )
         return False
 
-    def _cron_due(self, trigger: Any, now: datetime) -> bool:
-        """Whether a cron trigger is due. Requires ``croniter``; if unavailable
-        the trigger is skipped (logged) rather than fired blindly."""
-        cron = getattr(trigger, "cron", None)
-        if not cron:
-            return False
-        next_fire = getattr(trigger, "next_fire_at", None)
-        if next_fire is not None:
-            return self._as_aware(next_fire) <= now
-        # No next_fire_at yet: seed it from the cron so the first fire is aligned
-        # to the schedule rather than firing immediately.
-        try:
-            from croniter import croniter
-
-            InvocationTriggerManager(
-                requester_id=self.requester_id, model_registry=self.model_registry
-            ).update(
-                id=trigger.id,
-                next_fire_at=croniter(cron, now).get_next(datetime),
-            )
-        except ImportError:
-            logger.debug(
-                f"croniter not installed; skipping schedule trigger {trigger.id}"
-            )
-        except Exception as exc:
-            logger.debug(f"Could not seed cron next_fire_at for {trigger.id}: {exc}")
-        return False
-
-    # -- firing ------------------------------------------------------------
-
-    async def _fire(self, trigger: Any) -> None:
-        """Create a turn (instance) for the trigger, run it, and update the
-        trigger's bookkeeping / next fire time."""
-        now = self._now()
-
-        # Scope the instance to the agent's owner so that owner sees their
-        # agent's turn history (the monitor itself runs as a system driver).
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager
-
+    async def _fire(self, trigger: Any, now: datetime) -> None:
+        """A turn for the trigger, owned by its agent's owner; then the
+        trigger's bookkeeping and next firing."""
         agent = AgentManager(
             requester_id=self.requester_id, model_registry=self.model_registry
         ).get(id=trigger.agent_id)
-
-        instances = InvocationInstanceManager(
-            requester_id=self.requester_id, model_registry=self.model_registry
-        )
-        instance = instances.create(
+        # Made as the owner, whose turn it is: they record its activities.
+        instance = InvocationInstanceManager(
+            requester_id=agent.user_id or self.requester_id,
+            model_registry=self.model_registry,
+        ).create(
             agent_id=trigger.agent_id,
             invocation_trigger_id=trigger.id,
-            payload=getattr(trigger, "invocation_payload", None),
-            user_id=getattr(agent, "user_id", None),
-            team_id=getattr(agent, "team_id", None),
+            payload=trigger.invocation_payload,
         )
-
         executor = (
             self._executor_factory()
             if self._executor_factory is not None
@@ -170,51 +141,24 @@ class InvocationMonitorService(AbstractService):
             )
         )
         await executor.run(instance.id)
+        self._triggers().update(id=trigger.id, **self._after_firing(trigger, now))
 
-        self._record_fire(trigger, now)
-
-    def _record_fire(self, trigger: Any, now: datetime) -> None:
-        """Advance the trigger's bookkeeping after a firing."""
-        update: dict = {
+    @staticmethod
+    def _after_firing(trigger: Any, now: datetime) -> Dict[str, Any]:
+        """The bookkeeping, and next firing, of a trigger that fired ``now``."""
+        changes: Dict[str, Any] = {
             "last_fired_at": now,
-            "fire_count": (getattr(trigger, "fire_count", 0) or 0) + 1,
+            "fire_count": trigger.fire_count + 1,
         }
-        kind = getattr(trigger, "invocation_type", None)
-        if kind == "timer":
-            if getattr(trigger, "one_shot", False):
-                update["enabled"] = False
-            else:
-                update["next_fire_at"] = now + timedelta(
-                    seconds=trigger.interval_seconds
-                )
-        elif kind == "schedule":
-            next_fire = self._next_cron(trigger, now)
-            if next_fire is not None:
-                update["next_fire_at"] = next_fire
-        InvocationTriggerManager(
-            requester_id=self.requester_id, model_registry=self.model_registry
-        ).update(id=trigger.id, **update)
+        if trigger.invocation_type == "schedule":
+            changes["next_fire_at"] = croniter(trigger.cron, now).get_next(datetime)
+        elif trigger.one_shot:
+            changes["enabled"] = False
+        else:
+            changes["next_fire_at"] = now + timedelta(seconds=trigger.interval_seconds)
+        return changes
 
-    def _next_cron(self, trigger: Any, now: datetime) -> Optional[datetime]:
-        cron = getattr(trigger, "cron", None)
-        if not cron:
-            return None
-        try:
-            from croniter import croniter
 
-            return croniter(cron, now).get_next(datetime)
-        except Exception:
-            return None
-
-    # -- helpers -----------------------------------------------------------
-
-    @staticmethod
-    def _now() -> datetime:
-        return datetime.now(timezone.utc)
-
-    @staticmethod
-    def _as_aware(value: datetime) -> datetime:
-        """Treat naive timestamps (SQLite round-trips) as UTC for comparison."""
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value
+def due_triggers_first(triggers: List[Any], now: datetime) -> List[Any]:
+    """``triggers`` most urgent first, then soonest due."""
+    return sorted(triggers, key=lambda t: (t.priority, as_utc(t.next_fire_at or now)))

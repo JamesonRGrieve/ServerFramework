@@ -1,5 +1,7 @@
-from faker import Faker
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import uuid
+
+from faker import Faker
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
@@ -145,7 +147,6 @@ class TestAgentAbility(AbstractDBTest, ExtensionServerMixin):
     ]
     unique_fields = []
     is_system_entity = False
-    has_permission_references = False
 
 
 class TestAgentMemory(AbstractDBTest, ExtensionServerMixin):
@@ -164,7 +165,6 @@ class TestAgentMemory(AbstractDBTest, ExtensionServerMixin):
     ]
     unique_fields = []
     is_system_entity = False
-    has_permission_references = False
 
 
 class TestProviderInstanceAgent(AbstractDBTest, ExtensionServerMixin):
@@ -197,7 +197,6 @@ class TestProviderInstanceAgent(AbstractDBTest, ExtensionServerMixin):
     # Add any additional configuration if needed
     unique_fields = []  # This model doesn't appear to have unique constraints
     is_system_entity = False
-    has_permission_references = False
 
 
 class TestProviderInstanceAgentAbility(AbstractDBTest, ExtensionServerMixin):

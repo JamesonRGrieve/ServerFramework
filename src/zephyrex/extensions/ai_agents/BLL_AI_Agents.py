@@ -1,53 +1,169 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Agents, what they may do, what wakes them, and what they did.
+
+An agent belongs to whoever creates it (ROOT and SYSTEM may name another
+owner); an update never moves its owner or team. Everything hanging off an
+agent (its ability grants, context prompts, conversation seats, provider
+instance links, short-term memories, invocation triggers and turns) inherits
+access from it, so only someone who may edit an agent configures it.
+
+A turn is one :class:`InvocationInstanceModel`; what fires turns is an
+:class:`InvocationTriggerModel`: a cron schedule, a timer (a delay, an
+interval, or a one-shot at ``due_at``), or a conversation message. A task is a
+trigger whose payload is its instructions, with a due time and a priority. A
+turn's activities hang off its instance and inherit access from it.
+
+Projects belong to their creator and group context prompts and providers.
+
+Every record a create or update references is read as the requester, so no
+one can point their records at something they cannot see. The system
+catalogs (abilities, extensions, providers), which anyone may reference,
+are read as SYSTEM.
+"""
+
+from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Set
 
+from croniter import croniter
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel as RouteModel
+from pydantic import Field
 
-from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptModel
+from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager, PromptModel
 from zephyrex.extensions.conversations.BLL_Conversations import (
+    ArtifactManager,
     ArtifactModel,
-    MessageModel,
+    ConversationManager,
+    ConversationModel,
+    MessageManager,
 )
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
-from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.lib.Logging import logger
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
+    HookContext,
+    HookTiming,
     ModelMeta,
     NameMixinModel,
+    NumericalSearchModel,
     ParentMixinModel,
     StringSearchModel,
     UpdateMixinModel,
+    hook_bll,
 )
-from zephyrex.logic.BLL_Auth import TeamModel, UserModel
-from zephyrex.logic.BLL_Extensions import AbilityModel
-from zephyrex.logic.BLL_Providers import ProviderInstanceModel, ProviderModel
+from zephyrex.logic.BLL_Auth import (
+    TeamManager,
+    TeamModel,
+    UserManager,
+    UserModel,
+    UserTeamManager,
+)
+from zephyrex.logic.BLL_Extensions import (
+    AbilityManager,
+    AbilityModel,
+    ExtensionManager,
+)
+from zephyrex.logic.BLL_Providers import (
+    ProviderInstanceManager,
+    ProviderInstanceModel,
+    ProviderManager,
+    ProviderModel,
+    RotationManager,
+)
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.pydantic2.registry import BaseModel
+
+EXTENSION_NAME = "ai_agents"
+
+# Task priority: 1 is the most urgent. Due triggers fire most urgent first.
+HIGHEST_PRIORITY = 1
+LOWEST_PRIORITY = 5
+DEFAULT_PRIORITY = 3
+
+# The event sources a trigger can listen to: the ones something fires.
+EventSource = Literal["conversation_message"]
+InvocationType = Literal["schedule", "timer", "event"]
+
+# Trigger bookkeeping only the monitor (ROOT) writes.
+TRIGGER_BOOKKEEPING = ("last_fired_at", "next_fire_at", "fire_count")
+# A turn's lifecycle, which only the executor writes.
+TURN_LIFECYCLE = ("status", "error", "started_at", "completed_at")
+PENDING = "pending"
 
 
-def _validate_fk(mgr, fk_value, manager_cls, not_found_detail):
-    """Return a clean 404 (not a raw 500/201) when a referenced FK row does
-    not exist. A falsy FK is left for the model/DB layer to handle."""
-    if not fk_value:
-        return
+def _server_side(requester_id: str) -> bool:
+    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
+    return is_root_id(requester_id) or is_system_id(requester_id)
+
+
+def _each(
+    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
+) -> Dict[str, Any]:
+    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
+    if isinstance(kwargs.get("entities"), list):
+        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
+    return prepare(dict(kwargs))
+
+
+def _owned_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+    """The owner is the requester; ROOT and SYSTEM may name another."""
+
+    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
+        if not _server_side(requester_id) or not fields.get("user_id"):
+            fields["user_id"] = requester_id
+        return fields
+
+    return prepare
+
+
+def _not_found(detail: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=detail)
+
+
+def _visible(manager: AbstractBLLManager, record_id: str, detail: str) -> Any:
+    """The record ``record_id`` as ``manager``'s requester sees it, or 404."""
     try:
-        manager_cls(
-            requester_id=env("SYSTEM_ID"),
-            model_registry=mgr.model_registry,
-        ).get(id=fk_value)
-    except HTTPException:
-        raise HTTPException(status_code=404, detail=not_found_detail)
+        return manager.get(id=record_id)
+    except HTTPException as error:
+        if error.status_code == 404:
+            raise _not_found(detail) from None
+        raise
 
 
-# Enums
+def _as(manager_class: Any, source: AbstractBLLManager) -> Any:
+    """``manager_class`` acting as ``source``'s requester."""
+    return manager_class(
+        requester_id=source.requester.id, model_registry=source.model_registry
+    )
+
+
+def _catalog(manager_class: Any, source: AbstractBLLManager) -> Any:
+    """``manager_class`` over a system catalog (abilities, extensions,
+    providers) that every user may reference, read as SYSTEM: catalog rows
+    are not anyone's, and one made by ROOT is visible to ROOT alone."""
+    return manager_class(
+        requester_id=env("SYSTEM_ID"), model_registry=source.model_registry
+    )
+
+
+def _ai_agents_loaded(manager: AbstractBLLManager) -> bool:
+    """Hooks are registered process-wide; they act only in apps that load
+    this extension."""
+    registry = getattr(manager.model_registry, "extension_registry", None)
+    return registry is not None and EXTENSION_NAME in registry.extension_names
+
+
 class ActivityState(IntEnum):
     SUCCESS = 0
     WARNING = 1
     ERROR = 2
 
 
-# Agent Models
 class AgentModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
@@ -59,7 +175,9 @@ class AgentModel(
     favourite: bool = Field(
         False, description="Whether the agent is marked as favourite"
     )
-    rotation_id: Optional[str] = Field(None, description="ID of the rotation")
+    rotation_id: Optional[str] = Field(
+        None, description="The rotation of model instances the agent thinks with"
+    )
     image_url: Optional[str] = Field(None, description="URL of the agent image")
 
     table_comment: ClassVar[str] = (
@@ -98,141 +216,103 @@ class AgentModel(
         image_url: Optional[StringSearchModel] = None
 
 
-class AgentManager(AbstractBLLManager, RouterMixin):
-    _model = AgentModel
+@dataclass(frozen=True)
+class AbilityGrant:
+    """An ability an agent may use: its row, its name, and the extension
+    that performs it."""
 
-    prefix: ClassVar[Optional[str]] = "/v1/agent"
-    tags: ClassVar[Optional[List[str]]] = ["Agent Management"]
-    auth_type: ClassVar[AuthType] = AuthType.JWT
-    factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
-    custom_routes: ClassVar[List[Dict[str, Any]]] = [
-        {
-            "path": "/{id}/prompt",
-            "method": "post",
-            "function": "prompt",
-            "auth_type": AuthType.JWT,
-            "summary": "Prompt agent",
-            "description": "Send a prompt to an agent and get a response.",
-            "status_code": 200,
-        },
-        {
-            "path": "/{id}/transcribe",
-            "method": "post",
-            "function": "transcribe",
-            "auth_type": AuthType.JWT,
-            "summary": "Transcribe audio",
-            "description": "Transcribe audio using the agent's provider.",
-            "status_code": 200,
-        },
-        {
-            "path": "/{id}/ability",
-            "method": "get",
-            "function": "list_abilities",
-            "auth_type": AuthType.JWT,
-            "summary": "List enabled abilities for an agent",
-            "description": "Retrieves a list of abilities that are enabled for the specified agent.",
-            "status_code": 200,
-        },
-        {
-            "path": "/{id}/awaken",
-            "method": "post",
-            "function": "start_agent_service",
-            "auth_type": AuthType.JWT,
-            "summary": "Start the agent service",
-            "description": "Starts the service for the specified agent.",
-            "status_code": 200,
-        },
-    ]
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
+    ability_id: str
+    name: str
+    extension: str
 
 
-# Agent Invocation Models
+def tool_names(grants: List[AbilityGrant]) -> Dict[str, AbilityGrant]:
+    """Each grant under the name the agent's model calls it by: its ability
+    name, or ``<extension>__<name>`` where two extensions' abilities share
+    a name."""
+    counts: Dict[str, int] = {}
+    for grant in grants:
+        counts[grant.name] = counts.get(grant.name, 0) + 1
+    return {
+        (
+            grant.name
+            if counts[grant.name] == 1
+            else f"{grant.extension}__{grant.name}"
+        ): grant
+        for grant in grants
+    }
+
+
 class InvocationTriggerModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
-    AgentModel.Reference.Optional,
+    AgentModel.Reference,
     UserModel.Reference.Optional,
     TeamModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    """A standing listener that triggers an Agent to take a turn.
+    """What makes an agent take a turn, many times over.
 
-    Polymorphic over ``invocation_type``:
+    - ``schedule``: on a cron expression (``cron``); with ``due_at``, from
+      the first tick after it.
+    - ``timer``: after ``interval_seconds`` and every ``interval_seconds``
+      after that, or (``one_shot``) once; with ``due_at``, first at it.
+    - ``event``: when ``event_source`` happens (a user's message in a
+      conversation the agent takes part in).
 
-    - ``schedule`` — fire on a cron expression (``cron``).
-    - ``timer`` — fire after / every ``interval_seconds`` (``one_shot`` for a
-      single delayed fire vs. a recurring interval).
-    - ``event`` — fire when an external event from ``event_source``
-      (``email`` | ``conversation_message`` | ``webhook``) matches
-      ``event_filter``.
-
-    A trigger is a persistent configuration that fires many times; each firing
-    produces one :class:`InvocationInstanceModel` (the turn). A scheduled
-    ``ai_tasks`` Task is one kind of trigger: ``ai_tasks`` consumes this model
-    rather than re-implementing triggering.
+    A task is a trigger: its ``invocation_payload`` is the instructions, and
+    ``due_at`` and ``priority`` say when it is due and how urgent it is. Each
+    firing is one :class:`InvocationInstanceModel`.
     """
 
-    invocation_type: str = Field(
+    invocation_type: InvocationType = Field(
         ...,
         description="How the agent turn is triggered: 'schedule' | 'timer' | 'event'",
     )
     enabled: bool = Field(True, description="Whether this trigger is active")
-    # schedule
     cron: Optional[str] = Field(
         None, description="Cron expression (invocation_type='schedule')"
     )
-    # timer
     interval_seconds: Optional[int] = Field(
-        None,
-        description="Delay/interval in seconds (invocation_type='timer')",
+        None, description="Delay/interval in seconds (invocation_type='timer')", gt=0
     )
-    one_shot: bool = Field(
-        False,
-        description="Timer only: fire once after interval_seconds then disable",
-    )
-    # event
-    event_source: Optional[str] = Field(
-        None,
-        description="Event source (invocation_type='event'): 'email' | 'conversation_message' | 'webhook'",
+    one_shot: bool = Field(False, description="Timer only: fire once, then disable")
+    event_source: Optional[EventSource] = Field(
+        None, description="Event source (invocation_type='event')"
     )
     event_filter: Optional[str] = Field(
-        None,
-        description="JSON-encoded match criteria against the event (sender, folder, conversation_id, ...)",
+        None, description="JSON-encoded match criteria against the event"
     )
-    # what the agent does when it fires
     invocation_payload: Optional[str] = Field(
-        None,
-        description="Default prompt/context handed to the agent turn when this trigger fires",
+        None, description="The instructions handed to the turn when this fires"
     )
-    # bookkeeping
+    due_at: Optional[datetime] = Field(
+        None, description="When it is first due (a task's due time)"
+    )
+    priority: int = Field(
+        DEFAULT_PRIORITY,
+        ge=HIGHEST_PRIORITY,
+        le=LOWEST_PRIORITY,
+        description="1 (most urgent) to 5; due triggers fire most urgent first",
+    )
     last_fired_at: Optional[datetime] = Field(
-        None, description="When this trigger last fired"
+        None, description="Set by the server: when this trigger last fired"
     )
     next_fire_at: Optional[datetime] = Field(
-        None, description="Next scheduled fire time (schedule/timer)"
+        None, description="Set by the server: the next time it fires"
     )
-    fire_count: int = Field(0, description="Number of times this trigger has fired")
+    fire_count: int = Field(
+        0, description="Set by the server: how many times it has fired"
+    )
 
     table_comment: ClassVar[str] = (
         "An InvocationTrigger is a standing listener that triggers an Agent to "
-        "take a turn — on a schedule (cron), a timer (interval), or an external "
-        "event (email, conversation message, webhook). It is a persistent config "
-        "that fires many times; each firing is an InvocationInstance. Tasks are a "
-        "type of trigger."
+        "take a turn - on a schedule (cron), a timer (interval or one-shot), or "
+        "an event (a conversation message). It fires many times; each firing "
+        "is an InvocationInstance. A task is a trigger: instructions as its "
+        "payload, with a due time and a priority."
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
     class Create(
         BaseModel,
@@ -240,28 +320,36 @@ class InvocationTriggerModel(
         UserModel.Reference.ID.Optional,
         TeamModel.Reference.ID.Optional,
     ):
-        invocation_type: str = Field(..., description="'schedule' | 'timer' | 'event'")
+        invocation_type: InvocationType = Field(
+            ..., description="'schedule' | 'timer' | 'event'"
+        )
         enabled: Optional[bool] = Field(True)
         cron: Optional[str] = Field(None)
-        interval_seconds: Optional[int] = Field(None)
+        interval_seconds: Optional[int] = Field(None, gt=0)
         one_shot: Optional[bool] = Field(False)
-        event_source: Optional[str] = Field(None)
+        event_source: Optional[EventSource] = Field(None)
         event_filter: Optional[str] = Field(None)
         invocation_payload: Optional[str] = Field(None)
+        due_at: Optional[datetime] = Field(None)
+        priority: Optional[int] = Field(
+            DEFAULT_PRIORITY, ge=HIGHEST_PRIORITY, le=LOWEST_PRIORITY
+        )
+        next_fire_at: Optional[datetime] = Field(None, description="Set by the server")
 
     class Update(BaseModel):
-        invocation_type: Optional[str] = Field(None)
+        invocation_type: Optional[InvocationType] = Field(None)
         enabled: Optional[bool] = Field(None)
         cron: Optional[str] = Field(None)
-        interval_seconds: Optional[int] = Field(None)
+        interval_seconds: Optional[int] = Field(None, gt=0)
         one_shot: Optional[bool] = Field(None)
-        event_source: Optional[str] = Field(None)
+        event_source: Optional[EventSource] = Field(None)
         event_filter: Optional[str] = Field(None)
         invocation_payload: Optional[str] = Field(None)
-        # Firing bookkeeping — written by the monitor after each firing.
-        last_fired_at: Optional[datetime] = Field(None)
-        next_fire_at: Optional[datetime] = Field(None)
-        fire_count: Optional[int] = Field(None)
+        due_at: Optional[datetime] = Field(None)
+        priority: Optional[int] = Field(None, ge=HIGHEST_PRIORITY, le=LOWEST_PRIORITY)
+        last_fired_at: Optional[datetime] = Field(None, description="Set by the server")
+        next_fire_at: Optional[datetime] = Field(None, description="Set by the server")
+        fire_count: Optional[int] = Field(None, description="Set by the server")
 
     class Search(
         ApplicationModel.Search,
@@ -273,6 +361,42 @@ class InvocationTriggerModel(
         invocation_type: Optional[StringSearchModel] = None
         enabled: Optional[bool] = None
         event_source: Optional[StringSearchModel] = None
+        priority: Optional[NumericalSearchModel] = None
+
+
+def first_fire(fields: Dict[str, Any]) -> Optional[datetime]:
+    """When a trigger configured as ``fields`` first fires: ``due_at`` for
+    a timer, the first cron tick after ``due_at`` for a schedule; None for an
+    event, or a trigger with no due time (a timer then fires at once, a
+    schedule on its next tick)."""
+    due_at = fields.get("due_at")
+    if due_at is None or fields.get("invocation_type") == "event":
+        return None
+    if fields.get("invocation_type") == "schedule":
+        tick: datetime = croniter(fields["cron"], due_at).get_next(datetime)
+        return tick
+    due: datetime = due_at
+    return due
+
+
+def check_trigger(fields: Dict[str, Any]) -> None:
+    """422 unless ``fields`` describe a trigger that can fire."""
+
+    def refuse(detail: str) -> None:
+        raise HTTPException(status_code=422, detail=detail)
+
+    kind = fields.get("invocation_type")
+    if kind == "schedule":
+        if not fields.get("cron") or not croniter.is_valid(fields["cron"]):
+            refuse("A scheduled trigger needs a valid cron expression")
+    elif kind == "timer":
+        if not fields.get("interval_seconds") and not fields.get("due_at"):
+            refuse("A timer needs interval_seconds, due_at, or both")
+        if not fields.get("interval_seconds") and not fields.get("one_shot"):
+            refuse("A timer without interval_seconds fires once: set one_shot")
+    elif kind == "event":
+        if not fields.get("event_source"):
+            refuse("An event trigger needs an event_source")
 
 
 class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
@@ -281,26 +405,55 @@ class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/invocation-trigger"
     tags: ClassVar[Optional[List[str]]] = ["Agent Invocation Trigger Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
+    def create(self, **kwargs: Any) -> Any:
+        """Triggers owned by the requester, in their agent's team, first
+        due when their ``due_at`` says."""
+        parse = self.model_registry.apply(self.Model).Create
 
-    def create_validation(self, entity):
-        _validate_fk(
-            self, getattr(entity, "agent_id", None), AgentManager, "Agent not found"
+        def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
+            fields = _in_agents_team(self, _owned_by(self.requester.id)(fields))
+            for field in TRIGGER_BOOKKEEPING:
+                fields.pop(field, None)
+            spec = parse(**fields).model_dump()
+            check_trigger(spec)
+            fields["next_fire_at"] = first_fire(spec)
+            return fields
+
+        return super().create(**_each(kwargs, prepare))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """Owner, team and agent stay; bookkeeping is the monitor's (ROOT);
+        a new ``due_at`` or schedule moves the next firing."""
+        kwargs.pop("user_id", None)
+        kwargs.pop("team_id", None)
+        if not _server_side(self.requester.id):
+            for field in TRIGGER_BOOKKEEPING:
+                kwargs.pop(field, None)
+            changes = (
+                self.model_registry.apply(self.Model)
+                .Update(**kwargs)
+                .model_dump(exclude_unset=True)
+            )
+            merged = {**self.get(id=id).model_dump(), **changes}
+            check_trigger(merged)
+            if {"due_at", "cron", "invocation_type"} & changes.keys():
+                kwargs["next_fire_at"] = first_fire(merged)
+        return super().update(id, **kwargs)
+
+
+def _in_agents_team(
+    manager: AbstractBLLManager, fields: Dict[str, Any]
+) -> Dict[str, Any]:
+    """``fields`` for a record of an agent, in the agent's team: what the
+    requester sees of the agent decides who else sees the record. A
+    malformed agent_id is left for validation (422)."""
+    if isinstance(fields.get("agent_id"), str):
+        agent = _visible(
+            _as(AgentManager, manager), fields["agent_id"], "Agent not found"
         )
+        fields["team_id"] = agent.team_id
+    return fields
 
 
 class InvocationInstanceModel(
@@ -312,39 +465,35 @@ class InvocationInstanceModel(
     TeamModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    """A single firing of a trigger — i.e. one agent turn.
-
-    Created each time an :class:`InvocationTriggerModel` fires (or, for ad-hoc /
-    manual turns, with ``invocation_trigger_id`` null). It records what caused
-    the turn (``trigger_message_id`` for a conversation event, else the trigger
-    kind), the context handed to it (``payload``), and its lifecycle
-    (``status``, ``started_at``/``completed_at``). The turn's Activity tree
-    hangs off this instance via ``Activity.invocation_instance_id``.
-    """
+    """One agent turn: what caused it (its trigger, a conversation message,
+    or neither for an ad-hoc turn), what it was handed (``payload``), and its
+    lifecycle. The turn's activities hang off it."""
 
     status: str = Field(
-        "pending",
-        description="Lifecycle: 'pending' | 'running' | 'succeeded' | 'failed'",
+        PENDING,
+        description="Set by the server: 'pending' | 'running' | 'succeeded' | 'failed'",
     )
     trigger_message_id: Optional[str] = Field(
-        None,
-        description="Message that fired this instance (invocation_type='event'/conversation_message)",
+        None, description="The conversation message that fired this turn"
     )
     payload: Optional[str] = Field(
         None, description="Prompt/context handed to this specific firing"
     )
-    error: Optional[str] = Field(None, description="Error detail when status='failed'")
+    error: Optional[str] = Field(None, description="Set by the server: why it failed")
     started_at: Optional[datetime] = Field(
-        None, description="When the turn began executing"
+        None, description="Set by the server: when the turn began"
     )
-    completed_at: Optional[datetime] = Field(None, description="When the turn finished")
+    completed_at: Optional[datetime] = Field(
+        None, description="Set by the server: when the turn finished"
+    )
 
     table_comment: ClassVar[str] = (
-        "An InvocationInstance is a single firing of an InvocationTrigger — one "
+        "An InvocationInstance is a single firing of an InvocationTrigger - one "
         "agent turn. It records the cause (trigger and/or triggering message), "
         "the context handed to the turn, and its lifecycle status; the turn's "
         "Activity tree links to it via invocation_instance_id."
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
     class Create(
         BaseModel,
@@ -353,16 +502,16 @@ class InvocationInstanceModel(
         UserModel.Reference.ID.Optional,
         TeamModel.Reference.ID.Optional,
     ):
-        status: Optional[str] = Field("pending")
+        status: Optional[str] = Field(PENDING, description="Set by the server")
         trigger_message_id: Optional[str] = Field(None)
         payload: Optional[str] = Field(None)
-        started_at: Optional[datetime] = Field(None)
 
     class Update(BaseModel):
-        status: Optional[str] = Field(None)
-        error: Optional[str] = Field(None)
-        started_at: Optional[datetime] = Field(None)
-        completed_at: Optional[datetime] = Field(None)
+        payload: Optional[str] = Field(None)
+        status: Optional[str] = Field(None, description="Set by the server")
+        error: Optional[str] = Field(None, description="Set by the server")
+        started_at: Optional[datetime] = Field(None, description="Set by the server")
+        completed_at: Optional[datetime] = Field(None, description="Set by the server")
 
     class Search(
         ApplicationModel.Search,
@@ -382,64 +531,165 @@ class InvocationInstanceManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/invocation-instance"
     tags: ClassVar[Optional[List[str]]] = ["Agent Invocation Instance Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
+    def create_validation(self, entity: Any) -> None:
+        if entity.invocation_trigger_id:
+            trigger = _visible(
+                _as(InvocationTriggerManager, self),
+                entity.invocation_trigger_id,
+                "Invocation trigger not found",
+            )
+            if trigger.agent_id != entity.agent_id:
+                raise HTTPException(
+                    status_code=400, detail="A turn is its trigger's agent's"
+                )
+        if entity.trigger_message_id:
+            _visible(
+                _as(MessageManager, self),
+                entity.trigger_message_id,
+                "Message not found",
+            )
+
+    def create(self, **kwargs: Any) -> Any:
+        """Turns owned by the requester, in their agent's team; every turn
+        starts pending."""
+
+        def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
+            fields = _in_agents_team(self, _owned_by(self.requester.id)(fields))
+            fields["status"] = PENDING
+            return fields
+
+        return super().create(**_each(kwargs, prepare))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A turn's lifecycle is the executor's (ROOT) to record."""
+        if not _server_side(self.requester.id):
+            for field in TURN_LIFECYCLE:
+                kwargs.pop(field, None)
+        return super().update(id, **kwargs)
+
+
+class TurnRequest(RouteModel):
+    payload: Optional[str] = Field(
+        None, description="What the agent is asked or told this turn"
+    )
+
+
+class GrantedAbility(RouteModel):
+    tool: str = Field(description="The name the agent's model calls it by")
+    name: str
+    extension: str
+    ability_id: str
+
+
+class GrantedAbilities(RouteModel):
+    abilities: List[GrantedAbility]
+
+
+class AgentManager(AbstractBLLManager, RouterMixin):
+    _model = AgentModel
+
+    prefix: ClassVar[Optional[str]] = "/v1/agent"
+    tags: ClassVar[Optional[List[str]]] = ["Agent Management"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+
+    def create_validation(self, entity: Any) -> None:
+        if entity.rotation_id:
+            _visible(
+                _as(RotationManager, self), entity.rotation_id, "Rotation not found"
+            )
+        if entity.team_id:
+            _visible(_as(TeamManager, self), entity.team_id, "Team not found")
+        if entity.user_id != self.requester.id:
+            _user_exists(self.model_registry, entity.user_id)
+
+    def create(self, **kwargs: Any) -> Any:
+        """Agents owned by the requester (ROOT and SYSTEM may name another)."""
+        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """An agent's owner and team are not changed by an update."""
+        kwargs.pop("user_id", None)
+        kwargs.pop("team_id", None)
+        if kwargs.get("rotation_id"):
+            _visible(
+                _as(RotationManager, self), kwargs["rotation_id"], "Rotation not found"
+            )
+        return super().update(id, **kwargs)
+
+    async def take_turn(self, agent_id: str, payload: Optional[str]) -> Any:
+        """Run one turn of the agent now, handed ``payload``; the turn's
+        instance, finished (succeeded or failed)."""
+        from zephyrex.extensions.ai_agents.AgentTurnExecutor import (
+            AgentTurnExecutor,
         )
 
-    def create_validation(self, entity):
-        _validate_fk(
-            self, getattr(entity, "agent_id", None), AgentManager, "Agent not found"
-        )
-        _validate_fk(
-            self,
-            getattr(entity, "invocation_trigger_id", None),
-            InvocationTriggerManager,
-            "Invocation trigger not found",
+        instances = _as(InvocationInstanceManager, self)
+        instance = instances.create(agent_id=agent_id, payload=payload)
+        await AgentTurnExecutor(
+            model_registry=self.model_registry, requester_id=self.requester.id
+        ).run(instance.id)
+        return instances.get(id=instance.id)
+
+    @custom_route(
+        method="POST",
+        path="/{agent_id}/turn",
+        input_model=TurnRequest,
+        output_model=InvocationInstanceModel,
+        authentication_type="jwt",
+        openapi_tags=("Agent Management",),
+        summary="Run a turn of the agent now",
+        expose_in=(ExposeIn.REST,),
+    )
+    async def turn_route(self, agent_id: str, body: TurnRequest) -> Any:
+        return await self.take_turn(agent_id, body.payload)
+
+    @custom_route(
+        method="GET",
+        path="/{agent_id}/abilities",
+        output_model=GrantedAbilities,
+        authentication_type="jwt",
+        openapi_tags=("Agent Management",),
+        summary="The abilities the agent may use, as its model sees them",
+        expose_in=(ExposeIn.REST,),
+    )
+    def abilities_route(self, agent_id: str) -> GrantedAbilities:
+        _visible(self, agent_id, "Agent not found")
+        grants = _as(AgentAbilityManager, self).grants(agent_id)
+        return GrantedAbilities(
+            abilities=[
+                GrantedAbility(
+                    tool=tool,
+                    name=grant.name,
+                    extension=grant.extension,
+                    ability_id=grant.ability_id,
+                )
+                for tool, grant in tool_names(grants).items()
+            ]
         )
 
-    @property
-    def triggers(self):
-        return InvocationTriggerManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
 
-
-# Agent Conversation Participation Models
 class ConversationAgentModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
     AgentModel.Reference,
+    ConversationModel.Reference,
     metaclass=ModelMeta,
 ):
-    conversation_id: str = Field(..., description="ID of the conversation")
     active: bool = Field(
         True, description="Whether the agent is actively participating"
     )
     auto_respond: bool = Field(
-        False, description="Whether the agent should automatically respond"
+        False,
+        description="Whether the agent takes a turn on every user message, trigger or not",
     )
 
     table_comment: ClassVar[str] = (
         "ConversationAgent represents an AI agent's participation in a conversation, allowing agents to be conversation participants alongside users."
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
-    class Create(BaseModel, AgentModel.Reference.ID):
-        conversation_id: str = Field(..., description="ID of the conversation")
+    class Create(BaseModel, AgentModel.Reference.ID, ConversationModel.Reference.ID):
         active: Optional[bool] = Field(
             True, description="Whether the agent is actively participating"
         )
@@ -455,8 +705,11 @@ class ConversationAgentModel(
             None, description="Whether the agent should automatically respond"
         )
 
-    class Search(ApplicationModel.Search, AgentModel.Reference.ID.Search):
-        conversation_id: Optional[StringSearchModel] = None
+    class Search(
+        ApplicationModel.Search,
+        AgentModel.Reference.ID.Search,
+        ConversationModel.Reference.ID.Search,
+    ):
         active: Optional[bool] = None
         auto_respond: Optional[bool] = None
 
@@ -464,106 +717,34 @@ class ConversationAgentModel(
 class ConversationAgentManager(AbstractBLLManager, RouterMixin):
     _model = ConversationAgentModel
 
-    @property
-    def agents(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager
-
-        return AgentManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def conversations(self):
-        from zephyrex.extensions.conversations.BLL_Conversations import (
-            ConversationManager,
-        )
-
-        return ConversationManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def context_prompts(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
-            AgentContextPromptManager,
-        )
-
-        return AgentContextPromptManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    async def prompt(self, id: str, prompt_content: dict):
-        """
-        Prompt a model against a prompt string with named entities for completion.
-
-        Args:
-            name: The name of the prompt (must exist in the system)
-            prompt_content: A dictionary of entities to substitute into the prompt
-        """
-        # Note: Prompt with named entities is a potential feature but not implemented in the current system
-        raise NotImplementedError("Named entity prompting is not currently supported")
-
-    async def transcribe(self, id: str, audio_path: str):
-        """
-        Submit an audio file for transcription using the selected agent's provider.
-
-        Args:
-            name: Name of the agent configuration to use
-            audio_path: Path to the audio file to transcribe
-
-        Returns:
-            Transcription result
-        """
-        raise NotImplementedError(
-            "Transcription functionality is not currently supported"
-        )
-
-    async def list_abilities(self, id: str):
-        """List all abilities available to a specific agent."""
-        return await self.abilities.list(AgentModel.Reference.ID(agent_id=id))
-
-    async def start_agent_service(self, id: str):
-        """Start the agent service for continuous operation."""
-        raise NotImplementedError(
-            "Agent service functionality is not currently supported"
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(AgentManager, self), entity.agent_id, "Agent not found")
+        _visible(
+            _as(ConversationManager, self),
+            entity.conversation_id,
+            "Conversation not found",
         )
 
 
-# Provider Instance Agent Models
 class ProviderInstanceAgentModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
     AgentModel.Reference,
+    ProviderInstanceModel.Reference,
     metaclass=ModelMeta,
 ):
-    provider_instance_id: str = Field(..., description="ID of the provider instance")
-
-    __table_args__ = {"info": {"provider_instance_id": "provider_instance_id"}}
-
     table_comment: ClassVar[str] = (
-        "A ProviderInstanceAgent represents a link between a ProviderInstance and an Agent..."
+        "A ProviderInstanceAgent represents a link between a ProviderInstance and an Agent."
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
-    class Create(BaseModel):
-        provider_instance_id: str = Field(
-            ..., description="ID of the provider instance"
-        )
-        agent_id: str = Field(..., description="ID of the agent")
+    class Create(
+        BaseModel, AgentModel.Reference.ID, ProviderInstanceModel.Reference.ID
+    ):
+        pass
 
     class Update(BaseModel):
-        provider_instance_id: Optional[str] = Field(
-            None, description="ID of the provider instance"
-        )
-        agent_id: Optional[str] = Field(None, description="ID of the agent")
+        pass
 
     class Search(
         ApplicationModel.Search,
@@ -573,138 +754,59 @@ class ProviderInstanceAgentModel(
         pass
 
 
+def _agent_and_instance_visible(manager: AbstractBLLManager, entity: Any) -> None:
+    _visible(_as(AgentManager, manager), entity.agent_id, "Agent not found")
+    _visible(
+        _as(ProviderInstanceManager, manager),
+        entity.provider_instance_id,
+        "Provider instance not found",
+    )
+
+
 class ProviderInstanceAgentManager(AbstractBLLManager, RouterMixin):
     _model = ProviderInstanceAgentModel
 
-    def create_validation(self, entity):
-        from zephyrex.logic.BLL_Providers import ProviderInstanceManager
-
-        _validate_fk(
-            self,
-            getattr(entity, "provider_instance_id", None),
-            ProviderInstanceManager,
-            "Provider instance not found",
-        )
-        _validate_fk(
-            self, getattr(entity, "agent_id", None), AgentManager, "Agent not found"
-        )
-
-    @property
-    def agents(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager
-
-        return AgentManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def provider_instances(self):
-        from zephyrex.logic.BLL_Providers import ProviderInstanceManager
-
-        return ProviderInstanceManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
+    def create_validation(self, entity: Any) -> None:
+        _agent_and_instance_visible(self, entity)
 
 
-# Provider Instance Agent Ability Models
 class ProviderInstanceAgentAbilityModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
     AgentModel.Reference,
+    ProviderInstanceModel.Reference,
     metaclass=ModelMeta,
 ):
-    # Explicitly define the provider_instance_id field
-    provider_instance_id: str = Field(..., description="ID of the provider instance")
     state: bool = Field(default=False, description="State of the ability")
-
-    # Add table args to ensure field mapping
-    __table_args__ = {"info": {"provider_instance_id": "provider_instance_id"}}
 
     table_comment: ClassVar[str] = (
         "Links provider instances to agent abilities and tracks their state"
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
-    class Create(BaseModel):
-        provider_instance_id: str = Field(
-            ..., description="ID of the provider instance"
-        )
-        agent_id: str = Field(..., description="ID of the agent")
+    class Create(
+        BaseModel, AgentModel.Reference.ID, ProviderInstanceModel.Reference.ID
+    ):
         state: bool = Field(default=False, description="State of the ability")
 
     class Update(BaseModel):
-        provider_instance_id: Optional[str] = Field(
-            None, description="ID of the provider instance"
-        )
-        agent_id: Optional[str] = Field(None, description="ID of the agent")
         state: Optional[bool] = Field(None, description="State of the ability")
 
-    class Search(ApplicationModel.Search):
-        provider_instance_id: Optional[StringSearchModel] = None
-        agent_id: Optional[StringSearchModel] = None
+    class Search(
+        ApplicationModel.Search,
+        AgentModel.Reference.ID.Search,
+        ProviderInstanceModel.Reference.ID.Search,
+    ):
         state: Optional[bool] = None
 
 
 class ProviderInstanceAgentAbilityManager(AbstractBLLManager, RouterMixin):
     _model = ProviderInstanceAgentAbilityModel
 
-    def create_validation(self, entity):
-        from zephyrex.logic.BLL_Providers import ProviderInstanceManager
-
-        _validate_fk(
-            self,
-            getattr(entity, "provider_instance_id", None),
-            ProviderInstanceManager,
-            "Provider instance not found",
-        )
-        _validate_fk(
-            self, getattr(entity, "agent_id", None), AgentManager, "Agent not found"
-        )
-
-    @property
-    def agents(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager
-
-        return AgentManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def provider_instances(self):
-        from zephyrex.logic.BLL_Providers import ProviderInstanceManager
-
-        return ProviderInstanceManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def abilities(self):
-        from zephyrex.logic.BLL_Providers import ProviderInstanceAbilityManager
-
-        return ProviderInstanceAbilityManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def provider_abilities(self):
-        return self.abilities
+    def create_validation(self, entity: Any) -> None:
+        _agent_and_instance_visible(self, entity)
 
 
-# Project Models
 class ProjectModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
@@ -731,12 +833,7 @@ class ProjectModel(
             None, description="Description of the project"
         )
 
-    class Update(
-        BaseModel,
-        NameMixinModel.Optional,
-        TeamModel.Reference.ID.Optional,
-        ParentMixinModel.Optional,
-    ):
+    class Update(BaseModel, NameMixinModel.Optional, ParentMixinModel.Optional):
         description: Optional[str] = Field(
             None, description="Description of the project"
         )
@@ -757,97 +854,40 @@ class ProjectManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/project"
     tags: ClassVar[Optional[List[str]]] = ["Project Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    factory_params: ClassVar[List[str]] = ["target_team_id"]
 
-    def create(self, **kwargs):
-        """Default the project's owner to the authenticated requester.
+    def create_validation(self, entity: Any) -> None:
+        if entity.user_id != self.requester.id:
+            _user_exists(self.model_registry, entity.user_id)
+        if entity.team_id:
+            _visible(_as(TeamManager, self), entity.team_id, "Team not found")
+        if entity.parent_id:
+            _visible(self, entity.parent_id, "Parent project not found")
 
-        `user_id` isn't a path parameter, and the generic `target_id`
-        auto-population in `_create_single_entity` (`create_args["user_id"]
-        = self.target_id`) never actually fires for this manager --
-        `target_id` is only populated for managers that request it via
-        `factory_params`/path resolution, and Project is deliberately
-        flat-prefixed with no such wiring. Without this default, any
-        caller that omits `user_id` hits the DB's NOT NULL constraint on
-        `projects.user_id` as a raw, unhandled IntegrityError (500)
-        instead of the row simply belonging to whoever created it.
-        """
-        kwargs.setdefault("user_id", self.requester_id)
-        return super().create(**kwargs)
+    def create(self, **kwargs: Any) -> Any:
+        """Projects owned by the requester (ROOT and SYSTEM may name another)."""
+        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
 
-    def create_validation(self, entity):
-        """Validate project creation references existing user/team rows.
-
-        Neither `user_id` nor `team_id` is a path parameter for /v1/project
-        (it's a flat prefix), so unlike nested resources (e.g. provider/
-        instance) there is no router-level 404 for a bogus reference --
-        it must be checked explicitly here, matching the pattern used by
-        conversations.BLL_Conversations (e.g. MessageManager.create_validation).
-
-        A `None` user_id (e.g. explicitly nulled by a caller) is rejected
-        here with a clean 422 rather than being allowed to reach the DB,
-        where `projects.user_id NOT NULL` would otherwise surface as an
-        unhandled IntegrityError (500).
-        """
-        if not getattr(entity, "user_id", None):
-            raise HTTPException(status_code=422, detail="user_id is required")
-
-        try:
-            from zephyrex.logic.BLL_Auth import UserManager
-
-            UserManager(
-                requester_id=env("SYSTEM_ID"),
-                model_registry=self.model_registry,
-            ).get(id=entity.user_id)
-        except HTTPException:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        if getattr(entity, "team_id", None):
-            try:
-                from zephyrex.logic.BLL_Auth import TeamManager
-
-                TeamManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.team_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="Team not found")
-
-    @property
-    def context_prompts(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
-            ProjectContextPromptManager,
-        )
-
-        return ProjectContextPromptManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def context_providers(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
-            ProjectContextProviderManager,
-        )
-
-        return ProjectContextProviderManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A project's owner and team are not changed by an update; a new
+        parent is one the requester sees, and not the project itself."""
+        kwargs.pop("user_id", None)
+        kwargs.pop("team_id", None)
+        if kwargs.get("parent_id"):
+            if kwargs["parent_id"] == id:
+                raise HTTPException(
+                    status_code=400, detail="A project is not its own parent"
+                )
+            _visible(self, kwargs["parent_id"], "Parent project not found")
+        return super().update(id, **kwargs)
 
 
-# Project Context Provider Models
 class ProjectContextProviderModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
+    ProjectModel.Reference,
+    ProviderModel.Reference,
     metaclass=ModelMeta,
 ):
-    provider_id: str = Field(..., description="ID of the provider extension")
-    project_id: str = Field(..., description="ID of the project")
     context_resource: Optional[str] = Field(
         None, description="Resource identifier for context"
     )
@@ -855,10 +895,9 @@ class ProjectContextProviderModel(
     table_comment: ClassVar[str] = (
         "A ProjectContextProvider represents the association of a Provider with a Project for context injection."
     )
+    permission_references: ClassVar[List[str]] = ["project"]
 
-    class Create(BaseModel):
-        provider_id: str = Field(..., description="ID of the provider extension")
-        project_id: str = Field(..., description="ID of the project")
+    class Create(BaseModel, ProjectModel.Reference.ID, ProviderModel.Reference.ID):
         context_resource: Optional[str] = Field(
             None, description="Resource identifier for context"
         )
@@ -868,33 +907,25 @@ class ProjectContextProviderModel(
             None, description="Resource identifier for context"
         )
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
-        provider_id: Optional[StringSearchModel] = None
-        project_id: Optional[StringSearchModel] = None
+    class Search(
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        ProjectModel.Reference.ID.Search,
+        ProviderModel.Reference.ID.Search,
+    ):
         context_resource: Optional[StringSearchModel] = None
 
 
 class ProjectContextProviderManager(AbstractBLLManager, RouterMixin):
     _model = ProjectContextProviderModel
 
-    def create_validation(self, entity):
-        from zephyrex.logic.BLL_Providers import ProviderManager
-
-        _validate_fk(
-            self,
-            getattr(entity, "project_id", None),
-            ProjectManager,
-            "Project not found",
-        )
-        _validate_fk(
-            self,
-            getattr(entity, "provider_id", None),
-            ProviderManager,
-            "Provider not found",
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(ProjectManager, self), entity.project_id, "Project not found")
+        _visible(
+            _catalog(ProviderManager, self), entity.provider_id, "Provider not found"
         )
 
 
-# Project Context Prompt Models
 class ProjectContextPromptModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
@@ -905,9 +936,10 @@ class ProjectContextPromptModel(
     table_comment: ClassVar[str] = (
         "A ProjectContextPrompt represents the association of a Prompt with a Project for context injection."
     )
+    permission_references: ClassVar[List[str]] = ["project"]
 
-    class Create(BaseModel, PromptModel.Reference.ID):
-        project_id: str = Field(..., description="ID of the project")
+    class Create(BaseModel, ProjectModel.Reference.ID, PromptModel.Reference.ID):
+        pass
 
     class Update(BaseModel):
         pass
@@ -923,109 +955,56 @@ class ProjectContextPromptModel(
 class ProjectContextPromptManager(AbstractBLLManager, RouterMixin):
     _model = ProjectContextPromptModel
 
-    def create_validation(self, entity):
-        from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager
-
-        _validate_fk(
-            self,
-            getattr(entity, "project_id", None),
-            ProjectManager,
-            "Project not found",
-        )
-        _validate_fk(
-            self, getattr(entity, "prompt_id", None), PromptManager, "Prompt not found"
-        )
-
-    @property
-    def projects(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import ProjectManager
-
-        return ProjectManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def prompts(self):
-        from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager
-
-        return PromptManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(ProjectManager, self), entity.project_id, "Project not found")
+        _visible(_as(PromptManager, self), entity.prompt_id, "Prompt not found")
 
 
-# Activity Models
 class ActivityModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
     ParentMixinModel,
+    InvocationInstanceModel.Reference,
+    AbilityModel.Reference,
+    ArtifactModel.Reference.Optional,
+    ProviderModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
     title: str = Field(..., description="Title of the activity")
     body: str = Field(..., description="Body content of the activity")
     state: Optional[ActivityState] = Field(None, description="State of the activity")
-    invocation_instance_id: Optional[str] = Field(
-        None,
-        description="ID of the InvocationInstance (turn) this activity belongs to",
-    )
-    ability_id: str = Field(..., description="ID of the ability")
-    artifact_id: Optional[str] = Field(
-        None, description="ID of the artifact created by this activity"
-    )
-    provider_id: Optional[str] = Field(
-        None, description="ID of the provider used for this activity"
-    )
-    # chain_link_id: Optional[str] = Field(None, description="ID of the chain step (if ai_chains installed)") # Conditional field
-
-    # Relationships (for potential inclusion)
-    invocation_instance: Optional[InvocationInstanceModel] = None
-    ability: Optional[AbilityModel] = None
-    artifact: Optional[ArtifactModel] = None
-    provider: Optional[ProviderModel] = None
 
     table_comment: ClassVar[str] = (
         "An Activity represents an action an Agent takes (or took) during a turn. "
-        "A turn's activities belong to its InvocationInstance via "
-        "invocation_instance_id; the root activity of a turn carries it and "
-        "children inherit it through parent_id. Activities are typed using "
-        "ability_id. Sub-actions (e.g., steps in a web search) are indicated with "
-        "the parent_id field. Activities can optionally produce an Artifact."
+        "Every activity of a turn belongs to its InvocationInstance via "
+        "invocation_instance_id; sub-actions (e.g., steps in a web search) are "
+        "indicated with the parent_id field. Activities are typed using "
+        "ability_id and can optionally produce an Artifact."
     )
+    permission_references: ClassVar[List[str]] = ["invocation_instance"]
 
     class Create(
         BaseModel,
-        InvocationInstanceModel.Reference.ID.Optional,
+        InvocationInstanceModel.Reference.ID,
         AbilityModel.Reference.ID,
         ParentMixinModel.Optional,
-        ProviderModel.Reference.ID.Optional,  # Add provider optional ref
-        # ChainLinkModel.Reference.ID.Optional, # Conditional ref
+        ProviderModel.Reference.ID.Optional,
+        ArtifactModel.Reference.ID.Optional,
     ):
         title: str = Field(..., description="Title of the activity")
         body: str = Field(..., description="Body content of the activity")
-        artifact_id: Optional[str] = Field(
-            None, description="ID of the artifact created by this activity"
-        )
         state: Optional[ActivityState] = Field(
             None, description="State of the activity"
         )
 
-    class Update(BaseModel, ParentMixinModel.Optional):
+    class Update(BaseModel):
         title: Optional[str] = Field(None, description="Title of the activity")
         body: Optional[str] = Field(None, description="Body content of the activity")
         state: Optional[ActivityState] = Field(
             None, description="State of the activity"
         )
-        # message_id/ability_id are generally not updatable
         artifact_id: Optional[str] = Field(
             None, description="ID of the artifact created by this activity"
-        )
-        provider_id: Optional[str] = Field(
-            None, description="ID of the provider used for this activity"
         )
 
     class Search(
@@ -1040,188 +1019,108 @@ class ActivityModel(
         provider_id: Optional[StringSearchModel] = None
 
 
+class ActivityHierarchy(RouteModel):
+    activities: Dict[str, Any] = Field(
+        description="Each root activity's id: {activity, children}, recursively"
+    )
+
+
 class ActivityManager(AbstractBLLManager, RouterMixin):
     _model = ActivityModel
-    # Permission flows from the InvocationInstance (→ its agent's owner/team);
-    # for conversation turns the instance's trigger_message_id ties it to a
-    # conversation the requester can already see.
-    permission_references = ["invocation_instance"]
 
     prefix: ClassVar[Optional[str]] = "/v1/activity"
     tags: ClassVar[Optional[List[str]]] = ["Activity Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    factory_params: ClassVar[List[str]] = ["target_team_id"]
-    custom_routes: ClassVar[List[Dict[str, Any]]] = [
-        {
-            "path": "/hierarchy/{invocation_instance_id}",
-            "method": "get",
-            "function": "get_hierarchy_for_instance",
-            "auth_type": AuthType.JWT,
-            "summary": "Get activity hierarchy for a turn (invocation instance)",
-            "description": "Retrieves the hierarchical structure of activities produced by a single agent turn.",
-            "status_code": 200,
-        }
-    ]
 
-    @staticmethod
-    def get_hierarchy(
-        manager: "ActivityManager", invocation_instance_id: str
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Get a hierarchical representation of a turn's activities.
-
-        Args:
-            manager: An ActivityManager instance
-            invocation_instance_id: The InvocationInstance (turn) to build the
-                activity tree for
-
-        Returns:
-            Dictionary with activity hierarchy (root activity id -> tree)
-        """
-        # Fetch every activity for the turn in one query, then assemble the
-        # tree in memory: one index pass, no N+1 per-node lookups, and no
-        # reliance on a self-referential parent_id equals-search. The filter is
-        # passed as a keyword (``invocation_instance_id=...``) rather than a
-        # positional ``Search`` model: the positional-Search form does not apply
-        # this equality filter (it returns every activity), which would mix
-        # turns together.
-        activities = manager.list(invocation_instance_id=invocation_instance_id)
-        children_by_parent: Dict[Optional[str], List[ActivityModel]] = {}
-        for activity in activities:
-            children_by_parent.setdefault(activity.parent_id, []).append(activity)
-
-        # `visited` guards against self-references and cycles so a malformed
-        # parent chain can never recurse without bound.
-        hierarchy = {}
-        visited: set = set()
-        for activity in activities:
-            if activity.parent_id is None:
-                hierarchy[activity.id] = manager._build_hierarchy(
-                    manager, activity, children_by_parent, visited
-                )
-
-        return hierarchy
-
-    @staticmethod
-    def _build_hierarchy(
-        manager: "ActivityManager",
-        activity: ActivityModel,
-        children_by_parent: Dict[Optional[str], List[ActivityModel]],
-        visited: Optional[set] = None,
-    ) -> Dict[str, Any]:
-        """
-        Recursively build hierarchy for an activity from a pre-built
-        parent-id -> children index.
-
-        Args:
-            manager: An ActivityManager instance
-            activity: The activity to build hierarchy for
-            children_by_parent: Index of parent_id -> child activities
-            visited: Ids already placed in the tree, to break cycles
-
-        Returns:
-            Dictionary with activity and its children
-        """
-        if visited is None:
-            visited = set()
-        result: Dict[str, Any] = {"activity": activity.dict(), "children": {}}
-        visited.add(activity.id)
-
-        for child in children_by_parent.get(activity.id, []):
-            # Skip self-links and any node already in the current tree path.
-            if child.id == activity.id or child.id in visited:
-                continue
-            result["children"][child.id] = manager._build_hierarchy(
-                manager, child, children_by_parent, visited
-            )
-
-        return result
-
-    @property
-    def activities(self):
-        """Get activities manager for nested operations."""
-        return ActivityManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    def get_hierarchy_for_instance(self, invocation_instance_id: str) -> Dict[str, Any]:
-        """Get the activity hierarchy for a single turn (invocation instance),
-        keyed under ``activities`` (root activity id -> {activity, children})."""
-        return {
-            "activities": self.get_hierarchy(
-                manager=self, invocation_instance_id=invocation_instance_id
-            )
-        }
-
-    def _validate_fk_exists(self, fk_value, model_cls, not_found_detail):
-        """Raw, ACL-independent existence check: return a clean 404 (not a raw
-        500/201) when the referenced row does not exist at all. Uses ROOT so a
-        row the caller cannot see through ACL -- a ROOT-owned ability, an
-        access-scoped message -- still counts as existing; only a genuinely
-        absent row 404s. A falsy FK is left for the model/DB layer to handle."""
-        if not fk_value:
-            return
-        db_cls = model_cls.DB(self.model_registry.DB.manager.Base)
-        if not db_cls.exists(
-            id=fk_value,
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-        ):
-            raise HTTPException(status_code=404, detail=not_found_detail)
-
-    def create_validation(self, entity):
-        invocation_instance_id = getattr(entity, "invocation_instance_id", None)
-        parent_id = getattr(entity, "parent_id", None)
-
-        # The root activity of a turn (no parent) must be anchored to the
-        # InvocationInstance that produced it. Child activities inherit their
-        # anchor through parent_id, so they need not carry it. Without this a
-        # rootless, unanchored activity could not be rendered or
-        # permission-scoped.
-        if parent_id is None and not invocation_instance_id:
-            raise HTTPException(
-                status_code=422,
-                detail="A root activity must have an invocation_instance_id",
-            )
-
-        # A referenced InvocationInstance must actually exist, else a clean 404
-        # rather than a dangling soft link. Checked ACL-independently.
-        self._validate_fk_exists(
+    def hierarchy(self, invocation_instance_id: str) -> Dict[str, Any]:
+        """A turn's activities as trees: each root activity's id to
+        ``{activity, children}``, children keyed by id the same way."""
+        _visible(
+            _as(InvocationInstanceManager, self),
             invocation_instance_id,
-            InvocationInstanceModel,
             "Invocation instance not found",
         )
-        # parent_id is an optional self-referential Activity link.
-        self._validate_fk_exists(
-            parent_id,
-            ActivityModel,
-            "Parent activity not found",
+        activities = self.list(invocation_instance_id=invocation_instance_id)
+        children_of: Dict[Optional[str], List[Any]] = {}
+        for activity in activities:
+            children_of.setdefault(activity.parent_id, []).append(activity)
+
+        placed: Set[str] = set()
+
+        def tree(activity: Any) -> Dict[str, Any]:
+            placed.add(activity.id)
+            return {
+                "activity": activity.model_dump(mode="json"),
+                "children": {
+                    child.id: tree(child)
+                    for child in children_of.get(activity.id, [])
+                    if child.id not in placed
+                },
+            }
+
+        return {a.id: tree(a) for a in children_of.get(None, [])}
+
+    @custom_route(
+        method="GET",
+        path="/hierarchy/{invocation_instance_id}",
+        output_model=ActivityHierarchy,
+        authentication_type="jwt",
+        openapi_tags=("Activity Management",),
+        summary="A turn's activities as trees",
+        expose_in=(ExposeIn.REST,),
+    )
+    def hierarchy_route(self, invocation_instance_id: str) -> ActivityHierarchy:
+        return ActivityHierarchy(activities=self.hierarchy(invocation_instance_id))
+
+    def create_validation(self, entity: Any) -> None:
+        _visible(
+            _as(InvocationInstanceManager, self),
+            entity.invocation_instance_id,
+            "Invocation instance not found",
         )
+        _visible(_catalog(AbilityManager, self), entity.ability_id, "Ability not found")
+        if entity.parent_id:
+            parent = _visible(self, entity.parent_id, "Parent activity not found")
+            if parent.invocation_instance_id != entity.invocation_instance_id:
+                raise HTTPException(
+                    status_code=400, detail="An activity is in its parent's turn"
+                )
+        if entity.artifact_id:
+            _visible(
+                _as(ArtifactManager, self), entity.artifact_id, "Artifact not found"
+            )
+        if entity.provider_id:
+            _visible(
+                _catalog(ProviderManager, self),
+                entity.provider_id,
+                "Provider not found",
+            )
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        if kwargs.get("artifact_id"):
+            _visible(
+                _as(ArtifactManager, self), kwargs["artifact_id"], "Artifact not found"
+            )
+        return super().update(id, **kwargs)
 
 
-# Agent Context Prompt Models
 class AgentContextPromptModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
     AgentModel.Reference,
-    PromptModel.Reference.ID,
+    PromptModel.Reference,
     metaclass=ModelMeta,
 ):
-    # Existing fields
     table_comment: ClassVar[str] = (
         "An AgentContextPrompt represents the association of a Prompt with an Agent for context injection."
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
-    class Create(BaseModel):
-        agent_id: str = Field(..., description="ID of the agent")
-        prompt_id: str = Field(..., description="ID of the prompt")
+    class Create(BaseModel, AgentModel.Reference.ID, PromptModel.Reference.ID):
+        pass
 
     class Update(BaseModel):
-        agent_id: Optional[str] = Field(None, description="ID of the agent")
-        prompt_id: Optional[str] = Field(None, description="ID of the prompt")
+        pass
 
     class Search(
         ApplicationModel.Search,
@@ -1234,45 +1133,34 @@ class AgentContextPromptModel(
 class AgentContextPromptManager(AbstractBLLManager, RouterMixin):
     _model = AgentContextPromptModel
 
-    def create_validation(self, entity):
-        from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(AgentManager, self), entity.agent_id, "Agent not found")
+        _visible(_as(PromptManager, self), entity.prompt_id, "Prompt not found")
 
-        _validate_fk(
-            self, getattr(entity, "agent_id", None), AgentManager, "Agent not found"
-        )
-        _validate_fk(
-            self, getattr(entity, "prompt_id", None), PromptManager, "Prompt not found"
-        )
-
-    @property
-    def agents(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager
-
-        return AgentManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def prompts(self):
-        from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager
-
-        return PromptManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
+    def contents(self, agent_id: str) -> List[str]:
+        """The agent's context prompts' contents, in the order linked; a
+        prompt the requester can no longer see is left out."""
+        prompts = _as(PromptManager, self)
+        found: List[str] = []
+        for link in self.list(
+            agent_id=agent_id, sort_by="created_at", sort_order="asc"
+        ):
+            try:
+                content = prompts.get(id=link.prompt_id).content
+            except HTTPException as error:
+                if error.status_code != 404:
+                    raise
+                continue
+            if content:
+                found.append(content)
+        return found
 
 
-# Agent Ability Models (the default-deny tool allowlist)
 class AgentAbilityModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
     AgentModel.Reference,
-    AbilityModel.Reference.ID,
+    AbilityModel.Reference,
     metaclass=ModelMeta,
 ):
     enabled: bool = Field(
@@ -1284,9 +1172,9 @@ class AgentAbilityModel(
         "tool. It is the agent's default-deny allowlist: an agent may invoke "
         "only the abilities for which it has an enabled AgentAbility."
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
-    class Create(BaseModel, AbilityModel.Reference.ID):
-        agent_id: str = Field(..., description="ID of the agent")
+    class Create(BaseModel, AgentModel.Reference.ID, AbilityModel.Reference.ID):
         enabled: Optional[bool] = Field(
             True, description="Whether this ability is enabled for the agent"
         )
@@ -1311,79 +1199,40 @@ class AgentAbilityManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/agent-ability"
     tags: ClassVar[Optional[List[str]]] = ["Agent Ability Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    factory_params: ClassVar[List[str]] = ["target_team_id"]
 
-    def create_validation(self, entity):
-        from zephyrex.logic.BLL_Extensions import AbilityManager
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(AgentManager, self), entity.agent_id, "Agent not found")
+        _visible(_catalog(AbilityManager, self), entity.ability_id, "Ability not found")
 
-        _validate_fk(
-            self, getattr(entity, "agent_id", None), AgentManager, "Agent not found"
-        )
-        _validate_fk(
-            self,
-            getattr(entity, "ability_id", None),
-            AbilityManager,
-            "Ability not found",
-        )
-
-    @property
-    def agents(self):
-        return AgentManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    @property
-    def abilities(self):
-        from zephyrex.logic.BLL_Extensions import AbilityManager
-
-        return AbilityManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    def enabled_abilities(self, agent_id: str) -> Dict[str, str]:
-        """Return an agent's granted abilities as a ``{name: ability_id}`` map.
-
-        This is the default-deny allowlist consumed by ``AbilityInvoker`` (its
-        keys) and the turn executor (which needs the ``ability_id`` to type each
-        tool-call Activity). Only abilities with an enabled ``AgentAbility`` link
-        are included. Ability ids are resolved to names via the (system-entity)
-        Ability rows using a ROOT-scoped manager, so a granted ability is never
-        dropped merely because the agent's own requester can't read the Ability
-        row; a genuinely dangling link (ability row absent) is skipped rather
-        than widening access.
-        """
-        from zephyrex.logic.BLL_Extensions import AbilityManager
-
-        links = self.list(agent_id=agent_id, enabled=True)
-        if not links:
-            return {}
-        ability_manager = AbilityManager(
-            requester_id=env("ROOT_ID"), model_registry=self.model_registry
-        )
-        mapping: Dict[str, str] = {}
-        for link in links:
+    def grants(self, agent_id: str) -> List[AbilityGrant]:
+        """The abilities the agent may use: its enabled grants, each with
+        the extension that performs it. A grant whose ability is gone is
+        left out."""
+        abilities = _catalog(AbilityManager, self)
+        extensions = _catalog(ExtensionManager, self)
+        extension_names: Dict[str, str] = {}
+        found: List[AbilityGrant] = []
+        for link in self.list(agent_id=agent_id, enabled=True):
             try:
-                ability = ability_manager.get(id=link.ability_id)
-            except HTTPException:
+                ability = abilities.get(id=link.ability_id)
+            except HTTPException as error:
+                if error.status_code != 404:
+                    raise
                 continue
-            name = getattr(ability, "name", None)
-            if name:
-                mapping[name] = link.ability_id
-        return mapping
+            if ability.extension_id not in extension_names:
+                extension_names[ability.extension_id] = extensions.get(
+                    id=ability.extension_id
+                ).name
+            found.append(
+                AbilityGrant(
+                    ability_id=link.ability_id,
+                    name=ability.name,
+                    extension=extension_names[ability.extension_id],
+                )
+            )
+        return found
 
-    def enabled_ability_names(self, agent_id: str) -> set:
-        """Return the set of ability *names* an agent is permitted to invoke
-        (the keys of :meth:`enabled_abilities`)."""
-        return set(self.enabled_abilities(agent_id).keys())
 
-
-# Agent short-term memory (context management)
 class AgentMemoryModel(
     ApplicationModel.Optional,
     UpdateMixinModel,
@@ -1396,7 +1245,7 @@ class AgentMemoryModel(
     injected into every turn's prompt (as ``{{SHORT_TERM_MEMORIES}}``), written
     by the ``memorize`` ability, and removed by the ``trim`` ability. Keys are
     unique per agent (writing an existing key updates it). Long-term memory
-    lives elsewhere (a separate store behind a memory provider).
+    lives in the ai_memories extension.
     """
 
     key: str = Field(..., description="Memory key (unique per agent)")
@@ -1406,6 +1255,7 @@ class AgentMemoryModel(
         "An AgentMemory is a keyed short-term (working) memory for an Agent, "
         "injected into each turn's prompt and prunable via the trim ability."
     )
+    permission_references: ClassVar[List[str]] = ["agent"]
 
     class Create(BaseModel, AgentModel.Reference.ID):
         key: str = Field(..., description="Memory key (unique per agent)")
@@ -1429,353 +1279,148 @@ class AgentMemoryManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/agent-memory"
     tags: ClassVar[Optional[List[str]]] = ["Agent Memory Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    factory_params: ClassVar[List[str]] = ["target_team_id"]
 
-    def create_validation(self, entity):
-        _validate_fk(
-            self, getattr(entity, "agent_id", None), AgentManager, "Agent not found"
-        )
+    def create_validation(self, entity: Any) -> None:
+        _visible(_as(AgentManager, self), entity.agent_id, "Agent not found")
+        if self.list(agent_id=entity.agent_id, key=entity.key):
+            raise HTTPException(
+                status_code=409, detail="The agent already has a memory with that key"
+            )
 
-    def remember(self, agent_id: str, key: str, content: str):
-        """Upsert a short-term memory: update the entry if ``key`` already
-        exists for the agent, else create it (keys are unique per agent).
-
-        Filters use plain-value kwargs (equality), not a positional/kwarg
-        ``StringSearchModel`` — the latter's field is ``eq``/``inc``, not
-        ``equals``, so an ``equals=`` filter silently matches nothing.
-        """
+    def remember(self, agent_id: str, key: str, content: str) -> Any:
+        """Write ``content`` under ``key``, replacing what was there."""
         existing = self.list(agent_id=agent_id, key=key)
         if existing:
             return self.update(id=existing[0].id, content=content)
         return self.create(agent_id=agent_id, key=key, content=content)
 
     def forget(self, agent_id: str, keys: List[str]) -> int:
-        """Delete the given short-term memory keys for the agent. Returns the
-        number removed."""
+        """Delete the given keys; how many entries went."""
         removed = 0
-        for key in keys or []:
+        for key in keys:
             for entry in self.list(agent_id=agent_id, key=key):
                 self.delete(id=entry.id)
                 removed += 1
         return removed
 
     def as_dict(self, agent_id: str) -> Dict[str, str]:
-        """Return the agent's short-term memory as a ``{key: content}`` map for
-        injection into the turn prompt."""
+        """The agent's short-term memory as ``{key: content}``."""
         return {entry.key: entry.content for entry in self.list(agent_id=agent_id)}
 
 
-# Extension hooks for integrating AI agents with other models
-
-# Hook to add agent_id field to Message model when conversations extension is loaded
-try:
-    from zephyrex.extensions.conversations.BLL_Conversations import MessageModel
-
-    # Dynamically add agent_id field to MessageModel
-    if not hasattr(MessageModel, "agent_id"):
-        MessageModel.agent_id = Field(
-            None, description="ID of the agent that created this message"
+def _user_exists(model_registry: Any, user_id: str) -> None:
+    """404 unless ``user_id`` names a user: for ROOT and SYSTEM, who may
+    create on a user's behalf."""
+    try:
+        UserManager(requester_id=env("SYSTEM_ID"), model_registry=model_registry).get(
+            id=user_id
         )
+    except HTTPException:
+        raise _not_found("User not found") from None
 
-    # Link a message back to the agent turn that produced it, so the frontend
-    # can render a speak-bubble alongside that turn's thinking Activity tree.
-    if not hasattr(MessageModel, "invocation_instance_id"):
-        MessageModel.invocation_instance_id = Field(
-            None,
-            description="ID of the InvocationInstance (turn) that produced this message",
+
+@hook_bll(MessageManager.create, timing=HookTiming.AFTER)
+async def fire_conversation_message_turns(context: HookContext) -> None:
+    """A user's message wakes the agents in its conversation that react to
+    messages: each active participant with ``auto_respond`` or an enabled
+    ``conversation_message`` trigger takes a turn, as its owner, handed the
+    message.
+
+    Agents post through ``MessageManager.create_agent_message``, which is not
+    ``create``; a message without an author is skipped too, so an agent's
+    reply never wakes an agent."""
+    if not _ai_agents_loaded(context.manager):
+        return
+    for message in _created(context.result):
+        if message.user_id:
+            await _wake_agents_for(context.manager.model_registry, message)
+
+
+async def _wake_agents_for(registry: Any, message: Any) -> None:
+    from zephyrex.extensions.ai_agents.AgentTurnExecutor import AgentTurnExecutor
+
+    root = env("ROOT_ID")
+    seats = ConversationAgentManager(requester_id=root, model_registry=registry).list(
+        conversation_id=message.conversation_id, active=True
+    )
+    triggers = InvocationTriggerManager(requester_id=root, model_registry=registry)
+    agents = AgentManager(requester_id=root, model_registry=registry)
+    for seat in seats:
+        listening = triggers.list(
+            agent_id=seat.agent_id,
+            invocation_type="event",
+            event_source="conversation_message",
+            enabled=True,
         )
-
-    # Add activities property to MessageManager
-    def _get_activities(self) -> ActivityManager:
-        return ActivityManager(
-            requester_id=self.requester_id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-    from zephyrex.extensions.conversations.BLL_Conversations import MessageManager
-
-    if not hasattr(MessageManager, "activities"):
-        MessageManager.activities = property(_get_activities)
-
-except ImportError:
-    # Conversations extension not available
-    pass
-
-# Hook to add project_id field to Conversation model when conversations extension is loaded
-try:
-    from zephyrex.extensions.conversations.BLL_Conversations import ConversationModel
-
-    # Dynamically add project_id field to ConversationModel
-    if not hasattr(ConversationModel, "project_id"):
-        ConversationModel.project_id = Field(
-            None, description="ID of the project this conversation belongs to"
-        )
-
-except ImportError:
-    # Conversations extension not available
-    pass
-
-# Hook to add project_id field to Artifact model when conversations extension is loaded
-try:
-    from zephyrex.extensions.conversations.BLL_Conversations import ArtifactModel
-
-    # Dynamically add project_id field to ArtifactModel
-    if not hasattr(ArtifactModel, "project_id"):
-        ArtifactModel.project_id = Field(
-            None, description="ID of the project this artifact belongs to"
-        )
-
-except ImportError:
-    # Conversations extension not available
-    pass
-
-# Hook to add chain_link_id field to Activity model when ai_chains extension is loaded
-# try:
-#     from extensions.ai_chains.BLL_AI_Chains import ChainLinkModel
-
-#     # Dynamically add chain_link_id field to ActivityModel
-#     if not hasattr(ActivityModel, "chain_link_id"):
-#         ActivityModel.chain_link_id = Field(
-#             None, description="ID of the chain step (if ai_chains installed)"
-#         )
-
-#     # Add chain_link_id to Create and Update models
-#     if not hasattr(ActivityModel.Create, "chain_link_id"):
-#         ActivityModel.Create.chain_link_id = Field(
-#             None, description="ID of the chain step"
-#         )
-
-#     if not hasattr(ActivityModel.Update, "chain_link_id"):
-#         ActivityModel.Update.chain_link_id = Field(
-#             None, description="ID of the chain step"
-#         )
-
-#     if not hasattr(ActivityModel.Search, "chain_link_id"):
-#         ActivityModel.Search.chain_link_id = Field(
-#             None, description="ID of the chain step"
-#         )
-
-# except ImportError:
-#     # AI Chains extension not available
-#     pass
-
-
-# Hook to create agent when team is created - registered at bottom of file to avoid circular imports
-
-# Hook to auto-respond with AI agents when users send messages
-try:
-    from zephyrex.extensions.conversations.BLL_Conversations import MessageManager
-    from zephyrex.lib.Logging import logger
-    from zephyrex.logic.AbstractLogicManager import HookContext, hook_bll
-
-    @hook_bll(MessageManager.create, timing="after")
-    async def fire_conversation_message_turns(context: HookContext):
-        """Fire an agent turn when a user message matches a conversation_message
-        trigger — the reactive/conversational counterpart to the timer monitor.
-
-        A user's message drives a turn straight to chat with no background loop
-        required. It fires ONLY for agents that (a) actively participate in the
-        conversation and (b) have an enabled ``conversation_message``
-        InvocationTrigger, so ordinary messages incur no agent work unless an
-        agent is explicitly configured to react.
-
-        Loop-safe: agent-authored messages (``user_id`` is None) are skipped, so
-        an agent's own ``speak`` reply never re-triggers the hook. Fully
-        defensive — never raises, so a turn failure cannot break message
-        creation.
-        """
+        if not seat.auto_respond and not listening:
+            continue
+        agent = agents.get(id=seat.agent_id)
+        owner = agent.user_id or root
         try:
-            message = context.result
-            if not message or not getattr(message, "conversation_id", None):
-                return
-            # Skip agent-authored messages (no user_id) — the loop guard.
-            if not getattr(message, "user_id", None):
-                return
-
-            model_registry = getattr(context.manager, "model_registry", None)
-            requester_id = message.user_id
-
-            participants = ConversationAgentManager(
-                requester_id=requester_id, model_registry=model_registry
-            ).list(conversation_id=message.conversation_id, active=True)
-            if not participants:
-                return
-            participant_agent_ids = {p.agent_id for p in participants}
-
-            # Enabled conversation_message triggers whose agent is in this
-            # conversation (ROOT-scoped: the driver must see all triggers).
-            triggers = InvocationTriggerManager(
-                requester_id=env("ROOT_ID"), model_registry=model_registry
-            ).list(
-                invocation_type="event",
-                event_source="conversation_message",
-                enabled=True,
+            instance = InvocationInstanceManager(
+                requester_id=owner, model_registry=registry
+            ).create(
+                agent_id=agent.id,
+                invocation_trigger_id=listening[0].id if listening else None,
+                trigger_message_id=message.id,
+                payload=message.content,
             )
-
-            from zephyrex.extensions.ai_agents.AgentTurnExecutor import (
-                AgentTurnExecutor,
+        except HTTPException as refused:
+            logger.warning(
+                "Agent %s cannot take a turn on message %s: %s",
+                agent.id,
+                message.id,
+                refused.detail,
             )
-
-            for trigger in triggers:
-                if trigger.agent_id not in participant_agent_ids:
-                    continue
-                try:
-                    instance = InvocationInstanceManager(
-                        requester_id=requester_id, model_registry=model_registry
-                    ).create(
-                        agent_id=trigger.agent_id,
-                        invocation_trigger_id=trigger.id,
-                        trigger_message_id=message.id,
-                        payload=message.content,
-                        user_id=message.user_id,
-                    )
-                    await AgentTurnExecutor(
-                        model_registry=model_registry, requester_id=requester_id
-                    ).run(instance.id)
-                except Exception as turn_error:
-                    logger.error(
-                        "Conversation-message turn failed for agent %s: %s",
-                        trigger.agent_id,
-                        turn_error,
-                    )
-
-        except Exception as e:
-            logger.error(f"Error in fire_conversation_message_turns hook: {e}")
-            # Never break message creation on a turn failure.
-
-except ImportError:
-    # Conversations extension not available
-    pass
+            continue
+        await AgentTurnExecutor(model_registry=registry, requester_id=owner).run(
+            instance.id
+        )
 
 
-from zephyrex.lib.Logging import logger
-
-# Register hook to create agent when team is created
-from zephyrex.logic.AbstractLogicManager import HookContext, HookTiming, hook_bll
-from zephyrex.logic.BLL_Auth import TeamManager
+def _created(result: Any) -> List[Any]:
+    """What a create made: one record, or a batch's."""
+    return result if isinstance(result, list) else [result]
 
 
 @hook_bll(TeamManager.create, timing=HookTiming.AFTER, priority=10)
 def create_agent_on_team_creation(context: HookContext) -> None:
-    """
-    Hook that automatically creates an AI agent when a new team is created.
-
-    Args:
-        context: Hook context containing the created team information
-    """
-    try:
-        # Get the created team from the result
-        team = context.result
-        if not team or not hasattr(team, "id"):
-            logger.warning("No team found in hook context result")
-            return
-
-        # Get requester_id from the manager instance
-        requester_id = context.manager.requester.id
-
-        # Create an agent for the team
-        agent_manager = AgentManager(
-            requester_id=requester_id,
-            target_team_id=team.id,
-            model_registry=context.manager.model_registry,
-        )
-
-        # Create the agent with team reference
-        agent = agent_manager.create(
-            name=f"{team.name} Agent",
-            team_id=team.id,
-            favourite=True,  # Mark as favourite by default
-        )
-
-        logger.info(
-            f"Successfully created agent '{agent.name}' for team '{team.name}' (ID: {team.id})"
-        )
-
-    except Exception as e:
-        # Log error but don't fail the team creation
-        logger.error(f"Failed to create agent for team: {str(e)}")
+    """Every new team gets an agent, its creator's, marked favourite."""
+    if not _ai_agents_loaded(context.manager):
+        return
+    agents = AgentManager(
+        requester_id=context.manager.requester.id,
+        model_registry=context.manager.model_registry,
+    )
+    for team in _created(context.result):
+        agents.create(name=f"{team.name} Agent", team_id=team.id, favourite=True)
 
 
-from zephyrex.extensions.conversations.BLL_Conversations import ConversationManager
-from zephyrex.logic.BLL_Auth import UserTeamManager
-
-
-# TODO: This is a patch for MVP and should be removed in the future
 @hook_bll(ConversationManager.create, timing=HookTiming.AFTER, priority=10)
 def associate_agent_with_conversation(context: HookContext) -> None:
-    """
-    Hook that associates an agent with a conversation when a new conversation is created.
-
-    Args:
-        context: Hook context containing the created conversation information
-    """
-    try:
-        # Get the created conversation from the result
-        conversation = context.result
-        if not conversation or not hasattr(conversation, "id"):
-            logger.warning("No conversation found in hook context result")
-            return
-
-        # Get requester_id from the manager instance
-        requester_id = context.manager.requester.id
-
-        # check if link already exists
-        conversation_agent_manager = ConversationAgentManager(
-            requester_id=requester_id,
-            model_registry=context.manager.model_registry,
+    """A new conversation gets an agent of one of its creator's teams, one
+    with a rotation to think with, auto-responding."""
+    if not _ai_agents_loaded(context.manager):
+        return
+    requester_id = context.manager.requester.id
+    registry = context.manager.model_registry
+    seats = ConversationAgentManager(requester_id=requester_id, model_registry=registry)
+    agents = AgentManager(requester_id=requester_id, model_registry=registry)
+    memberships = UserTeamManager(requester_id=requester_id, model_registry=registry)
+    for conversation in _created(context.result):
+        if seats.list(conversation_id=conversation.id, active=True):
+            continue
+        team_agents = (
+            agent
+            for membership in memberships.list(user_id=conversation.user_id)
+            for agent in agents.list(team_id=membership.team_id)
+            if agent.rotation_id
         )
-
-        conversation_agents = conversation_agent_manager.list(
-            conversation_id=conversation.id,
-            active=True,  # Only consider active agents
-            auto_respond=True,  # Only consider agents that auto-respond
-        )
-
-        if conversation_agents:
-            logger.info(
-                f"Conversation {conversation.id} already has associated agents: {', '.join([agent.agent_id for agent in conversation_agents])}"
+        agent = next(team_agents, None)
+        if agent is not None:
+            seats.create(
+                conversation_id=conversation.id,
+                agent_id=agent.id,
+                active=True,
+                auto_respond=True,
             )
-            return
-
-        # find teams the user is part of
-        user_team_manager = UserTeamManager(
-            requester_id=requester_id,
-            model_registry=context.manager.model_registry,
-        )
-
-        user_teams = user_team_manager.list(
-            user_id=conversation.user_id or requester_id,
-        )
-
-        agent_manager = AgentManager(
-            requester_id=requester_id,
-            model_registry=context.manager.model_registry,
-        )
-
-        for user_team in user_teams:
-            # find agents associated with the team
-            agents = agent_manager.list(team_id=user_team.team_id)
-            for agent in agents:
-                if not agent.rotation_id:
-                    logger.warning(
-                        f"Agent {agent.name} (ID: {agent.id}) has no rotation assigned, skipping association with conversation {conversation.id}"
-                    )
-                    continue
-                conversation_agent = conversation_agent_manager.create(
-                    conversation_id=conversation.id,
-                    agent_id=agent.id,
-                    active=True,
-                    auto_respond=True,
-                )
-                logger.info(
-                    f"Associated agent {agent.name} (ID: {agent.id}) with conversation {conversation.id}"
-                    f" (Team ID: {user_team.team_id})"
-                    f" - Conversation Agent ID: {conversation_agent.id}"
-                )
-                break
-
-    except Exception as e:
-        # Log error but don't fail the conversation creation
-        logger.error(f"Failed to associate agent with conversation: {str(e)}")

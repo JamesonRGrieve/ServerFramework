@@ -1,155 +1,113 @@
-"""
-AI Agents extension for AGInfrastructure.
-Implements AI agent management and activity tracking through the AI framework.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Agents: configured identities that take turns, on a schedule, a timer,
+a task's due time or a conversation message, and act through the abilities
+they are granted (see BLL_AI_Agents and AgentTurnExecutor).
 
-from typing import Any, ClassVar, Dict, List, Set
+Abilities act for the user named by ``requester_id``, under that user's
+permissions. When an agent uses one as a tool, the turn fills
+``requester_id`` in with the agent's owner."""
+
+from datetime import datetime
+from typing import Any, ClassVar, Dict, List, Optional, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
     ability,
 )
+from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    DEFAULT_PRIORITY,
+    ActivityManager,
+    AgentAbilityManager,
+    AgentManager,
+    InvocationTriggerManager,
+)
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
-from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import classproperty
+
+# The executor performs these itself (see AgentTurnExecutor); they are
+# abilities so an agent can be granted them and a turn's activities typed.
+EXECUTOR_ABILITIES = {
+    "thinking_turn",
+    "speak",
+    "memorize",
+    "trim",
+    "recall",
+    "abilities",
+}
+TASK_TYPES = ("timer", "schedule")
+
+
+def _row(model: Any) -> Dict[str, Any]:
+    dumped: Dict[str, Any] = model.model_dump(mode="json")
+    return dumped
+
+
+def _when(text: Optional[str]) -> Optional[datetime]:
+    if text is None:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        raise InvalidInputExternalError(
+            f"due_at is an ISO 8601 time, not {text!r}"
+        ) from None
 
 
 class EXT_AI_Agents(AbstractStaticExtension):
-    """
-    AI Agents extension for AGInfrastructure.
-
-    Provides comprehensive AI agent management capabilities including agent creation,
-    configuration, provider selection, and ability management. Also manages
-    agent activities and activity types within conversations. This extension depends
-    on the AI framework for core AI provider functionality.
-
-    The extension focuses on:
-    - Agent management and configuration
-    - Agent-provider integration through AI framework
-    - Agent abilities and capability management
-    - Agent activities and conversation participation
-    - Project-based agent organization
-    - Agent context and prompt management
-
-    Usage:
-        # Create AI agent through business logic layer
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentManager
-
-        agent_manager = AgentManager(requester_id="user_123")
-        agent = agent_manager.create(
-            name="Assistant",
-            description="AI Assistant Agent",
-            abilities=["text_generation", "conversation"]
-        )
-    """
-
-    # Extension metadata (class attributes)
     name: ClassVar[str] = "ai_agents"
     friendly_name: ClassVar[str] = "AI Agent Management"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
-        "AI agent management extension providing agent creation, configuration, and activity tracking through AI framework"
+        "Agents that take turns on schedules, tasks and messages, acting "
+        "through the abilities they are granted"
     )
 
-    # Environment variables this extension needs
-    _env: ClassVar[Dict[str, Any]] = {
-        "AI_AGENTS_MAX_MEMORY": "50",
-        "AI_AGENTS_DEFAULT_MODEL": "gpt-3.5-turbo",
-        "AI_AGENTS_AUTO_RESPOND": "false",
-        "AI_AGENTS_ACTIVITY_LOGGING": "true",
-        "AI_AGENTS_COLLABORATION_ENABLED": "true",
-        "AI_AGENTS_LEARNING_ENABLED": "false",
-        "AI_AGENTS_MAX_CONCURRENT_TASKS": "10",
-    }
-
-    # Extension dependencies - requires the AI framework
+    _env: ClassVar[Dict[str, Any]] = {}
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             EXT_Dependency(
                 name="ai",
-                friendly_name="AI Framework",
-                reason="Required for AI agent functionality and provider integration",
-                optional=False,
+                friendly_name="AI",
+                reason="An agent thinks with the AI extension's chat models",
             ),
             EXT_Dependency(
                 name="conversations",
-                friendly_name="Conversation Framework",
-                reason="Required for conversing with agents",
-                optional=False,
+                friendly_name="Conversations",
+                reason="Agents take part in conversations and speak in them",
             ),
             EXT_Dependency(
                 name="ai_prompts",
-                friendly_name="Prompt Framework",
-                reason="Required for prompting agents",
-                optional=False,
+                friendly_name="Prompts",
+                reason="An agent's context prompts are stored prompts",
             ),
             EXT_Dependency(
                 name="ai_memories",
                 friendly_name="Long-term memory",
                 reason="Agents keep and recall their long-term memories there",
-                optional=False,
             ),
             PIP_Dependency(
-                name="tiktoken",
-                friendly_name="TikToken",
-                reason="Tokenization",
-                optional=False,
+                name="croniter",
+                friendly_name="croniter",
+                reason="Reads the cron expressions of scheduled triggers",
+                semver=">=6.0.0",
             ),
         ]
     )
-
-    # Meta abilities provided by this extension for managing AI agents.
-    #
-    # ``thinking_turn`` and ``speak`` are the two abilities the turn executor
-    # relies on: every turn's root Activity is a ``thinking_turn`` invocation
-    # (deliberation itself — never offered to the model as a callable tool), and
-    # ``speak`` is the sole operator-communication ability (the executor handles
-    # it specially, creating a Message rather than routing through the general
-    # ability invoker). Both are seeded here so their Ability rows exist for the
-    # required Activity.ability_id and for the AgentAbility allowlist.
     _abilities: ClassVar[Set[str]] = {
-        "manage_agents",
-        "configure_agent_providers",
-        "track_agent_activities",
-        "manage_agent_abilities",
-        "thinking_turn",
-        "speak",
-        # Executor-handled "self" memory abilities: short-term memorize/trim and
-        # long-term memorize(long)/recall.
-        "memorize",
-        "trim",
-        "recall",
-        # Executor-handled discovery ability: enumerate/search the agent's own
-        # granted, invocable abilities at runtime.
-        "abilities",
+        "list_agents",
+        "take_turn",
+        "schedule_task",
+        "list_tasks",
+        "cancel_task",
+        "grant_ability",
+        "turn_activity",
+        *EXECUTOR_ABILITIES,
     }
-
-    @classproperty
-    def pip_dependencies(cls):
-        """PIP dependencies view (for AbstractEXTTest / dependency tooling)."""
-        return cls.dependencies.pip
-
-    @classproperty
-    def ext_dependencies(cls):
-        """Extension dependencies view."""
-        return cls.dependencies.ext
-
-    @classproperty
-    def sys_dependencies(cls):
-        """System dependencies view."""
-        return cls.dependencies.sys
 
     @classmethod
     def register_services(cls, model_registry: Any, requester_id: str) -> List[Any]:
-        """Return background services this extension wants started at boot.
-
-        The framework's (opt-in, env-gated) service startup calls this on every
-        extension that defines it, passing the live model registry and a driver
-        identity. Here it is the :class:`InvocationMonitorService` that fires due
-        agent triggers — i.e. what makes agents wake up on their schedule. The
-        monitor runs as a system driver (ROOT) so it can see every agent's
-        triggers; individual turns still act under their own agent's identity.
-        """
+        """The monitor that fires due triggers (what wakes agents on their
+        schedules and tasks), started at boot as ``requester_id``."""
         from zephyrex.extensions.ai_agents.SVC_AI_Agents import (
             InvocationMonitorService,
         )
@@ -160,113 +118,109 @@ class EXT_AI_Agents(AbstractStaticExtension):
             )
         ]
 
-    @ability
     @classmethod
-    def manage_agents(cls, **kwargs) -> Dict[str, Any]:
-        """
-        Meta ability: Manage AI agents and their configurations.
+    def agents(cls, requester_id: str) -> AgentManager:
+        manager: AgentManager = cls.as_requester(AgentManager, requester_id)
+        return manager
 
-        Returns:
-            Dict containing agent management information
-        """
-        try:
-            # In real implementation, would query AgentModel records
-            return {
-                "success": True,
-                "total_agents": 0,
-                "active_agents": 0,
-                "message": "Agent management capability",
-            }
-        except Exception as e:
-            logger.error(f"Error managing agents: {e}")
-            return {"success": False, "error": str(e)}
-
-    @ability
     @classmethod
-    def configure_agent_providers(
-        cls, agent_id: str, provider_settings: Dict[str, Any], **kwargs
+    def triggers(cls, requester_id: str) -> InvocationTriggerManager:
+        manager: InvocationTriggerManager = cls.as_requester(
+            InvocationTriggerManager, requester_id
+        )
+        return manager
+
+    @classmethod
+    @ability("list_agents")
+    async def list_agents(cls, requester_id: str) -> List[Dict[str, Any]]:
+        """The agents the user can see."""
+        return [_row(agent) for agent in cls.agents(requester_id).list()]
+
+    @classmethod
+    @ability("take_turn")
+    async def take_turn(
+        cls, requester_id: str, agent_id: str, payload: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Meta ability: Configure AI provider settings for a specific agent.
+        """Run one turn of an agent now, handed ``payload``; the finished
+        turn."""
+        return _row(await cls.agents(requester_id).take_turn(agent_id, payload))
 
-        Args:
-            agent_id: ID of the agent to configure
-            provider_settings: Provider configuration settings
-
-        Returns:
-            Configuration result
-        """
-        try:
-            return {
-                "success": True,
-                "agent_id": agent_id,
-                "provider_settings": provider_settings,
-                "message": f"Provider settings configured for agent {agent_id}",
-            }
-        except Exception as e:
-            logger.error(f"Error configuring agent providers: {e}")
-            return {"success": False, "error": str(e)}
-
-    @ability
     @classmethod
-    def track_agent_activities(cls, agent_id: str = None, **kwargs) -> Dict[str, Any]:
-        """
-        Meta ability: Track activities of AI agents.
-
-        Args:
-            agent_id: Optional agent ID to track specific agent
-
-        Returns:
-            Activity tracking information
-        """
-        try:
-            # In real implementation, would query AgentActivityModel records
-            return {
-                "success": True,
-                "activities": [],
-                "total_activities": 0,
-                "message": f"Activity tracking for {'agent ' + agent_id if agent_id else 'all agents'}",
-            }
-        except Exception as e:
-            logger.error(f"Error tracking agent activities: {e}")
-            return {"success": False, "error": str(e)}
-
-    @ability
-    @classmethod
-    def manage_agent_abilities(
-        cls, agent_id: str, abilities: List[str], action: str = "add", **kwargs
+    @ability("schedule_task")
+    async def schedule_task(
+        cls,
+        requester_id: str,
+        agent_id: str,
+        instructions: str,
+        due_at: Optional[str] = None,
+        cron: Optional[str] = None,
+        priority: int = DEFAULT_PRIORITY,
     ) -> Dict[str, Any]:
-        """
-        Meta ability: Manage abilities assigned to AI agents.
+        """Give an agent a task: once at ``due_at`` (ISO 8601), or on a
+        ``cron`` schedule (from ``due_at``, when given). Priority 1 is the
+        most urgent, 5 the least."""
+        if not instructions or not instructions.strip():
+            raise InvalidInputExternalError("a task has instructions")
+        if cron is None and due_at is None:
+            raise InvalidInputExternalError("a task is due at a time or on a schedule")
+        fields: Dict[str, Any] = (
+            {"invocation_type": "schedule", "cron": cron}
+            if cron is not None
+            else {"invocation_type": "timer", "one_shot": True}
+        )
+        return _row(
+            cls.triggers(requester_id).create(
+                agent_id=agent_id,
+                invocation_payload=instructions,
+                due_at=_when(due_at),
+                priority=priority,
+                **fields,
+            )
+        )
 
-        Args:
-            agent_id: ID of the agent
-            abilities: List of ability names
-            action: Action to perform ("add" or "remove")
+    @classmethod
+    @ability("list_tasks")
+    async def list_tasks(cls, requester_id: str, agent_id: str) -> List[Dict[str, Any]]:
+        """An agent's tasks still to fire, most urgent and soonest first."""
+        tasks = [
+            trigger
+            for trigger in cls.triggers(requester_id).list(
+                agent_id=agent_id, enabled=True
+            )
+            if trigger.invocation_type in TASK_TYPES
+        ]
+        tasks.sort(
+            key=lambda t: (t.priority, t.next_fire_at is None, t.next_fire_at or 0)
+        )
+        return [_row(task) for task in tasks]
 
-        Returns:
-            Ability management result
-        """
-        try:
-            return {
-                "success": True,
-                "agent_id": agent_id,
-                "abilities": abilities,
-                "action": action,
-                "message": f"Successfully {action}ed abilities for agent {agent_id}",
-            }
-        except Exception as e:
-            logger.error(f"Error managing agent abilities: {e}")
-            return {"success": False, "error": str(e)}
+    @classmethod
+    @ability("cancel_task")
+    async def cancel_task(cls, requester_id: str, task_id: str) -> Dict[str, Any]:
+        """Stop a task (or any trigger) from firing again."""
+        return _row(cls.triggers(requester_id).update(id=task_id, enabled=False))
 
+    @classmethod
+    @ability("grant_ability")
+    async def grant_ability(
+        cls, requester_id: str, agent_id: str, ability_id: str, enabled: bool = True
+    ) -> Dict[str, Any]:
+        """Let an agent use an ability, or (``enabled`` false) stop it."""
+        grants: AgentAbilityManager = cls.as_requester(
+            AgentAbilityManager, requester_id
+        )
+        existing = grants.list(agent_id=agent_id, ability_id=ability_id)
+        if existing:
+            return _row(grants.update(id=existing[0].id, enabled=enabled))
+        return _row(
+            grants.create(agent_id=agent_id, ability_id=ability_id, enabled=enabled)
+        )
 
-class AbstractAIAgentProvider(AbstractStaticExtension):
-    """
-    Abstract base class for AI agent service providers.
-    All AI agent providers should inherit from this class.
-    """
-
-    # Common abilities that AI agent providers might implement
-    _abilities: ClassVar[Set[str]] = (
-        set()
-    )  # AI agent providers typically don't have direct abilities
+    @classmethod
+    @ability("turn_activity")
+    async def turn_activity(
+        cls, requester_id: str, invocation_instance_id: str
+    ) -> Dict[str, Any]:
+        """What an agent did in a turn: its activities as trees."""
+        activities: ActivityManager = cls.as_requester(ActivityManager, requester_id)
+        return activities.hierarchy(invocation_instance_id)

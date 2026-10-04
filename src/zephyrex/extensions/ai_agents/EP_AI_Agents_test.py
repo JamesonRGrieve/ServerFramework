@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import uuid
 from typing import Any, Dict, Optional
-from unittest import mock
 
 import pytest
 from faker import Faker
@@ -8,9 +8,6 @@ from faker import Faker
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity, SkipThisTest
 from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
 from zephyrex.endpoints.EP_Auth_test import TestTeamEndpoints as CoreTeamEndpointTests
-from zephyrex.endpoints.EP_Auth_test import (
-    TestUserAndSessionEndpoints as CoreUserAndSessionEndpointTests,
-)
 from zephyrex.endpoints.EP_Providers_test import (
     TestProviderEndpoints as ProviderEndpointTests,
 )
@@ -101,11 +98,11 @@ class TestAgentEndpoints(AbstractEPTest, ExtensionServerMixin):
             # Only include required fields
             payload = {"name": name, "favourite": False}
         else:
-            # Include all fields
+            # Include all fields but rotation_id: an agent's rotation must be
+            # one its owner can see, which a made-up id is not (404).
             payload = {
                 "name": name,
                 "favourite": False,
-                "rotation_id": str(uuid.uuid4()),
                 "image_url": f"https://example.com/images/{name.lower().replace(' ', '_')}.png",
             }
 
@@ -118,137 +115,6 @@ class TestAgentEndpoints(AbstractEPTest, ExtensionServerMixin):
             payload.update(parent_ids)
 
         return payload
-
-    @pytest.mark.xfail
-    @mock.patch("extensions.ai_agents.BLL_AI_Agents.AgentManager.prompt")
-    def test_POST_200_prompt(self, mock_prompt, server, admin_a, team_a):
-        """Test sending a prompt to an agent."""
-        # Mock the prompt response
-        mock_prompt.return_value = "I'm an AI assistant, how can I help you today?"
-
-        # First create an agent
-        agent = self.test_POST_201(server, admin_a.id, team_a)
-
-        # Create a prompt payload
-        prompt_payload = {
-            "messages": [{"role": "user", "content": "Hello, how are you?"}],
-            "model": "gpt-4",
-            "max_tokens": 100,
-        }
-
-        # Send the prompt
-        response = server.post(
-            f"/v1/{self.base_endpoint}/{agent['id']}/prompt",
-            json=prompt_payload,
-            headers=self._auth_header(admin_a.jwt),
-        )
-
-        self._assert_response_status(
-            response,
-            200,
-            "POST prompt",
-            f"/v1/{self.base_endpoint}/{agent['id']}/prompt",
-            prompt_payload,
-        )
-
-        json_response = response.json()
-        assert "response" in json_response, (
-            f"[{self.entity_name}] Prompt response missing 'response' field\n"
-            f"Response: {json_response}"
-        )
-
-        # Verify the mocked method was called with expected parameters
-        mock_prompt.assert_called_once()
-        mock_prompt.assert_called_with(id=agent["id"], prompt_content=prompt_payload)
-
-        return json_response
-
-    # @mock.patch("extensions.ai_agents.BLL_AI_Agents.AgentManager.transcribe")
-    # def test_POST_200_transcribe(self, mock_transcribe, server, admin_a, team_a):
-    #     """Test transcribing audio using an agent."""
-    #     # Mock the transcription response
-    #     mock_transcribe.return_value = "This is a test transcription of audio content."
-
-    #     # First create an agent
-    #     agent = self.test_POST_201(server, admin_a.id, team_a)
-
-    #     # Transcription request payload
-    #     transcribe_payload = {"audio_path": "/path/to/test_audio.wav"}  # Simulated path
-
-    #     # Send the transcribe request
-    #     response = server.post(
-    #         f"/v1/{self.base_endpoint}/{agent['id']}/transcribe",
-    #         json=transcribe_payload,
-    #         headers=self._auth_header(admin_a.jwt),
-    #     )
-
-    #     self._assert_response_status(
-    #         response,
-    #         200,
-    #         "POST transcribe",
-    #         f"/v1/{self.base_endpoint}/{agent['id']}/transcribe",
-    #         transcribe_payload,
-    #     )
-
-    #     json_response = response.json()
-    #     assert "transcription" in json_response, (
-    #         f"[{self.entity_name}] Transcribe response missing 'transcription' field\n"
-    #         f"Response: {json_response}"
-    #     )
-
-    #     # Verify the mocked method was called with expected parameters
-    #     mock_transcribe.assert_called_once()
-    #     mock_transcribe.assert_called_with(
-    #         id=agent["id"], audio_path=transcribe_payload["audio_path"]
-    #     )
-
-    #     return json_response
-
-    @pytest.mark.xfail
-    @mock.patch("extensions.ai_agents.BLL_AI_Agents.AgentManager.list_abilities")
-    def test_GET_200_abilities(self, mock_list_abilities, server, admin_a, team_a):
-        """Test listing enabled abilities for an agent."""
-        # Mock the abilities list
-        mock_abilities = [
-            {"id": str(uuid.uuid4()), "name": "Chat", "enabled": True},
-            {"id": str(uuid.uuid4()), "name": "Transcription", "enabled": True},
-            {"id": str(uuid.uuid4()), "name": "Image Generation", "enabled": False},
-        ]
-        mock_list_abilities.return_value = mock_abilities
-
-        # First create an agent
-        agent = self.test_POST_201(server, admin_a.id, team_a)
-
-        # Get abilities
-        response = server.get(
-            f"/v1/{self.base_endpoint}/{agent['id']}/ability",
-            headers=self._auth_header(admin_a.jwt),
-        )
-
-        self._assert_response_status(
-            response,
-            200,
-            "GET abilities",
-            f"/v1/{self.base_endpoint}/{agent['id']}/ability",
-        )
-
-        json_response = response.json()
-        assert "abilities" in json_response, (
-            f"[{self.entity_name}] Abilities response missing 'abilities' field\n"
-            f"Response: {json_response}"
-        )
-
-        abilities = json_response["abilities"]
-        assert isinstance(abilities, list), (
-            f"[{self.entity_name}] Abilities should be a list\n"
-            f"Abilities: {abilities}"
-        )
-
-        # Verify the mocked method was called with expected parameters
-        mock_list_abilities.assert_called_once()
-        mock_list_abilities.assert_called_with(id=agent["id"])
-
-        return json_response
 
 
 @pytest.mark.ep
@@ -434,25 +300,14 @@ class TestProjectEndpoints(AbstractEPTest, ExtensionServerMixin):
     # zephyrex.logic.BLL_*, so entity_name inference alone can't find it).
     class_under_test = ProjectModel
 
-    # Parent entities for projects. `user_id` is genuinely required on
-    # ProjectModel (UserModel.Reference, backed by a NOT NULL DB column and
-    # enforced by ProjectManager.create_validation) -- every project has an
-    # owner. `team_id` is genuinely optional (TeamModel.Reference.Optional,
-    # a nullable DB column) -- a project may or may not belong to a team,
-    # mirroring how ConversationModel treats team_id. "team" is handled
-    # specially by AbstractEPTest._create_parent_entities (auto-detects a
-    # `team_a`/`team_b` fixture from the calling test, or creates a fresh
-    # team via the conftest helper), matching the framework's built-in
-    # convention.
+    # A project's owner (user_id) is its creator, set by the server, so the
+    # user is not a parent the caller names: the old "user" parent here had
+    # every test name another user as the owner, which the server now
+    # refuses to honour. `team_id` is optional (TeamModel.Reference.Optional).
+    # "team" is handled specially by AbstractEPTest._create_parent_entities
+    # (auto-detects a `team_a`/`team_b` fixture from the calling test, or
+    # creates a fresh team via the conftest helper).
     parent_entities = [
-        ParentEntity(
-            name="user",
-            foreign_key="user_id",
-            nullable=False,
-            system=False,
-            path_level=None,  # Not in path
-            test_class=CoreUserAndSessionEndpointTests,
-        ),
         ParentEntity(
             name="team",
             foreign_key="team_id",
@@ -467,7 +322,6 @@ class TestProjectEndpoints(AbstractEPTest, ExtensionServerMixin):
     create_fields = {
         "name": lambda: f"test_project_{faker.uuid4()}",
         "description": lambda: f"Test project description: {faker.sentence()}",
-        "user_id": None,  # Will be populated from parent entities
     }
     update_fields = {
         "name": lambda: f"updated_project_{faker.uuid4()}",
@@ -497,6 +351,7 @@ class TestProjectEndpoints(AbstractEPTest, ExtensionServerMixin):
         """
         name = name or faker.company()
 
+        payload: Dict[str, Any]
         if invalid_data:
             # Create invalid data for testing validation
             payload = {
@@ -527,8 +382,6 @@ class TestProjectEndpoints(AbstractEPTest, ExtensionServerMixin):
         if parent_ids:
             if "parent_id" in parent_ids:
                 payload["parent_id"] = parent_ids["parent_id"]
-            if "user_id" in parent_ids:
-                payload["user_id"] = parent_ids["user_id"]
             if "team_id" in parent_ids:
                 payload["team_id"] = parent_ids["team_id"]
 
@@ -577,7 +430,9 @@ class TestProjectContextProviderEndpoints(AbstractEPTest, ExtensionServerMixin):
             name="provider",
             foreign_key="provider_id",
             nullable=False,
-            system=False,
+            # A provider is a system record; the harness makes it as ROOT,
+            # whose rows only ROOT reads, so navigation to it is read as ROOT.
+            system=True,
             path_level=None,
             test_class=ProviderEndpointTests,
         ),
@@ -828,8 +683,8 @@ class TestInvocationTriggerEndpoints(AbstractEPTest, ExtensionServerMixin):
             payload["agent_id"] = parent_ids["agent_id"]
         if invalid_data:
             payload["invocation_type"] = 12345  # wrong type
-        elif minimal:
-            payload.pop("interval_seconds", None)
+        # No minimal form drops interval_seconds: a timer without one (and
+        # without a due time) never fires, and is refused (422).
         return payload
 
 
@@ -862,7 +717,9 @@ class TestInvocationInstanceEndpoints(AbstractEPTest, ExtensionServerMixin):
         "status": lambda: "pending",
         "agent_id": None,  # from the agent parent
     }
-    update_fields = {"status": "running"}
+    # A turn's status is the executor's to record; its payload is the
+    # caller's, until the turn runs.
+    update_fields = {"payload": "updated"}
     unique_fields = []
 
     parent_entities = [
@@ -1016,7 +873,10 @@ class TestActivityEndpoints(AbstractEPTest, ExtensionServerMixin):
             payload = {
                 "title": title,
                 "body": f"Minimal activity body for {title}",
-                "ability_id": parent_ids.get("ability_id", str(uuid.uuid4())),
+                # No made-up default: a random id is read by the harness as
+                # a given parent (so none is made), and an activity's ability
+                # must now exist.
+                "ability_id": parent_ids.get("ability_id"),
                 "invocation_instance_id": parent_ids.get("invocation_instance_id"),
             }
         else:
@@ -1027,7 +887,10 @@ class TestActivityEndpoints(AbstractEPTest, ExtensionServerMixin):
                 "parent_id": None,
                 "artifact_id": None,
                 "provider_id": None,
-                "ability_id": parent_ids.get("ability_id", str(uuid.uuid4())),
+                # No made-up default: a random id is read by the harness as
+                # a given parent (so none is made), and an activity's ability
+                # must now exist.
+                "ability_id": parent_ids.get("ability_id"),
                 "invocation_instance_id": parent_ids.get("invocation_instance_id"),
                 "state": None,  # Initial state is null
             }
