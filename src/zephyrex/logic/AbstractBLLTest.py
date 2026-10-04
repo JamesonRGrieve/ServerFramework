@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import re
 from typing import Any, Dict, List, Optional, Tuple, Type
 
@@ -1193,8 +1194,8 @@ class AbstractBLLTest(AbstractTest):
     @staticmethod
     def _capture_db_options(manager, method_name: str):
         """Wrap a manager DB method (`get`/`list`/`search`) so it returns
-        the captured kwargs (specifically ``options=`` and ``fields=``)
-        instead of executing the query. This sidesteps the need for a
+        the captured kwargs (specifically ``options=``, ``fields=`` and
+        ``include=``) instead of executing the query. This sidesteps the need for a
         populated test DB while still exercising the BLL-side assembly.
 
         Returns a ``(holder, restore)`` pair where
@@ -1206,11 +1207,12 @@ class AbstractBLLTest(AbstractTest):
         propagated to the DB layer).
         """
         original = getattr(manager.DB, method_name)
-        holder = {"options": None, "fields": None}
+        holder = {"options": None, "fields": None, "include": None}
 
         def _capture(*args, **kwargs):
             holder["options"] = kwargs.get("options", [])
             holder["fields"] = kwargs.get("fields", None)
+            holder["include"] = kwargs.get("include", ())
             if method_name == "list":
                 return []
             return None
@@ -1367,16 +1369,23 @@ class AbstractBLLTest(AbstractTest):
     # Item 87 — abstract field-selection / includes matrix
     # ------------------------------------------------------------------ #
     # The framework's CRUD path supports `fields=[...]` (load_only column
-    # projection) and `include=[...]` (eager-loaded relationships via
-    # joinedload/selectinload). Item 87 / GitHub #10 asks for the abstract
-    # contract: every concrete manager that participates in the BLL
-    # CRUD-test ladder gets these three matrix tests for free.
+    # projection) and `include=[...]` (relationship paths the DB layer
+    # loads, one permission-filtered query per relationship and level).
+    # Item 87 / GitHub #10 asks for the abstract contract: every concrete
+    # manager that participates in the BLL CRUD-test ladder gets these
+    # three matrix tests for free.
     #
     # The tests use the same DB-stub pattern as the field-selection
     # primitives above so they execute without a populated database — they
-    # snapshot the SQLAlchemy options the BLL hands the DB layer and
-    # assert against the option shape (load_only present, Load-family
-    # options for includes, no N+1 explosion).
+    # snapshot what the BLL hands the DB layer and assert against its
+    # shape (load_only present, the requested relationship among the
+    # include paths).
+    #
+    # Includes were asserted as Load-family options (joinedload /
+    # selectinload) until those options were found to load related rows
+    # with no permission filter. The DB layer now loads them itself
+    # (``load_visible_includes``), batched per relationship, so the
+    # evidence is the relationship reaching it as an include path.
 
     @staticmethod
     def _candidate_relationship_names(manager) -> List[str]:
@@ -1395,13 +1404,12 @@ class AbstractBLLTest(AbstractTest):
         return sorted(rels)
 
     @staticmethod
-    def _captured_includes_evidence(holder) -> bool:
-        """Return True iff the BLL pushed a Load-family option (joinedload
-        / selectinload / nested Load chains) into the DB layer. Empty
-        options indicate a relationship was requested but the join wasn't
-        emitted — that's the N+1 leak we want to catch."""
-        options = holder.get("options") or []
-        return any(AbstractBLLTest._is_load_option(opt) for opt in options)
+    def _captured_includes_evidence(holder, relationship: str) -> bool:
+        """Return True iff the BLL handed the DB layer an include path that
+        starts at ``relationship``. None means the requested relationship
+        was dropped on the way down."""
+        include = holder.get("include") or ()
+        return any(path and path[0] == relationship for path in include)
 
     def test_load_only(self, admin_a, team_a, server, model_registry):
         """Item 87 — `manager.get`, `manager.list`, and `manager.search`
@@ -1450,10 +1458,10 @@ class AbstractBLLTest(AbstractTest):
             )
 
     def test_includes(self, admin_a, team_a, server, model_registry):
-        """Item 87 — `manager.list(include=[...])` must push a Load-family
-        option (joinedload / selectinload) into the DB layer. The contract
-        prevents N+1 across the result set: relationships requested with
-        ``include=`` produce one batched join, not one query per row."""
+        """Item 87 — `manager.list(include=[...])` must hand the DB layer
+        the requested relationship as an include path, which it loads in
+        one permission-filtered query for the whole result set, not one
+        query per row."""
         self.server = server
         self.model_registry = model_registry
         requester_id = self._effective_requester(admin_a.id)
@@ -1479,16 +1487,16 @@ class AbstractBLLTest(AbstractTest):
             pytest.skip(
                 "manager.list path did not reach DB layer for this concrete manager"
             )
-        assert self._captured_includes_evidence(holder), (
-            f"expected include=[{target_rel!r}] to produce a Load-family option; "
-            f"captured: {holder!r}"
+        assert self._captured_includes_evidence(holder, target_rel), (
+            f"expected include=[{target_rel!r}] to reach the DB layer as an "
+            f"include path; captured: {holder!r}"
         )
 
     def test_fields(self, admin_a, team_a, server, model_registry):
         """Item 87 — combined ``fields`` + ``include`` matrix. Asserts both
-        options coexist on the DB call: ``load_only`` for the projected
-        columns, plus a Load-family join for the included relationship.
-        Catches regressions where one option clobbers the other."""
+        coexist on the DB call: ``load_only`` for the projected columns,
+        plus an include path for the included relationship. Catches
+        regressions where one clobbers the other."""
         self.server = server
         self.model_registry = model_registry
         requester_id = self._effective_requester(admin_a.id)
@@ -1520,14 +1528,14 @@ class AbstractBLLTest(AbstractTest):
                 "manager.list path did not reach DB layer for this concrete manager"
             )
         load_only_present = self._captured_load_only_evidence(holder, candidate_fields)
-        joins_present = self._captured_includes_evidence(holder)
+        include_present = self._captured_includes_evidence(holder, target_rel)
         assert load_only_present, (
             f"expected fields={candidate_fields} to produce a load_only "
             f"option in the combined matrix; captured: {holder!r}"
         )
-        assert joins_present, (
-            f"expected include=[{target_rel!r}] to produce a Load-family "
-            f"option in the combined matrix; captured: {holder!r}"
+        assert include_present, (
+            f"expected include=[{target_rel!r}] to reach the DB layer as an "
+            f"include path in the combined matrix; captured: {holder!r}"
         )
 
     def test_invalid_field_name_rejected(self, admin_a, team_a, server, model_registry):

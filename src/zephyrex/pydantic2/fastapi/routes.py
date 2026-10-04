@@ -555,7 +555,8 @@ def _build_get_route(
                         # if not present, skip
                         continue
 
-                    # If include already present (e.g., joinedload produced it), don't overwrite
+                    # If include already present (the database layer loaded it,
+                    # as the requester), don't overwrite
                     # Truthy, not `is not None`: an unloaded relationship or an
                     # empty nested DTO field serializes to {} (falsy), which must
                     # still be resolved from the *_id -- only a genuinely-loaded

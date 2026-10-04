@@ -352,6 +352,13 @@ def get(cls, requester_id, db, **kwargs):
     query = build_query(db, cls, filters=[perm_filter], **kwargs)
 ```
 
+Included relationships (`get`/`list` with `include=`) answer to the same
+rule: `load_visible_includes` queries each related model directly under its
+own VIEW filter and soft-delete rule, one query per relationship and level,
+so a reference the requester may not read is `None` and a collection lists
+only its visible members. No loader option eager-loads a relationship
+unfiltered.
+
 ### Decorator Pattern
 Session management with permission context:
 

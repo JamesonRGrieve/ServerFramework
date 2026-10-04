@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from abc import ABC
 from datetime import date, datetime, time, timedelta
 from typing import (
@@ -22,8 +23,9 @@ from typing import (
 from fastapi import HTTPException
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import and_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
+from zephyrex.database.AbstractDatabaseEntity import IncludePath
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import (
     PreconditionFailed,
@@ -928,8 +930,8 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """
         Validate that requested includes exist as valid relationships for the model.
 
-        This is a lightweight wrapper that uses generate_joins() for validation
-        without actually generating the join options.
+        This is a lightweight wrapper that runs resolve_include_paths() for
+        its validation and discards the paths.
         """
         if not includes:
             return includes  # type: ignore[return-value]
@@ -939,15 +941,17 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         if not includes_list:
             return includes_list
 
-        # Use generate_joins() for validation - it will raise HTTPException if invalid
-        # We discard the result since we only care about validation here
-        try:
-            self.generate_joins(self.DB, includes_list)
-        except HTTPException:
-            # Re-raise the 422 error from generate_joins
-            raise
+        self.resolve_include_paths(self.DB, includes_list)
 
         return includes_list
+
+    def _include_paths(
+        self, include: Optional[Union[List[str], str]]
+    ) -> List[IncludePath]:
+        """The relationship paths an ``include`` (list or CSV) asks the
+        database layer to load for the requester."""
+        include_list = self._parse_includes(include) if include else []
+        return self.resolve_include_paths(self.DB, include_list)
 
     def _resolve_load_only_columns(self, fields_list: List[str]) -> List[Any]:
         """Resolve field names to SQLAlchemy load_only compatible attributes."""
@@ -1041,50 +1045,22 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         return resolved
 
     @staticmethod
-    def generate_joins(model_class, include_fields):
-        """Generate join loads based on specified include fields.
+    def resolve_include_paths(
+        model_class: Any, include_fields: List[str]
+    ) -> List[IncludePath]:
+        """Resolve include names (dot notation for nested relationships) to
+        the relationship-key paths the database layer loads, each related row
+        under the requester's own VIEW rule (``load_visible_includes``).
+        Names that match no relationship are dropped with a warning.
 
         Args:
             model_class: SQLAlchemy model class
             include_fields: List of relationship names, supports dot notation for nested relationships
 
         Returns:
-            List of SQLAlchemy joinedload options
+            Relationship-key paths, one per resolvable include
         """
-        from sqlalchemy.orm import RelationshipProperty
-
-        joins = []
-        valid_relationships = []
-
-        # Collect all valid relationships - try multiple detection methods
-        try:
-            # Method 1: Check __mapper__ (SQLAlchemy 1.x and 2.x)
-            if hasattr(model_class, "__mapper__"):
-                mapper = model_class.__mapper__
-                if hasattr(mapper, "relationships"):
-                    for rel_name in mapper.relationships.keys():
-                        valid_relationships.append(rel_name)
-        except Exception as e:
-            logger.debug(f"Could not get relationships from __mapper__: {e}")
-
-        # Method 2: Check via dir() and property inspection (fallback)
-        if not valid_relationships:
-            for attr_name in dir(model_class):
-                if attr_name.startswith("_"):
-                    continue
-                try:
-                    attr = getattr(model_class, attr_name)
-                    # Check if it's a SQLAlchemy relationship
-                    if hasattr(attr, "property"):
-                        if isinstance(attr.property, RelationshipProperty):
-                            valid_relationships.append(attr_name)
-                        elif hasattr(attr.property, "mapper"):
-                            valid_relationships.append(attr_name)
-                except Exception:
-                    continue
-
-        # Remove duplicates
-        valid_relationships = sorted(list(set(valid_relationships)))
+        paths: List[IncludePath] = []
 
         # Helper: resolve a single attribute name to an actual relationship attribute
         def _resolve_relationship_attribute(cls, name):
@@ -1131,7 +1107,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                             return getattr(cls, rel.key)
                 # 4) If no relationship found, but there is a FK column named fk_name, attempt to create a dynamic relationship
                 #    that points to the referenced table's model. This creates a view-only relationship on the class
-                #    so joinedload can be used for includes like 'created_by_user' when only '<name>_id' exists.
+                #    so includes like 'created_by_user' load when only '<name>_id' exists.
                 try:
                     # Try to access table column object
                     col_obj = None
@@ -1200,65 +1176,26 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             return None
 
         for field in include_fields:
-            try:
-                # Handle nested includes (e.g., 'user_teams.team.roles')
-                if "." in field:
-                    parts = field.split(".")
+            # Nested includes (e.g., 'user_teams.team.roles') walk one
+            # relationship per part; a part that resolves to none drops the
+            # whole path.
+            current_model_class = model_class
+            keys: List[str] = []
+            for part in field.split("."):
+                attr = _resolve_relationship_attribute(current_model_class, part)
+                if attr is None:
+                    logger.warning(
+                        "Relationship '%s' not found on %s",
+                        part,
+                        current_model_class.__name__,
+                    )
+                    break
+                keys.append(attr.property.key)
+                current_model_class = attr.property.mapper.class_
+            else:
+                paths.append(tuple(keys))
 
-                    # Resolve first part to an attribute (relationship)
-                    first_attr = _resolve_relationship_attribute(model_class, parts[0])
-                    if not first_attr:
-                        logger.warning(
-                            f"Relationship '{parts[0]}' not found on {model_class.__name__}"
-                        )
-                        continue
-
-                    current_join = joinedload(first_attr)
-                    # Drill down into nested model class
-                    try:
-                        current_model_class = first_attr.property.mapper.class_
-                    except Exception:
-                        logger.warning(
-                            f"Could not resolve mapper for relationship '{parts[0]}' on {model_class.__name__}"
-                        )
-                        continue
-
-                    for part in parts[1:]:
-                        nested_attr = _resolve_relationship_attribute(
-                            current_model_class, part
-                        )
-                        if (
-                            nested_attr
-                            and hasattr(nested_attr, "property")
-                            and hasattr(nested_attr.property, "mapper")
-                        ):
-                            current_join = current_join.joinedload(nested_attr)
-                            current_model_class = nested_attr.property.mapper.class_
-                        else:
-                            logger.warning(
-                                f"Relationship '{part}' not found on {current_model_class.__name__}"
-                            )
-                            break
-                    else:
-                        joins.append(current_join)
-
-                else:
-                    # Simple include - try to resolve to a relationship attribute
-                    attr = _resolve_relationship_attribute(model_class, field)
-                    if attr is not None:
-                        joins.append(joinedload(attr))
-                    else:
-                        logger.warning(
-                            f"Relationship '{field}' not found on {model_class.__name__}"
-                        )
-
-            except (AttributeError, TypeError) as e:
-                logger.warning(
-                    f"Error processing include field '{field}' on {model_class.__name__}: {e}"
-                )
-                continue
-
-        return joins
+        return paths
 
     @property
     def db(self) -> Session:
@@ -1476,10 +1413,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         fields_list = self.validate_fields(fields)
 
-        if include:
-            include_list = self._parse_includes(include)
-            if include_list:
-                options = self.generate_joins(self.DB, include_list)
         if fields_list:
             from sqlalchemy.orm import load_only
 
@@ -1495,6 +1428,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             return_type="dto",
             override_dto=self.Model,
             options=options,
+            include=self._include_paths(include),
             **db_kwargs,
         )
 
@@ -1598,11 +1532,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             else:
                 simple_kwargs[key] = value
 
-        if include:
-            # Parse includes - handle both CSV strings and lists
-            include_list = self._parse_includes(include)
-            if include_list:
-                options = self.generate_joins(self.DB, include_list)
         if fields:
             from sqlalchemy.orm import load_only
 
@@ -1645,6 +1574,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             return_type=return_type,
             override_dto=self.model_registry.apply(self.Model),
             options=options,
+            include=self._include_paths(include),
             order_by=order_by,
             limit=limit,
             offset=offset,
@@ -1694,13 +1624,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             "return_type", "dto"
         )  # Remove and save return_type
 
-        # Convert include to SQLAlchemy joinedload options
-        if include:
-            # Parse includes - handle both CSV strings and lists
-            include_list = self._parse_includes(include)
-            if include_list:
-                options = self.generate_joins(self.DB, include_list)
-
         # Convert fields to SQLAlchemy load_only option
         if fields:
             from sqlalchemy.orm import load_only
@@ -1734,6 +1657,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             model_registry=self.model_registry,
             return_type=return_type,  # Use the saved value instead of hardcoding "dto"
             options=options,
+            include=self._include_paths(include),
             order_by=order_by,
             limit=limit,
             offset=offset,

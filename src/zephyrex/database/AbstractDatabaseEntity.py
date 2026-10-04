@@ -1,12 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import functools
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import (
     Any,
+    Dict,
     List,
     Literal,
     Optional,
+    Sequence,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -17,7 +21,8 @@ from typing import (
 
 from fastapi import HTTPException
 from sqlalchemy import Column, DateTime, ForeignKey, String, event, inspect
-from sqlalchemy.orm import Query, Session, declared_attr, relationship
+from sqlalchemy.orm import Query, Session, aliased, declared_attr, relationship
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
 
 from zephyrex.database.DatabaseManager import DatabaseManager
@@ -264,6 +269,102 @@ def _check_version(entity) -> None:
     if_match = claim_expected_version(table, str(entity.id))
     if if_match is not None and not if_match.matches(entity):
         raise StaleVersionError(table, str(entity.id))
+
+
+# A relationship path an ``include`` loads: relationship keys from the queried
+# model down (``("user_teams", "team")``).
+IncludePath = Tuple[str, ...]
+
+# Parent ids per related-row query, so a long result never binds more
+# parameters than a database allows in one statement.
+_INCLUDE_BATCH_SIZE = 500
+
+
+def _visible_related(
+    db: Session,
+    db_manager: Any,
+    requester_id: str,
+    relation: Any,
+    parent_ids: List[Any],
+) -> Dict[Any, List[Any]]:
+    """The rows ``relation`` reaches from each of ``parent_ids`` that the
+    requester may view, by parent id: the related model is queried directly,
+    under the VIEW filter and soft-delete rule a read of it applies, and
+    joined back to an alias of the parent only to learn which parent each
+    row belongs to."""
+    target = relation.mapper.class_
+    parent = aliased(relation.parent.class_)
+    visibility = _apply_soft_delete_filter(target, requester_id, [])
+    visibility.append(
+        generate_permission_filter(
+            requester_id,
+            target,
+            db,
+            db_manager.Base,
+            PermissionType.VIEW,
+            db_manager=db_manager,
+        )
+    )
+    related: Dict[Any, List[Any]] = {}
+    for start in range(0, len(parent_ids), _INCLUDE_BATCH_SIZE):
+        query = (
+            db.query(parent.id, target)
+            .join(getattr(parent, relation.key))
+            .filter(parent.id.in_(parent_ids[start : start + _INCLUDE_BATCH_SIZE]))
+            .filter(*visibility)
+        )
+        if relation.order_by:
+            query = query.order_by(*relation.order_by)
+        if _should_include_deleted(target, requester_id):
+            query = query.execution_options(include_deleted=True)
+        for parent_id, row in query.all():
+            rows = related.setdefault(parent_id, [])
+            if all(row is not seen for seen in rows):
+                rows.append(row)
+    return related
+
+
+def load_visible_includes(
+    db: Session,
+    db_manager: Any,
+    requester_id: str,
+    rows: List[Any],
+    include: Sequence[IncludePath],
+) -> None:
+    """Load each relationship path in ``include`` onto ``rows`` (ORM rows of
+    one model, from ``db``), keeping only the related rows the requester
+    could read directly: a reference they may not see is ``None`` and a
+    collection holds only its visible members. One query per relationship
+    and level, whatever the number of rows."""
+    if not rows or not include:
+        return
+    tails_by_key: Dict[str, List[IncludePath]] = {}
+    for path in include:
+        if path:
+            tails_by_key.setdefault(path[0], []).append(path[1:])
+    relationships = inspect(type(rows[0])).relationships
+    parent_ids = [row.id for row in rows]
+    for key, tails in tails_by_key.items():
+        relation = relationships.get(key)
+        if relation is None:
+            continue
+        related = _visible_related(db, db_manager, requester_id, relation, parent_ids)
+        reached: Dict[int, Any] = {}
+        for row in rows:
+            found = related.get(row.id, [])
+            set_committed_value(
+                row,
+                key,
+                found if relation.uselist else (found[0] if found else None),
+            )
+            reached.update((id(item), item) for item in found)
+        load_visible_includes(
+            db,
+            db_manager,
+            requester_id,
+            list(reached.values()),
+            [tail for tail in tails if tail],
+        )
 
 
 def _filter_dict_fields(entity_dict: dict, fields: List[str]) -> None:
@@ -1079,8 +1180,11 @@ class BaseMixin:
         fields=[],
         allow_nonexistent=False,
         override_dto: Optional[Type[DtoT]] | None = None,
+        include: Sequence[IncludePath] = (),
         **kwargs,
     ) -> T:
+        """One record the requester may view, with the relationship paths in
+        ``include`` loaded under the same rule (``load_visible_includes``)."""
         # Extract db and db_manager from kwargs (injected by decorator)
         db = kwargs.pop("db")
         db_manager = kwargs.pop("db_manager")
@@ -1124,6 +1228,7 @@ class BaseMixin:
         # Get the single result
         try:
             result = query.one()
+            load_visible_includes(db, db_manager, requester_id, [result], include)
             to_return = db_to_return_type(
                 result,
                 return_type,
@@ -1189,6 +1294,7 @@ class BaseMixin:
         override_dto: Optional[Type[DtoT]] | None = None,
         check_permissions=True,
         minimum_role=None,
+        include: Sequence[IncludePath] = (),
         **kwargs,
     ) -> List[T]:
         """
@@ -1208,6 +1314,8 @@ class BaseMixin:
             override_dto: Optional DTO class override
             check_permissions: Whether to apply permission filtering (defaults to True)
             minimum_role: Minimum role required for team access (defaults to None)
+            include: Relationship paths to load onto each record, under the
+                requester's own VIEW rule (``load_visible_includes``)
             **kwargs: Additional filter criteria
 
         Returns:
@@ -1264,6 +1372,7 @@ class BaseMixin:
 
         # Fetch records based on filtered query
         to_return = query.all()
+        load_visible_includes(db, db_manager, requester_id, to_return, include)
 
         logger.debug(f"To return: {', '.join([str(item) for item in to_return])}")
         if to_return is None:

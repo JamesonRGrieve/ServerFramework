@@ -524,18 +524,14 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
         fields: Optional[Union[List[str], str]] = None,
         **kwargs,
     ) -> Any:
-        options = []
         fields = self.validate_fields(fields)
-        include_list = self.validate_includes(include)
-        if include_list:
-            options = self.generate_joins(self.DB, include_list)
         invitation = self.DB.get(
             requester_id=self.requester.id,
             fields=fields,
             model_registry=self.model_registry,
             return_type="dto" if not fields else "dict",
             override_dto=self.Model if not fields else None,
-            options=options,
+            include=self._include_paths(include),
             **kwargs,
         )
         if invitation is None:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Item 87 — independent verification for the abstract field/include test methods.
 
 The CRUD-suite-binding tests live on each concrete manager via
@@ -89,24 +90,34 @@ def test_candidate_relationship_names_safe_on_missing_mapper():
 # ---------------------------------------------------------------------------
 
 
-def test_captured_includes_evidence_detects_joinedload():
-    holder = {"options": [joinedload(_Author.books)], "fields": None}
-    assert AbstractBLLTest._captured_includes_evidence(holder) is True
+# The evidence was a Load-family option (joinedload / selectinload) until
+# those were found to load related rows with no permission filter; the DB
+# layer now loads includes itself from the paths it is handed.
 
 
-def test_captured_includes_evidence_detects_selectinload():
-    holder = {"options": [selectinload(_Author.books)], "fields": None}
-    assert AbstractBLLTest._captured_includes_evidence(holder) is True
+def test_captured_includes_evidence_detects_the_include_path():
+    holder = {"options": [], "fields": None, "include": [("books",)]}
+    assert AbstractBLLTest._captured_includes_evidence(holder, "books") is True
 
 
-def test_captured_includes_evidence_empty_options_means_n_plus_one_leak():
-    holder = {"options": [], "fields": None}
-    assert AbstractBLLTest._captured_includes_evidence(holder) is False
+def test_captured_includes_evidence_detects_a_nested_path():
+    holder = {"options": [], "fields": None, "include": [("books", "author")]}
+    assert AbstractBLLTest._captured_includes_evidence(holder, "books") is True
 
 
-def test_captured_includes_evidence_options_none():
-    holder = {"options": None, "fields": None}
-    assert AbstractBLLTest._captured_includes_evidence(holder) is False
+def test_captured_includes_evidence_a_dropped_relationship_is_no_evidence():
+    holder = {"options": [], "fields": None, "include": [("author",)]}
+    assert AbstractBLLTest._captured_includes_evidence(holder, "books") is False
+
+
+def test_captured_includes_evidence_a_load_option_is_no_evidence():
+    holder = {"options": [joinedload(_Author.books)], "fields": None, "include": ()}
+    assert AbstractBLLTest._captured_includes_evidence(holder, "books") is False
+
+
+def test_captured_includes_evidence_include_none():
+    holder = {"options": None, "fields": None, "include": None}
+    assert AbstractBLLTest._captured_includes_evidence(holder, "books") is False
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +207,16 @@ def test_capture_db_options_records_options_kwarg():
         restore()
     assert holder["options"] == [opt]
     assert holder["fields"] is None
+
+
+def test_capture_db_options_records_include_kwarg():
+    mgr = _StubManager()
+    holder, restore = AbstractBLLTest._capture_db_options(mgr, "list")
+    try:
+        mgr.DB.list(include=[("books",)])
+    finally:
+        restore()
+    assert holder["include"] == [("books",)]
 
 
 def test_capture_db_options_records_fields_kwarg():

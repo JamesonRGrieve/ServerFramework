@@ -327,9 +327,13 @@ Automatic filter generation from search parameters:
 
 ### Relationship Loading
 
-- `include` parameter for eager loading relationships
+- `include` parameter for loading relationships (dot notation for nested
+  ones): `resolve_include_paths()` turns the names into relationship-key
+  paths, and the database layer loads each relationship in one query for the
+  whole result, under the requester's own VIEW filter. A related record the
+  requester could not read directly is `None`, and a collection holds only
+  its visible members.
 - `fields` parameter for selective field loading
-- Automatic join generation with `generate_joins()`
 
 ### Pagination and Sorting
 
