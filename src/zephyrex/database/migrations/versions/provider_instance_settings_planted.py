@@ -21,9 +21,27 @@ A live setting is legitimate when its author:
   or
 - is a live admin of the instance's team (``team_id``): an enabled,
   unexpired, undeleted membership in a team that is not deleted, holding the
-  admin role or one ranked at or above it. That is the team-admin edit rule
-  of ``generate_permission_filter``, frozen here as a migration must keep
-  meaning what it meant when it ran.
+  admin role (``ADMIN_ROLE_ID``) or a live role that extends it, by
+  ``parent_id`` ancestry by id. That is the team-admin edit rule of
+  ``generate_permission_filter`` (``StaticPermissions.admin_role_ids``),
+  frozen here as a migration must keep meaning what it meant when it ran.
+
+  This revision first copied the rule that function had then, which ranked
+  roles by depth keyed by name: any role at the admin's depth (a team's
+  ``mod``, extending ``user``) counted, and a role named ``user`` one level
+  down made every member an admin. That was the privilege escalation the
+  rule was replaced over, and it would have kept the plants such a member
+  made. The copy was corrected in the commit after the one that added it.
+  A database that already ran the first copy keeps that result: alembic
+  will not run this revision there again, and what it may have kept are
+  rows written by a holder of such a role, which the corrected rule would
+  remove; or
+- holds a live acl_rbac Permission row granting them edit on the instance
+  by name (``user_id``, ``resource_type`` ``provider_instances``,
+  ``can_edit``): not soft-deleted and unexpired, the liveness rule of
+  ``StaticPermissions._active`` (a revoked grant is a soft-deleted one).
+  This is the direct grant ``check_permission`` honours; without the
+  acl_rbac table, no such grant exists.
 
 On a root- or system-scoped instance only ROOT and SYSTEM are legitimate,
 whoever the instance names as its user. A row with no author is not
@@ -33,8 +51,10 @@ legitimate (no authority can be shown for it). Everything else is planted.
 admin status is read as it stands when this runs, not as it stood when the
 row was written. A row its author wrote as a team admin who has since left
 the team, or been demoted, is removed with the plants; a row written by a
-member who was promoted later is kept. Editors who held the instance only
-through an acl_rbac Permission row are not recognised either.
+member who was promoted later is kept. Grants are read alike: a revoked
+or lapsed grant's holder loses their rows, a later grant's holder keeps
+them. Edit granted to a team or a role through a Permission row (rather
+than to the author by name) is not recognised.
 
 Planted rows are soft-deleted, not removed: the table soft-deletes (this
 keeps the audit trail, and a wrongly judged row is restored by clearing its
@@ -50,7 +70,7 @@ exists are left alone (no provider reads them).
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import sqlalchemy as sa
 from alembic import op
@@ -66,12 +86,12 @@ logger = logging.getLogger(__name__)
 
 OPERATOR_SCOPES = frozenset({"root", "system"})
 DEFAULT_SCOPE = "user"
-ADMIN_ROLE_NAME = "admin"
-# As the role hierarchy the edit rule ranks roles by.
-MAX_ROLE_DEPTH = 10
 # Ids per UPDATE, under every supported backend's bound-parameter limit.
 TOMBSTONE_BATCH = 500
 SETTINGS_TABLE = "provider_instance_settings"
+INSTANCES_TABLE = "provider_instances"
+# acl_rbac's grants, when that extension's table exists.
+PERMISSIONS_TABLE = "permissions"
 
 _settings = sa.table(
     SETTINGS_TABLE,
@@ -82,7 +102,7 @@ _settings = sa.table(
     sa.column("deleted_by_user_id", sa.String),
 )
 _instances = sa.table(
-    "provider_instances",
+    INSTANCES_TABLE,
     sa.column("id", sa.String),
     sa.column("scope", sa.String),
     sa.column("user_id", sa.String),
@@ -92,8 +112,9 @@ _instances = sa.table(
 _roles = sa.table(
     "roles",
     sa.column("id", sa.String),
-    sa.column("name", sa.String),
     sa.column("parent_id", sa.String),
+    sa.column("expires_at", sa.DateTime),
+    sa.column("deleted_at", sa.DateTime),
 )
 _user_teams = sa.table(
     "user_teams",
@@ -109,37 +130,47 @@ _teams = sa.table(
     sa.column("id", sa.String),
     sa.column("deleted_at", sa.DateTime),
 )
+_permissions = sa.table(
+    PERMISSIONS_TABLE,
+    sa.column("user_id", sa.String),
+    sa.column("resource_type", sa.String),
+    sa.column("resource_id", sa.String),
+    sa.column("can_edit", sa.Boolean),
+    sa.column("expires_at", sa.DateTime),
+    sa.column("deleted_at", sa.DateTime),
+)
 
 
-def admin_role_ids(roles: Iterable[sa.Row]) -> Set[str]:
-    """The ids of the roles ranked at or above the admin role. Roles are
-    ranked by depth in the ``parent_id`` tree, keyed by name, as
-    ``_get_role_hierarchy_map`` ranks them."""
-    roles = list(roles)
-    level_by_name: Dict[str, int] = {}
-    current = [role for role in roles if role.parent_id is None]
-    level = 0
-    while current and level < MAX_ROLE_DEPTH:
-        for role in current:
-            level_by_name[role.name] = level
-        parent_ids = {role.id for role in current}
-        current = [role for role in roles if role.parent_id in parent_ids]
-        level += 1
-    admin_level = level_by_name.get(ADMIN_ROLE_NAME)
-    if admin_level is None:
-        return set()
-    return {
-        str(role.id)
-        for role in roles
-        if level_by_name.get(role.name, -1) >= admin_level
-    }
+def _live_role(roles: sa.FromClause) -> sa.ColumnElement[bool]:
+    return sa.and_(
+        roles.c.deleted_at.is_(None),
+        sa.or_(roles.c.expires_at.is_(None), roles.c.expires_at > sa.func.now()),
+    )
+
+
+def admin_role_ids(bind: sa.Connection) -> Set[str]:
+    """The ids of the admin role (``ADMIN_ROLE_ID``) and of every live role
+    that extends it, by ``parent_id`` ancestry by id. A deleted or expired
+    role extends nothing and ends the walk through it; the recursion is a
+    ``UNION`` over ids, so a cyclic tree ends it too."""
+    admin_roles = (
+        sa.select(_roles.c.id)
+        .where(_roles.c.id == env("ADMIN_ROLE_ID"), _live_role(_roles))
+        .cte("admin_roles", recursive=True)
+    )
+    child = _roles.alias("admin_role_child")
+    reached = admin_roles.alias("admin_roles_reached")
+    admin_roles = admin_roles.union(
+        sa.select(child.c.id)
+        .join(reached, child.c.parent_id == reached.c.id)
+        .where(_live_role(child))
+    )
+    return {str(row.id) for row in bind.execute(sa.select(admin_roles.c.id))}
 
 
 def _live_team_admins(bind: sa.Connection) -> Set[Tuple[str, str]]:
     """``(user_id, team_id)`` for every live admin membership."""
-    admin_ids = admin_role_ids(
-        bind.execute(sa.select(_roles.c.id, _roles.c.name, _roles.c.parent_id))
-    )
+    admin_ids = admin_role_ids(bind)
     if not admin_ids:
         return set()
     rows = bind.execute(
@@ -159,13 +190,35 @@ def _live_team_admins(bind: sa.Connection) -> Set[Tuple[str, str]]:
     return {(str(row.user_id), str(row.team_id)) for row in rows}
 
 
+def _live_acl_editors(bind: sa.Connection) -> Set[Tuple[str, str]]:
+    """``(user_id, instance id)`` for every live Permission row granting a
+    user edit on a provider instance; empty without the acl_rbac table."""
+    if not sa.inspect(bind).has_table(PERMISSIONS_TABLE):
+        return set()
+    rows = bind.execute(
+        sa.select(_permissions.c.user_id, _permissions.c.resource_id).where(
+            _permissions.c.resource_type == INSTANCES_TABLE,
+            _permissions.c.user_id.isnot(None),
+            _permissions.c.can_edit == sa.true(),
+            sa.or_(
+                _permissions.c.expires_at.is_(None),
+                _permissions.c.expires_at > sa.func.now(),
+            ),
+            _permissions.c.deleted_at.is_(None),
+        )
+    )
+    return {(str(row.user_id), str(row.resource_id)) for row in rows}
+
+
 def is_legitimate(
     author_id: Optional[str],
+    instance_id: str,
     scope: Optional[str],
     owner_id: Optional[str],
     team_id: Optional[str],
     creator_id: Optional[str],
     team_admins: Set[Tuple[str, str]],
+    acl_editors: Set[Tuple[str, str]],
 ) -> bool:
     """Whether a setting ``author_id`` wrote speaks for its instance (the
     rule in this module's docstring)."""
@@ -177,12 +230,15 @@ def is_legitimate(
         return False
     if author_id in (owner_id, creator_id):
         return True
+    if (author_id, instance_id) in acl_editors:
+        return True
     return team_id is not None and (author_id, team_id) in team_admins
 
 
 def planted_setting_ids(bind: sa.Connection) -> Dict[str, List[str]]:
     """``{instance id: [setting ids]}`` for every live planted setting."""
     team_admins = _live_team_admins(bind)
+    acl_editors = _live_acl_editors(bind)
     rows = bind.execute(
         sa.select(
             _settings.c.id,
@@ -200,11 +256,13 @@ def planted_setting_ids(bind: sa.Connection) -> Dict[str, List[str]]:
     for row in rows:
         if not is_legitimate(
             row.author_id,
+            str(row.provider_instance_id),
             row.scope,
             row.user_id,
             row.team_id,
             row.creator_id,
             team_admins,
+            acl_editors,
         ):
             planted[str(row.provider_instance_id)].append(str(row.id))
     return {instance: sorted(ids) for instance, ids in sorted(planted.items())}
