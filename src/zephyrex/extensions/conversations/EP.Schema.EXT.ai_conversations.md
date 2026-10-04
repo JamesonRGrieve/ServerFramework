@@ -50,13 +50,11 @@
 
 - Create an Artifact
     - POST /v1/artifact
-    - POST /v1/project/{project_id}/artifact
     - POST /v1/conversation/{conversation_id}/artifact
 - Get an Artifact
     - GET /v1/artifact/{id}
 - List Artifacts
     - GET /v1/artifact
-    - GET /v1/project/{project_id}/artifact
     - GET /v1/conversation/{conversation_id}/artifact
 - Update an Artifact
     - PUT /v1/artifact/{id}
