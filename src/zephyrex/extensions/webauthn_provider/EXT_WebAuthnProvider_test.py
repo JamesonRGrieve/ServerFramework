@@ -1,67 +1,70 @@
-"""Tests for the webauthn_provider extension."""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""webauthn_provider is parked: it must offer nothing until a real hosted
+passkey service exists.
 
-import os
+It used to advertise register, authenticate and relying-party management
+abilities, a relying-party table and a credential table, environment
+settings and a fido2 requirement, none of which did anything. These tests pin
+the honest shape so a fake cannot creep back in."""
 
-os.environ.setdefault("JWT_SECRET", "x" * 32)
-os.environ.setdefault("PYTEST_CURRENT_TEST", "webauthn_provider_test")
+from pathlib import Path
 
-from zephyrex.extensions.webauthn_provider.BLL_WebAuthnProvider import (
-    WebAuthnProviderCredentialModel,
-    WebAuthnProviderManager,
-    WebAuthnRelyingPartyModel,
-)
+from zephyrex.extensions.Manifest import load_manifest
 from zephyrex.extensions.webauthn_provider.EXT_WebAuthnProvider import (
     EXT_WebAuthnProvider,
 )
 
+_FOLDER = Path(__file__).resolve().parent
+_FORMER_FAKE_ABILITIES = {
+    "webauthn_provider_register",
+    "webauthn_provider_authenticate",
+    "webauthn_provider_manage_rp",
+}
 
-class TestExtensionMetadata:
-    def test_name(self):
+
+class TestParkedMetadata:
+    def test_identity(self) -> None:
         assert EXT_WebAuthnProvider.name == "webauthn_provider"
+        assert EXT_WebAuthnProvider.version == "2.0.0"
 
-    def test_version(self):
-        assert EXT_WebAuthnProvider.version == "1.0.0"
+    def test_description_says_parked_and_points_to_the_consumer(self) -> None:
+        description = EXT_WebAuthnProvider.description
+        assert description.startswith("Parked, not built:")
+        assert "passkey" in description
+        assert "webauthn_consumer" in description
 
-    def test_abilities(self):
-        abilities = EXT_WebAuthnProvider.get_abilities()
-        assert "webauthn_provider_register" in abilities
-        assert "webauthn_provider_authenticate" in abilities
-        assert "webauthn_provider_manage_rp" in abilities
+    def test_docstring_says_parked(self) -> None:
+        import zephyrex.extensions.webauthn_provider.EXT_WebAuthnProvider as module
 
-    def test_dependencies(self):
-        assert EXT_WebAuthnProvider.extension_dependencies == ["auth_session"]
+        assert module.__doc__ is not None
+        assert module.__doc__.startswith("Parked:")
 
-
-class TestModels:
-    def test_rp_fields(self):
-        fields = set(WebAuthnRelyingPartyModel.model_fields.keys())
-        assert "rp_id" in fields
-        assert "rp_name" in fields
-        assert "origin" in fields
-        assert "attestation" in fields
-        assert "user_verification" in fields
-        assert "timeout_ms" in fields
-
-    def test_credential_fields(self):
-        fields = set(WebAuthnProviderCredentialModel.model_fields.keys())
-        assert "rp_id" in fields
-        assert "external_user_id" in fields
-        assert "credential_id" in fields
-        assert "public_key" in fields
-        assert "sign_count" in fields
-        assert "is_discoverable" in fields
-        assert "transports" in fields
-
-    def test_manager_model(self):
-        assert WebAuthnProviderManager._model is WebAuthnRelyingPartyModel
+    def test_manifest_matches(self) -> None:
+        manifest = load_manifest(_FOLDER / "manifest.toml")
+        assert manifest.description == EXT_WebAuthnProvider.description
+        assert manifest.pip_dependencies == []
+        assert manifest.system_dependencies == []
+        assert manifest.extension_dependencies == []
 
 
-class TestLifecycle:
-    def test_on_initialize(self):
-        assert EXT_WebAuthnProvider.on_initialize() is True
+class TestOffersNothing:
+    def test_no_abilities(self) -> None:
+        assert EXT_WebAuthnProvider.get_abilities() == set()
+        assert not _FORMER_FAKE_ABILITIES & EXT_WebAuthnProvider.get_abilities()
 
-    def test_on_start(self):
-        assert EXT_WebAuthnProvider.on_start() is True
+    def test_no_dependencies(self) -> None:
+        assert list(EXT_WebAuthnProvider.dependencies) == []
+        assert EXT_WebAuthnProvider.pip_requirements() == []
 
-    def test_on_stop(self):
-        assert EXT_WebAuthnProvider.on_stop() is True
+    def test_no_settings_or_config_checks(self) -> None:
+        assert EXT_WebAuthnProvider._env == {}
+        assert EXT_WebAuthnProvider.validate_config() == []
+
+    def test_no_models_routes_or_providers(self) -> None:
+        modules = {
+            path.name
+            for path in _FOLDER.glob("*.py")
+            if not path.stem.endswith("_test")
+        }
+        assert modules == {"__init__.py", "EXT_WebAuthnProvider.py"}
+        assert not (_FOLDER / "migrations").exists()

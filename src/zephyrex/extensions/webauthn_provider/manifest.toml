@@ -5,15 +5,11 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "webauthn_provider"
-version = "1.0.0"
-description = "Run this server as a WebAuthn relying party for third-party consumers."
+version = "2.0.0"
+description = "Parked, not built: would run WebAuthn passkey ceremonies for third-party applications' users. Provides nothing yet; passkeys for this server's users are webauthn_consumer."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_WebAuthnProvider"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
-
-[[extension_dependencies]]
-name = "auth_session"
-optional = false
