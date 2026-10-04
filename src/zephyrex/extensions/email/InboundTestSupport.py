@@ -60,14 +60,15 @@ def raw_message(subject: str = "Hello", to: str = "desk@example.org") -> bytes:
 
 
 @contextmanager
-def listening() -> Iterator[List[InboundEmail]]:
-    """Every message the inbound hook hands its listeners, while open."""
+def listening(extension_name: str = "email") -> Iterator[List[InboundEmail]]:
+    """Every message the inbound hook hands a listener of
+    ``extension_name``'s, while open."""
     seen: List[InboundEmail] = []
 
     async def listener(model_registry: Any, message: InboundEmail) -> None:
         seen.append(message)
 
-    on_inbound_email(listener)
+    on_inbound_email(extension_name, listener)
     try:
         yield seen
     finally:

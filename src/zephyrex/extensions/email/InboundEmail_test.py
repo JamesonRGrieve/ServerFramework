@@ -7,13 +7,16 @@ from typing import Any, List
 
 import pytest
 
+from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
 from zephyrex.extensions.email.InboundEmail import (
     MAX_INBOUND_EMAIL_BYTES,
     InboundEmail,
+    inbound_email_listeners,
     on_inbound_email,
     receive_inbound_email,
     remove_inbound_email_listener,
 )
+from zephyrex.pydantic2.registry import ModelRegistry
 
 
 def raw_message(**headers: str) -> bytes:
@@ -76,8 +79,17 @@ def test_an_oversized_message_is_refused():
         InboundEmail.parse(b"x" * (MAX_INBOUND_EMAIL_BYTES + 1))
 
 
-async def test_every_listener_gets_the_message_and_one_failure_spares_the_rest():
+def app_loading(extensions: str) -> ModelRegistry:
+    """The model registry of an app that loads ``extensions`` (and what
+    they depend on)."""
+    return ModelRegistry(extension_registry=ExtensionRegistry(extensions))
+
+
+async def test_every_listener_gets_the_message_and_one_failure_spares_the_rest() -> (
+    None
+):
     seen: List[Any] = []
+    registry = app_loading("email")
 
     async def failing(registry: Any, message: InboundEmail) -> None:
         raise RuntimeError("listener broke")
@@ -85,14 +97,43 @@ async def test_every_listener_gets_the_message_and_one_failure_spares_the_rest()
     async def recording(registry: Any, message: InboundEmail) -> None:
         seen.append((registry, message.subject))
 
-    on_inbound_email(failing)
-    on_inbound_email(recording)
-    on_inbound_email(recording)  # registering twice registers once
+    on_inbound_email("email", failing)
+    on_inbound_email("email", recording)
+    on_inbound_email("email", recording)  # registering twice registers once
     try:
         message = InboundEmail.parse(raw_message(From="a@x.org", Subject="Hi"))
-        taken = await receive_inbound_email("registry", message)
+        taken = await receive_inbound_email(registry, message)
     finally:
         remove_inbound_email_listener(failing)
         remove_inbound_email_listener(recording)
-    assert seen == [("registry", "Hi")]
-    assert taken >= 1
+    assert seen == [(registry, "Hi")]
+    assert taken == 1
+
+
+async def test_a_listener_of_an_extension_the_app_did_not_load_neither_runs_nor_counts() -> (
+    None
+):
+    """The listener table is process-global: ai_agents registers its
+    listener when imported, which any app's process may do (ai_chains
+    imports it) without loading it. That listener was awaited, and counted
+    as taking the message, by every app in the process."""
+    ran: List[str] = []
+    registry = app_loading("email")
+
+    async def mine(registry: Any, message: InboundEmail) -> None:
+        ran.append("email")
+
+    async def not_loaded(registry: Any, message: InboundEmail) -> None:
+        ran.append("not_loaded")
+
+    on_inbound_email("email", mine)
+    on_inbound_email("an_extension_this_app_did_not_load", not_loaded)
+    try:
+        assert not_loaded not in inbound_email_listeners(registry)
+        message = InboundEmail.parse(raw_message(From="a@x.org", Subject="Hi"))
+        taken = await receive_inbound_email(registry, message)
+    finally:
+        remove_inbound_email_listener(mine)
+        remove_inbound_email_listener(not_loaded)
+    assert ran == ["email"]
+    assert taken == 1

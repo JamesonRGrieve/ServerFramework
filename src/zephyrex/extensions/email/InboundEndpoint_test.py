@@ -11,8 +11,6 @@ import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
 import pytest
-from fastapi import HTTPException
-from starlette.requests import Request
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.email.BLL_InboundEmail import (
@@ -34,7 +32,6 @@ from zephyrex.extensions.email.InboundEndpoint import (
     MIN_SIGNING_SECRET_LENGTH,
     RECIPIENTS_HEADER,
     SIGNING_SECRET_SETTING,
-    capped_body,
     envelope_recipients,
     inbound_signature,
     verified,
@@ -161,43 +158,6 @@ def test_envelope_recipients_are_bare_addresses():
         )
 
 
-async def test_a_body_streaming_past_the_cap_is_refused_as_it_arrives() -> None:
-    """No Content-Length: the cap holds as the chunks come in."""
-    chunks = [b"x" * 600, b"x" * 600, b"never read"]
-    read: List[bytes] = []
-
-    async def receive() -> Dict[str, Any]:
-        chunk = chunks.pop(0)
-        read.append(chunk)
-        return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
-
-    request = Request(
-        {"type": "http", "method": "POST", "path": "/", "headers": []}, receive
-    )
-    with pytest.raises(HTTPException) as refused:
-        await capped_body(request, limit=1000)
-    assert refused.value.status_code == 413
-    assert b"never read" not in read
-
-
-async def test_a_declared_length_past_the_cap_is_refused_unread() -> None:
-    async def receive() -> Dict[str, Any]:
-        raise AssertionError("the body was read")
-
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/",
-            "headers": [(b"content-length", str(MAX_INBOUND_EMAIL_BYTES + 1).encode())],
-        },
-        receive,
-    )
-    with pytest.raises(HTTPException) as refused:
-        await capped_body(request)
-    assert refused.value.status_code == 413
-
-
 # -- the endpoint --------------------------------------------------------------
 
 
@@ -229,6 +189,22 @@ class TestInboundEndpoint(ExtensionServerMixin):
         assert message.sender == "sender@example.net"
         # The envelope recipients (a Bcc the headers never show) come first.
         assert message.recipients == ["hidden@example.org", "desk@example.org"]
+
+    def test_a_listener_of_an_extension_this_app_did_not_load_is_not_handed_mail(
+        self, server, model_registry, received
+    ):
+        """Listeners are registered process-wide when their extension is
+        imported (ai_agents is, by ai_chains, in apps that load neither):
+        this app, which loads no such extension, awaited and counted it."""
+        assert "ai_agents" not in model_registry.loaded_extension_names()
+        instance = operator_instance(model_registry, {SIGNING_SECRET_SETTING: SECRET})
+        body = raw_message(subject="Mine")
+        with listening("ai_agents") as elsewhere:
+            answered = self._deliver(server, instance.id, body, signed_headers(body))
+        assert answered.status_code == 200, answered.text
+        assert answered.json()["listeners"] == 1
+        assert [message.subject for message in received] == ["Mine"]
+        assert elsewhere == []
 
     def test_the_secret_is_write_only_and_encrypted(self, model_registry):
         instance = operator_instance(model_registry, {SIGNING_SECRET_SETTING: SECRET})

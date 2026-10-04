@@ -1650,15 +1650,16 @@ async def _wake_agents_for(registry: Any, message: Any) -> None:
             count_firing(registry, listening[0])
 
 
-@on_inbound_email
 async def fire_email_triggers(model_registry: Any, message: InboundEmail) -> None:
     """Mail the email extension received wakes the agents whose email
-    triggers it is addressed to and matches (see EventSources)."""
-    if not loaded_in(model_registry):
-        return
+    triggers it is addressed to and matches (see EventSources). It listens
+    only in apps that load this extension."""
     from zephyrex.extensions.ai_agents.EventSources import receive_email
 
     await receive_email(model_registry, message)
+
+
+on_inbound_email(EXTENSION_NAME, fire_email_triggers)
 
 
 @hook_bll(TeamManager.create, timing=HookTiming.AFTER, priority=10)

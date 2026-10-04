@@ -40,6 +40,7 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
 from zephyrex.extensions.email.InboundEmail import InboundEmail
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.RequestBody import capped_body
 from zephyrex.lib.SecretEncryption import decrypt_secret
 from zephyrex.lib.SignedRequests import (
     SignedRequests,
@@ -48,6 +49,7 @@ from zephyrex.lib.SignedRequests import (
 )
 
 MAX_WEBHOOK_BODY_BYTES = 64 * 1024
+WEBHOOK_TOO_LARGE = f"A webhook body is at most {MAX_WEBHOOK_BODY_BYTES} bytes"
 WEBHOOK_SECRET_BYTES = 32
 # The most of an email's text a turn is handed.
 MAX_EMAIL_TEXT_CHARACTERS = 32 * 1024
@@ -86,23 +88,6 @@ def _stored_trigger(model_registry: Any, trigger_id: str) -> Optional[Any]:
     return rows[0] if rows else None
 
 
-async def _body(request: Request) -> bytes:
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > MAX_WEBHOOK_BODY_BYTES:
-        raise _too_large()
-    body = await request.body()
-    if len(body) > MAX_WEBHOOK_BODY_BYTES:
-        raise _too_large()
-    return body
-
-
-def _too_large() -> HTTPException:
-    return HTTPException(
-        status_code=413,
-        detail=f"A webhook body is at most {MAX_WEBHOOK_BODY_BYTES} bytes",
-    )
-
-
 def _payload(trigger: Any, event: str) -> str:
     """The trigger's instructions, when it has any, then the event."""
     instructions = (trigger.invocation_payload or "").strip()
@@ -125,7 +110,7 @@ async def receive_webhook(
 ) -> WebhookFired:
     """Verify a call to the trigger's webhook and fire its turn, as the
     agent's owner, handed the body."""
-    body = await _body(request)
+    body = await capped_body(request, MAX_WEBHOOK_BODY_BYTES, WEBHOOK_TOO_LARGE)
     trigger = _stored_trigger(model_registry, trigger_id)
     if (
         trigger is None

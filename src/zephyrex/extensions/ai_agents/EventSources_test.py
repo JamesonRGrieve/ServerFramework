@@ -14,10 +14,11 @@ import json
 import time
 import uuid
 from email.message import EmailMessage
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
@@ -27,9 +28,11 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     InvocationTriggerManager,
     InvocationTriggerModel,
     ProviderInstanceAgentManager,
+    fire_email_triggers,
 )
 from zephyrex.extensions.ai_agents.EventSources import (
     MAX_WEBHOOK_BODY_BYTES,
+    receive_webhook,
     webhook_signature,
 )
 from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
@@ -37,7 +40,12 @@ from zephyrex.extensions.ai_agents.PinnedInstances_test import (
     ModelServer,
     model_instance,
 )
-from zephyrex.extensions.email.InboundEmail import InboundEmail, receive_inbound_email
+from zephyrex.extensions.email.EXT_EMail import EXT_EMail
+from zephyrex.extensions.email.InboundEmail import (
+    InboundEmail,
+    inbound_email_listeners,
+    receive_inbound_email,
+)
 from zephyrex.lib.Environment import env
 from zephyrex.lib.SecretEncryption import decrypt_secret
 from zephyrex.lib.SignedRequests import (
@@ -247,6 +255,54 @@ class TestWebhookTriggers(EventTriggers):
         assert response.status_code == 413, response.text
         assert self._turns(admin_a, model_registry, agent) == []
 
+    async def test_a_chunked_oversized_body_is_413_before_it_is_all_read(
+        self, server, admin_a, model_registry
+    ):
+        """With no Content-Length (chunked transfer) the whole body was read
+        into memory before its size was checked."""
+        agent = self._agent(admin_a, model_registry)
+        trigger, secret = self._webhook(server, admin_a, model_registry, agent)
+        half = MAX_WEBHOOK_BODY_BYTES // 2 + 1
+        sent = 64
+
+        def streamed() -> Iterator[bytes]:
+            for _ in range(sent):
+                yield b"x" * half
+
+        chunks = streamed()
+        read = 0
+
+        async def receive() -> Dict[str, Any]:
+            nonlocal read
+            read += 1
+            return {
+                "type": "http.request",
+                "body": next(chunks),
+                "more_body": read < sent,
+            }
+
+        headers = signed(secret, b"")
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": f"/v1/invocation-trigger/{trigger.id}/webhook",
+                "headers": [
+                    (k.lower().encode(), v.encode()) for k, v in headers.items()
+                ],
+            },
+            receive,
+        )
+        with pytest.raises(HTTPException) as refused:
+            await receive_webhook(model_registry, trigger.id, request)
+        assert refused.value.status_code == 413
+        assert refused.value.detail == (
+            f"A webhook body is at most {MAX_WEBHOOK_BODY_BYTES} bytes"
+        )
+        # Two chunks put it past the cap; nothing after them was read.
+        assert read == 2
+        assert self._turns(admin_a, model_registry, agent) == []
+
     def test_a_disabled_trigger_is_409(self, server, admin_a, model_registry):
         agent = self._agent(admin_a, model_registry)
         trigger, secret = self._webhook(server, admin_a, model_registry, agent)
@@ -385,3 +441,25 @@ class TestEmailTriggers(EventTriggers):
             t.invocation_trigger_id for t in self._turns(admin_a, model_registry, mine)
         ] == [my_trigger.id]
         assert self._turns(admin_b, model_registry, theirs) == []
+
+
+class TestMailToAnAppWithoutAgents(ExtensionServerMixin):
+    """This module imports ai_agents, which registers its inbound listener
+    for the whole process, as ai_chains' import of it does. An app that
+    loads the email extension but not ai_agents awaited that listener and
+    counted it as taking every message it received."""
+
+    extension_class = EXT_EMail
+
+    async def test_its_mail_reaches_no_agent_listener_and_is_not_counted(
+        self, model_registry
+    ):
+        assert EXT_AI_Agents.name not in model_registry.loaded_extension_names()
+        assert fire_email_triggers not in inbound_email_listeners(model_registry)
+        mail = InboundEmail(
+            message_id="<m@example.org>",
+            sender="ops@example.org",
+            recipients=[f"agent@{DOMAIN}"],
+            subject="Disk full",
+        )
+        assert await receive_inbound_email(model_registry, mail) == 0

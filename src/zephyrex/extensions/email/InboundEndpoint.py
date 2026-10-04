@@ -43,6 +43,7 @@ from zephyrex.extensions.email.InboundEmail import (
 )
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.RequestBody import capped_body
 from zephyrex.lib.SignedRequests import (
     SignedRequests,
     lower_case_headers,
@@ -58,6 +59,9 @@ MIN_SIGNING_SECRET_LENGTH = 32
 MAX_ENVELOPE_RECIPIENTS = 100
 # The longest address SMTP allows (RFC 5321 §4.5.3.1.3).
 MAX_ADDRESS_LENGTH = 254
+INBOUND_MESSAGE_TOO_LARGE = (
+    f"An inbound message is at most {MAX_INBOUND_EMAIL_BYTES} bytes"
+)
 
 
 class InboundDelivered(RouteModel):
@@ -117,29 +121,6 @@ def envelope_recipients(header: str) -> List[str]:
     return addresses
 
 
-def too_large() -> HTTPException:
-    return HTTPException(
-        status_code=413,
-        detail=f"An inbound message is at most {MAX_INBOUND_EMAIL_BYTES} bytes",
-    )
-
-
-async def capped_body(request: Request, limit: int = MAX_INBOUND_EMAIL_BYTES) -> bytes:
-    """The request body, refused (413) as soon as it is longer than
-    ``limit``: by its declared length, or as it streams in."""
-    declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > limit:
-        raise too_large()
-    chunks: List[bytes] = []
-    received = 0
-    async for chunk in request.stream():
-        received += len(chunk)
-        if received > limit:
-            raise too_large()
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
 def operator_instance(
     model_registry: Any, provider_instance_id: str
 ) -> Optional[ProviderInstanceModel]:
@@ -193,7 +174,9 @@ async def receive_signed_message(
 ) -> InboundDelivered:
     """Verify a delivery to the instance's endpoint and hand its message to
     the inbound listeners."""
-    body = await capped_body(request)
+    body = await capped_body(
+        request, MAX_INBOUND_EMAIL_BYTES, INBOUND_MESSAGE_TOO_LARGE
+    )
     instance = operator_instance(model_registry, provider_instance_id)
     secret = signing_secret(instance) if instance is not None else None
     if instance is None or secret is None:

@@ -75,9 +75,12 @@ receives a message (a provider reading a mailbox, an endpoint a mail server
 delivers to) parses it with `InboundEmail.parse(raw, envelope_recipients)`
 (sender, every recipient lower-cased, subject, plain-text body, headers; at
 most 25 MiB) and calls `await receive_inbound_email(model_registry,
-message)`. Listeners registered with `on_inbound_email(listener)` are
-awaited as `listener(model_registry, message)` in registration order; one
-listener's failure is logged and the others still get the message. The
+message)`. Listeners registered with `on_inbound_email(extension_name,
+listener)` are awaited as `listener(model_registry, message)` in
+registration order, but only for an app that loaded `extension_name`: the
+table is process-global, and a listener neither runs nor counts in an app
+without its extension. One listener's failure is logged and the others
+still get the message. The
 `ai_agents` extension listens here to fire email triggers. Two sources feed
 it: the signed endpoint and the IMAP poller below.
 

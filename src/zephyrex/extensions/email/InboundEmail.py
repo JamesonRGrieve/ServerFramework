@@ -4,16 +4,16 @@
 Whatever receives a message (a provider reading a mailbox, an endpoint a
 mail server delivers to) parses it with :meth:`InboundEmail.parse` and hands
 it to :func:`receive_inbound_email` with the app's model registry. Every
-listener registered with :func:`on_inbound_email` is then awaited with it,
-in the order registered. One listener's failure is logged and does not keep
-the message from the rest.
+listener registered with :func:`on_inbound_email` by an extension that app
+loaded is then awaited with it, in the order registered. One listener's
+failure is logged and does not keep the message from the rest.
 """
 
 from email import policy
 from email.message import EmailMessage, MIMEPart
 from email.parser import BytesParser
 from email.utils import getaddresses
-from typing import Any, Awaitable, Callable, Dict, List, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -89,27 +89,39 @@ def _text_of(part: MIMEPart) -> str:
         return payload.decode("utf-8", "replace") if isinstance(payload, bytes) else ""
 
 
-_LISTENERS: List[InboundEmailListener] = []
+# Listeners by the extension that owns each, registered when that
+# extension's module is imported. The table is process-global, so a listener
+# runs only for an app that loaded its extension.
+_LISTENERS: List[Tuple[str, InboundEmailListener]] = []
 
 
-def on_inbound_email(listener: InboundEmailListener) -> InboundEmailListener:
-    """Call ``listener(model_registry, message)`` for every message
-    received. Registering one twice registers it once."""
-    if listener not in _LISTENERS:
-        _LISTENERS.append(listener)
+def on_inbound_email(
+    extension_name: str, listener: InboundEmailListener
+) -> InboundEmailListener:
+    """Call ``listener(model_registry, message)`` for every message received
+    by an app that loaded ``extension_name``. Registering one twice
+    registers it once."""
+    if (extension_name, listener) not in _LISTENERS:
+        _LISTENERS.append((extension_name, listener))
     return listener
 
 
 def remove_inbound_email_listener(listener: InboundEmailListener) -> None:
-    if listener in _LISTENERS:
-        _LISTENERS.remove(listener)
+    _LISTENERS[:] = [entry for entry in _LISTENERS if entry[1] != listener]
+
+
+def inbound_email_listeners(model_registry: Any) -> List[InboundEmailListener]:
+    """The listeners of every extension loaded into ``model_registry``'s
+    app, in the order registered: those a message it receives is handed."""
+    loaded = model_registry.loaded_extension_names()
+    return [listener for name, listener in list(_LISTENERS) if name in loaded]
 
 
 async def receive_inbound_email(model_registry: Any, message: InboundEmail) -> int:
-    """Hand ``message`` to every listener; how many took it without
-    failing."""
+    """Hand ``message`` to the listeners of every extension loaded into
+    ``model_registry``'s app; how many took it without failing."""
     taken = 0
-    for listener in list(_LISTENERS):
+    for listener in inbound_email_listeners(model_registry):
         try:
             await listener(model_registry, message)
         except Exception:  # one listener must not keep mail from the rest
