@@ -24,8 +24,6 @@ from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.email.InboundEndpoint import (
     MIN_SIGNING_SECRET_LENGTH,
     RECIPIENTS_HEADER,
-    SIGNATURE_HEADER,
-    TIMESTAMP_HEADER,
     InboundDelivered,
     receive_signed_message,
 )
@@ -34,6 +32,7 @@ from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import rate_limit
 from zephyrex.lib.SessionCookies import accept_cross_site_writes
+from zephyrex.lib.SignedRequests import SIGNATURE_HEADER, TIMESTAMP_HEADER
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,

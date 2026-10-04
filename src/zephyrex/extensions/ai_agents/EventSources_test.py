@@ -30,9 +30,6 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
 )
 from zephyrex.extensions.ai_agents.EventSources import (
     MAX_WEBHOOK_BODY_BYTES,
-    REPLAY_WINDOW_SECONDS,
-    SIGNATURE_HEADER,
-    TIMESTAMP_HEADER,
     webhook_signature,
 )
 from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
@@ -43,6 +40,11 @@ from zephyrex.extensions.ai_agents.PinnedInstances_test import (
 from zephyrex.extensions.email.InboundEmail import InboundEmail, receive_inbound_email
 from zephyrex.lib.Environment import env
 from zephyrex.lib.SecretEncryption import decrypt_secret
+from zephyrex.lib.SignedRequests import (
+    REPLAY_WINDOW_SECONDS,
+    SIGNATURE_HEADER,
+    TIMESTAMP_HEADER,
+)
 
 DOMAIN = "agents.example.test"
 INSTRUCTIONS = "Triage what arrives."

@@ -33,11 +33,7 @@ from zephyrex.extensions.email.InboundEndpoint import (
     MAX_ENVELOPE_RECIPIENTS,
     MIN_SIGNING_SECRET_LENGTH,
     RECIPIENTS_HEADER,
-    REPLAY_WINDOW_SECONDS,
-    SIGNATURE_HEADER,
     SIGNING_SECRET_SETTING,
-    TIMESTAMP_HEADER,
-    UNSIGNED_DETAIL,
     capped_body,
     envelope_recipients,
     inbound_signature,
@@ -45,6 +41,12 @@ from zephyrex.extensions.email.InboundEndpoint import (
 )
 from zephyrex.lib.Environment import env
 from zephyrex.lib.SecretEncryption import decrypt_secret
+from zephyrex.lib.SignedRequests import (
+    REPLAY_WINDOW_SECONDS,
+    SIGNATURE_HEADER,
+    TIMESTAMP_HEADER,
+    UNSIGNED_DETAIL,
+)
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceManager,
     ProviderInstanceSettingModel,
@@ -122,6 +124,18 @@ def test_verified_refuses_a_stale_a_future_and_a_malformed_timestamp():
     good = inbound_signature(SECRET, fresh, "", body)
     headers = {TIMESTAMP_HEADER.lower(): fresh, SIGNATURE_HEADER.lower(): good}
     assert verified(SECRET, headers, body, now) == good
+
+
+def test_verified_refuses_a_timestamp_of_digits_that_are_not_ascii():
+    """'²' is a digit to ``str.isdigit`` but not to ``int``: it was a 500
+    (a ValueError) where every unsigned delivery is a 401."""
+    body = b"m"
+    for moment in ("²", "1700000000²"):
+        headers = {
+            TIMESTAMP_HEADER.lower(): moment,
+            SIGNATURE_HEADER.lower(): inbound_signature(SECRET, moment, "", body),
+        }
+        assert verified(SECRET, headers, body, 1_700_000_000.0) is None
 
 
 def test_envelope_recipients_are_bare_addresses():

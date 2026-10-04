@@ -2,12 +2,13 @@
 """What fires event triggers from outside: a signed webhook call, and mail.
 
 A **webhook** trigger has a secret, made by the server, shown once and kept
-encrypted. A call to ``POST /v1/invocation-trigger/{id}/webhook`` carries
-``X-Zephyrex-Timestamp`` (Unix seconds) and ``X-Zephyrex-Signature``:
-``sha256=`` and the hex HMAC-SHA256, keyed by the secret, of the timestamp,
-a ``.`` and the raw body. A call is refused (401) unless the signature is
-right, the timestamp is within :data:`REPLAY_WINDOW_SECONDS` of now and the
-same signature has not been seen within that window. The body, a JSON
+encrypted. A call to ``POST /v1/invocation-trigger/{id}/webhook`` is a
+signed request (``zephyrex.lib.SignedRequests``): ``X-Zephyrex-Timestamp``
+(Unix seconds) and ``X-Zephyrex-Signature``: ``sha256=`` and the hex
+HMAC-SHA256, keyed by the secret, of the timestamp, a ``.`` and the raw
+body. A call is refused (401) unless the signature is right, the timestamp
+is within the replay window of now and the same signature has not been
+seen within that window. The body, a JSON
 object of at most :data:`MAX_WEBHOOK_BODY_BYTES`, is the turn's payload. No session or token
 the call carries is ever used: the turn is the agent's owner's.
 
@@ -21,10 +22,7 @@ Each turn's payload is the trigger's instructions, when it has any, then
 the event.
 """
 
-import hashlib
-import hmac
 import secrets
-import time
 from datetime import datetime, timezone
 from typing import Any, List, Mapping, Optional
 
@@ -42,13 +40,13 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
 from zephyrex.extensions.email.InboundEmail import InboundEmail
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.ReplayCache import get_replay_cache
 from zephyrex.lib.SecretEncryption import decrypt_secret
+from zephyrex.lib.SignedRequests import (
+    SignedRequests,
+    lower_case_headers,
+    unsigned,
+)
 
-TIMESTAMP_HEADER = "X-Zephyrex-Timestamp"
-SIGNATURE_HEADER = "X-Zephyrex-Signature"
-SIGNATURE_PREFIX = "sha256="
-REPLAY_WINDOW_SECONDS = 300
 MAX_WEBHOOK_BODY_BYTES = 64 * 1024
 WEBHOOK_SECRET_BYTES = 32
 # The most of an email's text a turn is handed.
@@ -59,37 +57,20 @@ def new_webhook_secret() -> str:
     return secrets.token_urlsafe(WEBHOOK_SECRET_BYTES)
 
 
+def _signed_content(timestamp: str, headers: Mapping[str, str], body: bytes) -> bytes:
+    """What a webhook call signs: the timestamp, a ``.`` and the body."""
+    return timestamp.encode() + b"." + body
+
+
+WEBHOOK_SIGNING = SignedRequests(
+    replay_scope="ai_agents:webhook", signed_content=_signed_content
+)
+
+
 def webhook_signature(secret: str, timestamp: str, body: bytes) -> str:
     """The ``X-Zephyrex-Signature`` value a call signed with ``secret``
     carries."""
-    signed = timestamp.encode() + b"." + body
-    digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-    return f"{SIGNATURE_PREFIX}{digest}"
-
-
-def _unsigned() -> HTTPException:
-    """The one answer to every call that is not properly signed, so the
-    endpoint says nothing about which triggers exist."""
-    return HTTPException(status_code=401, detail="Signature verification failed")
-
-
-def verified(
-    secret: str, headers: Mapping[str, str], body: bytes, now: float
-) -> Optional[str]:
-    """The call's signature when it is right and its timestamp fresh, else
-    None. Compared in constant time."""
-    timestamp = headers.get(TIMESTAMP_HEADER.lower(), "")
-    signature = headers.get(SIGNATURE_HEADER.lower(), "")
-    try:
-        moment = int(timestamp)
-    except ValueError:
-        return None
-    if abs(now - moment) > REPLAY_WINDOW_SECONDS:
-        return None
-    expected = webhook_signature(secret, timestamp, body)
-    if not hmac.compare_digest(expected.encode(), signature.encode()):
-        return None
-    return signature
+    return WEBHOOK_SIGNING.signature(secret, timestamp, {}, body)
 
 
 def _stored_trigger(model_registry: Any, trigger_id: str) -> Optional[Any]:
@@ -152,17 +133,13 @@ async def receive_webhook(
         or trigger.event_source != WEBHOOK
         or not trigger.webhook_secret
     ):
-        raise _unsigned()
-    headers = {name.lower(): value for name, value in request.headers.items()}
-    signature = verified(
-        decrypt_secret(trigger.webhook_secret), headers, body, time.time()
+        raise unsigned()
+    WEBHOOK_SIGNING.accept(
+        decrypt_secret(trigger.webhook_secret),
+        trigger.id,
+        lower_case_headers(request.headers.items()),
+        body,
     )
-    if signature is None:
-        raise _unsigned()
-    if not get_replay_cache().mark_if_unused(
-        f"ai_agents:webhook:{trigger.id}:{signature}", REPLAY_WINDOW_SECONDS
-    ):
-        raise _unsigned()
     if not trigger.enabled:
         raise HTTPException(status_code=409, detail="The trigger is disabled")
     try:

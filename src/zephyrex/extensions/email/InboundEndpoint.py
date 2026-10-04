@@ -16,21 +16,19 @@ the message, exactly as received, to
 A header value cannot hold a line feed, so no recipient list and body can be
 re-split to sign the same bytes: the recipients are signed with the message.
 
-A call is refused with 401, and one message whatever the reason, unless the
+The delivery is a signed request (``zephyrex.lib.SignedRequests``). A call
+is refused with 401, and one message whatever the reason, unless the
 instance is an enabled, operator-scoped (root or system) email provider
 instance with a signing secret of at least :data:`MIN_SIGNING_SECRET_LENGTH`
-characters, the signature is right, the timestamp is within
-:data:`REPLAY_WINDOW_SECONDS` of now, and the same signature has not been
-seen within that window. A body over :data:`MAX_INBOUND_EMAIL_BYTES` is
+characters, the signature is right, the timestamp is within the replay
+window of now, and the same signature has not been seen within that
+window. A body over :data:`MAX_INBOUND_EMAIL_BYTES` is
 refused with 413. No session or token the call carries is ever used.
 
 A message that passes is parsed and handed to the inbound hook point
 (:func:`receive_inbound_email`).
 """
 
-import hashlib
-import hmac
-import time
 from email.utils import parseaddr
 from typing import Any, List, Mapping, Optional
 
@@ -45,22 +43,21 @@ from zephyrex.extensions.email.InboundEmail import (
 )
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.ReplayCache import get_replay_cache
+from zephyrex.lib.SignedRequests import (
+    SignedRequests,
+    lower_case_headers,
+    unsigned,
+)
 from zephyrex.logic.BLL_Providers import OPERATOR_SCOPES, ProviderInstanceModel
 
-TIMESTAMP_HEADER = "X-Zephyrex-Timestamp"
 RECIPIENTS_HEADER = "X-Zephyrex-Recipients"
-SIGNATURE_HEADER = "X-Zephyrex-Signature"
-SIGNATURE_PREFIX = "sha256="
 SIGNING_SECRET_SETTING = "inbound_signing_secret"
-REPLAY_WINDOW_SECONDS = 300
 # A shorter secret is open to guessing from one captured delivery.
 MIN_SIGNING_SECRET_LENGTH = 32
 # More envelope recipients than any one delivery has.
 MAX_ENVELOPE_RECIPIENTS = 100
 # The longest address SMTP allows (RFC 5321 §4.5.3.1.3).
 MAX_ADDRESS_LENGTH = 254
-UNSIGNED_DETAIL = "Signature verification failed"
 
 
 class InboundDelivered(RouteModel):
@@ -70,30 +67,33 @@ class InboundDelivered(RouteModel):
     listeners: int = Field(description="How many inbound listeners took it")
 
 
+def _signed_content(timestamp: str, headers: Mapping[str, str], body: bytes) -> bytes:
+    """What a delivery signs: the timestamp, the recipients header as sent
+    (empty when absent) and the body, each after a line feed but the
+    first."""
+    recipients = headers.get(RECIPIENTS_HEADER.lower(), "")
+    return b"\n".join((timestamp.encode(), recipients.encode(), body))
+
+
+INBOUND_SIGNING = SignedRequests(
+    replay_scope="email:inbound", signed_content=_signed_content
+)
+
+
 def inbound_signature(secret: str, timestamp: str, recipients: str, body: bytes) -> str:
     """The ``X-Zephyrex-Signature`` value of a delivery signed with
     ``secret``."""
-    signed = b"\n".join((timestamp.encode(), recipients.encode(), body))
-    digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-    return f"{SIGNATURE_PREFIX}{digest}"
+    return INBOUND_SIGNING.signature(
+        secret, timestamp, {RECIPIENTS_HEADER.lower(): recipients}, body
+    )
 
 
 def verified(
     secret: str, headers: Mapping[str, str], body: bytes, now: float
 ) -> Optional[str]:
     """The delivery's signature when it is right and its timestamp fresh,
-    else None. ``headers`` are keyed lower-case. Compared in constant
-    time."""
-    timestamp = headers.get(TIMESTAMP_HEADER.lower(), "")
-    if not timestamp.isdigit() or abs(now - int(timestamp)) > REPLAY_WINDOW_SECONDS:
-        return None
-    signature = headers.get(SIGNATURE_HEADER.lower(), "")
-    expected = inbound_signature(
-        secret, timestamp, headers.get(RECIPIENTS_HEADER.lower(), ""), body
-    )
-    if not hmac.compare_digest(expected.encode(), signature.encode()):
-        return None
-    return signature
+    else None. ``headers`` are keyed lower-case."""
+    return INBOUND_SIGNING.verified(secret, headers, body, now)
 
 
 def envelope_recipients(header: str) -> List[str]:
@@ -115,12 +115,6 @@ def envelope_recipients(header: str) -> List[str]:
         ):
             raise ValueError("an envelope recipient is a bare address")
     return addresses
-
-
-def unsigned() -> HTTPException:
-    """The one answer to every delivery that is not properly signed, so the
-    endpoint says nothing about which instances exist or accept mail."""
-    return HTTPException(status_code=401, detail=UNSIGNED_DETAIL)
 
 
 def too_large() -> HTTPException:
@@ -204,12 +198,8 @@ async def receive_signed_message(
     secret = signing_secret(instance) if instance is not None else None
     if instance is None or secret is None:
         raise unsigned()
-    headers = {name.lower(): value for name, value in request.headers.items()}
-    signature = verified(secret, headers, body, time.time())
-    if signature is None or not get_replay_cache().mark_if_unused(
-        f"email:inbound:{instance.id}:{signature}", REPLAY_WINDOW_SECONDS
-    ):
-        raise unsigned()
+    headers = lower_case_headers(request.headers.items())
+    INBOUND_SIGNING.accept(secret, instance.id, headers, body)
     if not body:
         raise HTTPException(status_code=400, detail="The body is the raw message")
     try:
