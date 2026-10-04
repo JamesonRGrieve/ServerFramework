@@ -621,3 +621,26 @@ class TestSendViaProviderFailureClass:
 
         with pytest.raises(AuthExternalError):
             await _FailingEmailProvider.send_via_provider(None, _message())
+
+
+def test_every_email_fixture_gets_its_matrix() -> None:
+    """Email's federation fixtures live in its test-only module, and the
+    generator's default discovery emits a matrix class for each. (As an
+    ``EXT_EMail`` classmethod they generated none: the generator walked
+    ``ExtensionRegistry.extensions`` on the class, an attribute only registry
+    instances have.)"""
+    from zephyrex.extensions.Federation_Matrix_Generator import generate_matrix_tests
+    from zephyrex.extensions.email.federation_fixtures_test import (
+        MAIL_SAMPLE_ID,
+        federation_matrix_fixtures,
+    )
+
+    fixtures = federation_matrix_fixtures()
+    assert [fixture.name for fixture in fixtures] == ["EXT_EMail.Mail"]
+    assert "Test_Federation_EXT_EMail_Mail_Matrix" in generate_matrix_tests()
+    # The in-process upstream serves its seed through the real transport.
+    (mail,) = fixtures
+    served = mail.transport.send_sync(
+        operation="get_mail", path_args={"id": MAIL_SAMPLE_ID}
+    )
+    assert served["id"] == MAIL_SAMPLE_ID

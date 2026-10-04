@@ -1466,7 +1466,7 @@ class EXT_MyExtension(AbstractStaticExtension):
 
 #### 5c. Federation matrix tests
 
-Every extension that federates an external upstream gets 4 quadrants × 5 CRUD = 20 cells of homologation coverage automatically once it ships a test-only `federation_fixtures_test.py` beside its code (or relies on the OpenAPI/SDL shape from §5a/5b). Its `federation_matrix_fixtures()` returns one or more `FederationFixture` instances; the framework's programmatic test generator imports the module and emits a `Test_Federation_<extension>_<type>_Matrix` class per fixture into `extensions/Federation_Matrix_test.py`'s globals, and pytest collects them on the next run. Canned seed data is test data: it never goes on the extension class.
+Every extension that federates an external upstream gets 4 quadrants × 5 CRUD = 20 cells of homologation coverage automatically once it ships a test-only `federation_fixtures_test.py` beside its code. Its `federation_matrix_fixtures()` returns one or more `FederationFixture` instances; the framework's programmatic test generator imports the module and emits a `Test_Federation_<extension>_<type>_Matrix` class per fixture into `extensions/Federation_Matrix_test.py`'s globals, and pytest collects them on the next run. Canned seed data is test data: it never goes on the extension class.
 
 ```python
 # extensions/my_extension/federation_fixtures_test.py

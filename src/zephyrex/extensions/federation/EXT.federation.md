@@ -135,17 +135,13 @@ Item 16's acceptance criteria say "regardless of upstream wire format, both inbo
 
 `extensions/AbstractFederationMatrixTest.py` is the base class. Subclasses provide a `FederationFixture` declaring the upstream kind, a built transport, sample IDs, and supported operations. The base class then exhaustively walks the 20 cells, asserting each succeeds and that REST/GQL surface payloads agree on shared fields.
 
-`extensions/Federation_Matrix_Generator.py` provides programmatic generation. A bundled extension ships explicit fixtures in a test-only `federation_fixtures_test.py` module whose `federation_matrix_fixtures()` returns them (canned seed data stays out of production code); the generator imports every such module. An extension can also advertise its federation surface in three ways:
-
-1. `federation_matrix_fixtures: classmethod -> Iterable[FederationFixture]` — explicit.
-2. `openapi_spec_provider: classmethod -> dict` — the generator synthesizes a minimal-viable fixture per `components.schemas` entry.
-3. `graphql_sdl_provider: classmethod -> str` — same, per object type in the SDL.
+`extensions/Federation_Matrix_Generator.py` provides programmatic generation. A bundled extension ships explicit fixtures in a test-only `federation_fixtures_test.py` module whose `federation_matrix_fixtures()` returns them (canned seed data stays out of production code); the generator imports every such module.
 
 `extensions/Federation_Matrix_test.py` calls `generate_matrix_tests(target_namespace=globals())` at import time, which mutates the test module's namespace to inject one `Test_Federation_<extension>_<type>_Matrix` class per discovered fixture. Pytest collects them automatically; adding a new external extension automatically buys 20 cells of homologation coverage.
 
 In-process upstreams are the default for CI determinism. Live upstreams activate when the fixture's `requires_credentials=True` and `credentials_present()` returns True; otherwise pytest auto-xfails the suite per `EXT.Test.External.md`.
 
-Payment ships `payment/federation_fixtures_test.py`: fixtures for every resource of the Stripe, Square, PayPal, Moneris and Helcim REST APIs, bound to in-process REST upstreams. `EXT_EMail` (SendGrid) declares a `federation_matrix_fixtures` classmethod.
+Payment ships `payment/federation_fixtures_test.py`: fixtures for every resource of the Stripe, Square, PayPal, Moneris and Helcim REST APIs, bound to in-process REST upstreams. Email ships `email/federation_fixtures_test.py`: SendGrid's Mail resource, bound to an in-process REST upstream.
 
 ## Module map
 

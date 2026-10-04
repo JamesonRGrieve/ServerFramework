@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Programmatic federation-matrix test generator (Item 16).
 
-For every external schema extension the framework knows about, this module
+For every federation fixture a bundled extension ships, this module
 generates a concrete :class:`AbstractFederationMatrixTest` subclass at
 import time. Pytest collects the generated classes alongside hand-written
 tests, so adding a new external upstream automatically buys you 4 quadrants
@@ -11,24 +12,16 @@ How discovery works:
 * Every bundled extension that ships a test-only
   ``federation_fixtures_test`` module contributes its
   ``federation_matrix_fixtures()`` (canned seed data stays out of the
-  extension's production code). Payment's REST providers do.
-* Every extension whose ``AbstractStaticExtension`` subclass declares one
-  or more of the well-known schema-descriptor classvars is candidate:
-    - ``federation_matrix_fixtures: Iterable[FederationFixture]`` —
-      explicit fixtures (one per upstream type). Preferred when the
-      extension already has well-defined seeded data.
-    - ``openapi_spec_provider: Callable[[], dict]`` — returns the OpenAPI
-      document; the generator synthesizes a minimum viable fixture.
-    - ``graphql_sdl_provider: Callable[[], str]`` — returns the SDL; ditto.
-* The discovered fixtures are turned into pytest classes named
+  extension's production code). Payment's and email's REST providers do.
+* The fixtures are turned into pytest classes named
   ``Test_Federation_<extension>_<type>_Matrix`` and inserted into the
   caller's module ``__dict__``.
 
 Two execution modes:
 
-* In-process upstreams (default). The generator can build a tiny ASGI app
-  from the supplied SDL/OpenAPI to use as a deterministic upstream. This
-  is the canonical CI path.
+* In-process upstreams (default). Each fixture module builds a tiny ASGI
+  app serving its seed data as a deterministic upstream. This is the
+  canonical CI path.
 * Live upstreams. If the fixture's ``requires_credentials`` is True and
   ``credentials_present()`` returns True, the matrix runs against the real
   upstream URL; otherwise pytest auto-xfails the suite (per
@@ -39,13 +32,12 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from zephyrex.extensions.AbstractFederationMatrixTest import (
     AbstractFederationMatrixTest,
     FederationFixture,
 )
-from zephyrex.lib.Logging import logger
 
 # The test-only module in which a bundled extension ships its fixtures.
 TEST_ONLY_FIXTURES_MODULE = "federation_fixtures_test"
@@ -53,61 +45,6 @@ TEST_ONLY_FIXTURES_MODULE = "federation_fixtures_test"
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
-
-
-def discover_extension_fixtures() -> List[FederationFixture]:
-    """Walk the loaded extensions and gather every advertised fixture.
-
-    Bundled extensions' test-only fixture modules come first
-    (:func:`bundled_fixture_modules`). Extensions also advertise their
-    federation surface in any of three ways:
-
-    1. ``federation_matrix_fixtures`` — explicit list of
-       :class:`FederationFixture` instances. Preferred.
-    2. ``openapi_spec_provider`` — callable returning an OpenAPI dict.
-       The generator synthesizes a minimum-viable fixture (one type, no
-       create/update payloads — only ``get`` and ``list`` are exercised).
-    3. ``graphql_sdl_provider`` — callable returning a GraphQL SDL string.
-       Same minimum-viable shape.
-
-    Returns the aggregated fixture list.
-    """
-
-    try:
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            ExtensionRegistry,
-        )
-    except ImportError:
-        return []
-
-    fixtures: List[FederationFixture] = bundled_fixture_modules()
-    extensions = getattr(ExtensionRegistry, "extensions", None) or []
-    for ext in extensions:
-        explicit = getattr(ext, "federation_matrix_fixtures", None)
-        if explicit:
-            try:
-                fixtures.extend(list(explicit() if callable(explicit) else explicit))
-            except Exception as exc:
-                logger.debug(
-                    "federation_matrix_fixtures for %s raised: %s", ext.__name__, exc
-                )
-        spec_provider = getattr(ext, "openapi_spec_provider", None)
-        if callable(spec_provider):
-            try:
-                fixtures.extend(_fixtures_from_openapi(spec_provider, ext))
-            except Exception as exc:
-                logger.debug(
-                    "openapi_spec_provider for %s raised: %s", ext.__name__, exc
-                )
-        sdl_provider = getattr(ext, "graphql_sdl_provider", None)
-        if callable(sdl_provider):
-            try:
-                fixtures.extend(_fixtures_from_sdl(sdl_provider, ext))
-            except Exception as exc:
-                logger.debug(
-                    "graphql_sdl_provider for %s raised: %s", ext.__name__, exc
-                )
-    return fixtures
 
 
 def bundled_fixture_modules() -> List[FederationFixture]:
@@ -135,90 +72,6 @@ def bundled_fixture_modules() -> List[FederationFixture]:
     return fixtures
 
 
-def _fixtures_from_openapi(
-    spec_provider: Callable[[], Any], ext: Any
-) -> List[FederationFixture]:
-    """Synthesize matrix fixtures from an extension's OpenAPI document."""
-
-    spec = spec_provider()
-    if not isinstance(spec, Mapping):
-        return []
-    transport_factory = getattr(ext, "federation_rest_transport_factory", None)
-    if not callable(transport_factory):
-        # No transport — we can't run the matrix. Skip cleanly.
-        return []
-    transport = transport_factory()
-    schemas = (spec.get("components") or {}).get("schemas") or {}
-    out: List[FederationFixture] = []
-    for type_name in schemas.keys():
-        out.append(
-            FederationFixture(
-                name=f"{ext.__name__}.{type_name}",
-                upstream_kind="rest",
-                transport=transport,
-                sample_id=getattr(ext, "federation_sample_id", "sample-id"),
-                type_name=type_name,
-                sdl_or_spec=spec,
-                operations_supported=list(
-                    getattr(ext, "federation_supported_ops", ["get", "list"])
-                ),
-                requires_credentials=bool(
-                    getattr(ext, "federation_requires_credentials", False)
-                ),
-                credentials_present=getattr(
-                    ext, "federation_credentials_present", lambda: True
-                ),
-            )
-        )
-    return out
-
-
-def _fixtures_from_sdl(
-    sdl_provider: Callable[[], str], ext: Any
-) -> List[FederationFixture]:
-    """Synthesize matrix fixtures from an extension's GraphQL SDL."""
-
-    from graphql import parse
-
-    sdl = sdl_provider()
-    if not sdl:
-        return []
-    transport_factory = getattr(ext, "federation_gql_transport_factory", None)
-    if not callable(transport_factory):
-        return []
-    transport = transport_factory()
-    document = parse(sdl)
-    type_names: List[str] = []
-    for d in document.definitions:
-        if d.kind != "object_type_definition":
-            continue
-        if d.name.value in {"Query", "Mutation", "Subscription"}:  # type: ignore[attr-defined]
-            continue
-        type_names.append(d.name.value)  # type: ignore[attr-defined]
-    out: List[FederationFixture] = []
-    for type_name in type_names:
-        out.append(
-            FederationFixture(
-                name=f"{ext.__name__}.{type_name}",
-                upstream_kind="gql",
-                transport=transport,
-                sample_id=getattr(ext, "federation_sample_id", "sample-id"),
-                type_name=type_name,
-                sdl_or_spec=sdl,
-                operations_supported=list(
-                    getattr(ext, "federation_supported_ops", ["get", "list"])
-                ),
-                requires_credentials=bool(
-                    getattr(ext, "federation_requires_credentials", False)
-                ),
-                credentials_present=getattr(
-                    ext, "federation_credentials_present", lambda: True
-                ),
-            )
-        )
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Test class generation
 # ---------------------------------------------------------------------------
@@ -231,7 +84,7 @@ def generate_matrix_tests(
 ) -> Dict[str, type]:
     """Generate one :class:`AbstractFederationMatrixTest` subclass per fixture.
 
-    ``fixtures`` defaults to the result of :func:`discover_extension_fixtures`,
+    ``fixtures`` defaults to the result of :func:`bundled_fixture_modules`,
     so ``generate_matrix_tests()`` with no args is the standard call site.
     ``target_namespace`` is the module ``__dict__`` to inject the generated
     classes into; in pytest this is typically the test file's globals so
@@ -241,7 +94,7 @@ def generate_matrix_tests(
     was generated rather than rely on namespace injection.
     """
 
-    fixtures = list(fixtures) if fixtures is not None else discover_extension_fixtures()
+    fixtures = list(fixtures) if fixtures is not None else bundled_fixture_modules()
     out: Dict[str, type] = {}
     for fix in fixtures:
         cls_name = (
@@ -265,6 +118,5 @@ def generate_matrix_tests(
 
 __all__ = [
     "bundled_fixture_modules",
-    "discover_extension_fixtures",
     "generate_matrix_tests",
 ]
