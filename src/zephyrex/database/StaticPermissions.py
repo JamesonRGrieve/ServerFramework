@@ -1254,7 +1254,7 @@ def admin_role_ids(declarative_base: Any, unique_suffix: str = "") -> CTE:
     the team-record filter and ``TeamAuthority`` both ask it.
 
     A role's name and its depth in the tree rank nothing. Names are not
-    unique, and any member may create a role in their team, so ranking by
+    unique, and every team's admins create roles of their own, so ranking by
     either let a team's ``mod`` (extending ``user``, at the admin's depth)
     administer the team, and a role named ``user`` one level down lift every
     plain member of every team.

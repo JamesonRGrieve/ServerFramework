@@ -123,6 +123,14 @@ class TeamAuthority:
                 status_code=403, detail="Cannot grant a role above your own"
             )
 
+    def assert_may_create_role(self, parent_id: Optional[str]) -> None:
+        """May add a role extending ``parent_id`` (None: no parent) to the
+        team: only a team admin, and only under a parent they may grant."""
+        if parent_id is None:
+            self._own_rank()
+        else:
+            self.assert_may_grant(parent_id)
+
     def assert_may_act_on(self, member_role_id: str) -> None:
         """May change or remove a member who holds ``member_role_id``."""
         ceiling = self._own_rank()
@@ -136,11 +144,21 @@ def live_membership_role(
     user_id: str, team_id: str, model_registry: Any
 ) -> Optional[str]:
     """The role the user holds in the team through an enabled, unrevoked,
-    unexpired membership; None when there is no such membership."""
+    unexpired membership of a team that is not deleted; None when there is
+    no such membership."""
     from datetime import datetime, timezone
 
+    from zephyrex.logic.BLL_Auth.team import TeamModel
     from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
 
+    team = TeamModel.DB(model_registry.DB.manager.Base).get(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        id=team_id,
+        allow_nonexistent=True,
+    )
+    if team is None or team["deleted_at"] is not None:
+        return None
     UserTeamDB = UserTeamModel.DB(model_registry.DB.manager.Base)
     for membership in UserTeamDB.list(
         requester_id=env("ROOT_ID"),

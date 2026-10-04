@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import base64
 import json
 import uuid
@@ -2462,6 +2463,65 @@ class TestRoleEndpoints(AbstractEPTest):
         self._assert_response_status(
             response, 403, "POST role with insufficient permissions", endpoint, payload
         )
+
+    @staticmethod
+    def _role_exists(server: Any, name: str) -> bool:
+        model_registry = server.app.state.model_registry
+        return bool(
+            RoleModel.DB(model_registry.DB.manager.Base).list(
+                requester_id=env("ROOT_ID"), model_registry=model_registry, name=name
+            )
+        )
+
+    def test_POST_403_a_plain_member_cannot_create_a_role(
+        self, server: Any, user_b: Any, team_b: Any
+    ) -> None:
+        """Only a team admin creates the team's roles: user_b holds team_b's
+        plain user role. A single create and a batch are both refused, and
+        neither leaves a role behind."""
+        endpoint = f"/v1/team/{team_b.id}/role"
+        single = self.create_payload(parent_ids={"team_id": team_b.id})
+        batch = [
+            self.create_payload(parent_ids={"team_id": team_b.id}) for _ in range(2)
+        ]
+        for payload in ({"role": single}, {"roles": batch}):
+            response = server.post(
+                endpoint,
+                json=payload,
+                headers=self._get_appropriate_headers(user_b.jwt),
+            )
+            self._assert_response_status(
+                response, 403, "POST role as a plain member", endpoint, payload
+            )
+        for role in [single, *batch]:
+            assert not self._role_exists(server, role["name"])
+
+    def test_GQL_only_a_team_admin_creates_a_role(
+        self, server: Any, admin_b: Any, user_b: Any, team_b: Any
+    ) -> None:
+        """The GraphQL create goes through the same rule as REST."""
+
+        def create(jwt: str, name: str) -> Dict[str, Any]:
+            mutation = (
+                'mutation { createRole(input: {name: "%s", teamId: "%s"}) { id } }'
+            )
+            response = server.post(
+                "/graphql",
+                json={"query": mutation % (name, team_b.id)},
+                headers=self._get_appropriate_headers(jwt),
+            )
+            assert response.status_code == 200, response.text
+            body: Dict[str, Any] = response.json()
+            return body
+
+        refused_name = f"gql_refused_{uuid.uuid4().hex[:8]}"
+        assert "errors" in create(user_b.jwt, refused_name)
+        assert not self._role_exists(server, refused_name)
+
+        created_name = f"gql_created_{uuid.uuid4().hex[:8]}"
+        created = create(admin_b.jwt, created_name)
+        assert "errors" not in created, created
+        assert self._role_exists(server, created_name)
 
     @pytest.mark.parametrize(
         "nesting_level,method,status_code,description",

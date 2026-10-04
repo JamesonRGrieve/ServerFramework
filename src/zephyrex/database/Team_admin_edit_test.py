@@ -15,6 +15,7 @@ the admin's rank (or one named ``admin`` further down, and take every real
 admin's edit rights away)."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import pytest
@@ -26,7 +27,13 @@ from zephyrex.database.StaticPermissions import (
     check_permission,
 )
 from zephyrex.lib.Environment import env
-from zephyrex.logic.BLL_Auth import RoleManager, RoleModel, UserTeamManager
+from zephyrex.logic.BLL_Auth import (
+    RoleManager,
+    RoleModel,
+    TeamModel,
+    UserTeamManager,
+    UserTeamModel,
+)
 from zephyrex.logic.BLL_Providers import RotationManager, RotationModel
 from zephyrex.testing.factories import add_user_to_team, create_team, create_user
 
@@ -154,7 +161,10 @@ class TestTeamRecordAdmins:
 
     def test_a_custom_role_extending_admin_administers(self, team):
         lead = team.role(team.owner.id, env("ADMIN_ROLE_ID"), _name("lead"))
-        deputy = team.role(team.owner.id, lead.id, _name("deputy"))
+        # ``lead`` ranks above the owner (an admin), so only a superadmin may
+        # create a role under it.
+        superadmin = team.member(env("SUPERADMIN_ROLE_ID"))
+        deputy = team.role(superadmin.id, lead.id, _name("deputy"))
         for role in (lead, deputy):
             holder = team.member(role.id)
             assert team.edits(holder.id)
@@ -163,13 +173,15 @@ class TestTeamRecordAdmins:
     def test_a_role_named_user_one_level_down_lifts_nobody(
         self, server, model_registry, team
     ):
-        """Names are not unique and rank nothing. A plain member of another
-        team names a role there ``user``, extending ``user``: ranked by name,
-        that put the built-in ``user`` role at the admin's depth, and every
-        plain member of every team administered its records."""
+        """Names are not unique and rank nothing. Another team names a role
+        there ``user``, extending ``user``: ranked by name, that put the
+        built-in ``user`` role at the admin's depth, and every plain member
+        of every team administered its records."""
         elsewhere = _Team(server, model_registry)
         stranger = elsewhere.member(env("USER_ROLE_ID"))
-        elsewhere.role(stranger.id, env("USER_ROLE_ID"), "user")
+        # A plain member could name it once; now only the team's admin may
+        # create roles (TestCreatingARole), and the name still ranks nothing.
+        elsewhere.role(elsewhere.owner.id, env("USER_ROLE_ID"), "user")
 
         assert not team.edits(team.member(env("USER_ROLE_ID")).id)
         assert not elsewhere.edits(stranger.id)
@@ -207,11 +219,13 @@ class TestReparentingARole:
     is a grant of its new rank to all of them: TeamAuthority's to allow."""
 
     def test_a_plain_member_cannot_lift_a_role_they_created(self, team):
-        """A member creates a role at their own rank, and an admin grants it
-        to them (the admin may: it ranks no higher than theirs). As its
-        creator the member could then make it extend admin, and administer
-        the team; moving it is a grant they cannot make."""
-        member = team.member(env("USER_ROLE_ID"))
+        """A member creates a role at a plain member's rank, and is later
+        moved onto it (the owner may: it ranks no higher than theirs). As
+        its creator the member could then make it extend admin, and
+        administer the team again; moving it is a grant they cannot make."""
+        # Only an admin may create a role (TestCreatingARole), so the member
+        # creates it while an admin and is demoted onto it below.
+        member = team.member(env("ADMIN_ROLE_ID"))
         helper = team.role(member.id, env("USER_ROLE_ID"), _name("helper"))
         team.memberships_as(team.owner.id).update(
             team.memberships[member.id], role_id=helper.id
@@ -264,3 +278,137 @@ class TestReparentingARole:
         _refused({422}, roles.update, lead.id, parent_id=lead.id)
         _refused({422}, roles.update, lead.id, parent_id=below.id)
         assert team.parent_of(lead.id) == env("USER_ROLE_ID")
+
+
+class TestCreatingARole:
+    """A team's roles are its admins' to create, and only under a parent the
+    creator may grant: a role extending a parent hands that rank to whoever
+    later holds it. The hole: any membership row in the team, enabled or
+    not, let its holder create roles there, under any parent."""
+
+    @staticmethod
+    def _exists(team: _Team, name: str) -> bool:
+        return bool(
+            RoleModel.DB(team.model_registry.DB.manager.Base).list(
+                requester_id=env("ROOT_ID"),
+                model_registry=team.model_registry,
+                name=name,
+                team_id=team.team.id,
+            )
+        )
+
+    def _refused_create(
+        self, team: _Team, requester_id: str, parent_id: Optional[str]
+    ) -> None:
+        name = _name("refused")
+        _refused({403}, team.role, requester_id, parent_id, name)
+        assert not self._exists(team, name)
+
+    def _created_under(
+        self, team: _Team, requester_id: str, parent_id: Optional[str]
+    ) -> None:
+        name = _name("created")
+        role = team.role(requester_id, parent_id, name)
+        assert role.parent_id == parent_id
+        assert self._exists(team, name)
+
+    def _alter_membership(self, team: _Team, user_id: str, **change: Any) -> None:
+        UserTeamModel.DB(team.model_registry.DB.manager.Base).update(
+            requester_id=env("ROOT_ID"),
+            model_registry=team.model_registry,
+            id=team.memberships[user_id],
+            new_properties=change,
+        )
+
+    def test_a_plain_member_cannot_create_a_role(self, team):
+        member = team.member(env("USER_ROLE_ID"))
+        for parent_id in (env("USER_ROLE_ID"), None):
+            self._refused_create(team, member.id, parent_id)
+
+    def test_a_plain_member_cannot_batch_create_roles(self, team):
+        member = team.member(env("USER_ROLE_ID"))
+        names = [_name("batch"), _name("batch")]
+        _refused(
+            {403},
+            team.roles(member.id).create,
+            entities=[
+                {
+                    "name": name,
+                    "parent_id": env("USER_ROLE_ID"),
+                    "team_id": team.team.id,
+                }
+                for name in names
+            ],
+        )
+        assert not any(self._exists(team, name) for name in names)
+
+    def test_a_disabled_admin_membership_cannot_create_a_role(self, team):
+        admin = team.member(env("ADMIN_ROLE_ID"))
+        self._alter_membership(team, admin.id, enabled=False)
+        self._refused_create(team, admin.id, env("USER_ROLE_ID"))
+
+    def test_an_expired_admin_membership_cannot_create_a_role(self, team):
+        admin = team.member(env("ADMIN_ROLE_ID"))
+        self._alter_membership(
+            team, admin.id, expires_at=datetime.now(timezone.utc) - timedelta(days=1)
+        )
+        self._refused_create(team, admin.id, env("USER_ROLE_ID"))
+
+    def test_the_admin_of_a_deleted_team_cannot_create_a_role(self, team):
+        TeamModel.DB(team.model_registry.DB.manager.Base).delete(
+            requester_id=env("ROOT_ID"),
+            model_registry=team.model_registry,
+            id=team.team.id,
+        )
+        self._refused_create(team, team.owner.id, env("USER_ROLE_ID"))
+
+    def test_an_admin_creates_a_role_under_user_admin_or_none(self, team):
+        for parent_id in (env("USER_ROLE_ID"), env("ADMIN_ROLE_ID"), None):
+            self._created_under(team, team.owner.id, parent_id)
+
+    def test_an_admin_cannot_create_a_role_above_their_own(self, team):
+        """``superadmin``, and a team role extending admin, both rank above
+        an admin: a role under either would outrank its creator."""
+        superadmin = team.member(env("SUPERADMIN_ROLE_ID"))
+        lead = team.role(superadmin.id, env("ADMIN_ROLE_ID"), _name("lead"))
+        for parent_id in (env("SUPERADMIN_ROLE_ID"), lead.id):
+            self._refused_create(team, team.owner.id, parent_id)
+
+    def test_an_admin_cannot_batch_create_a_role_above_their_own(self, team):
+        name = _name("batch")
+        _refused(
+            {403},
+            team.roles(team.owner.id).create,
+            entities=[
+                {
+                    "name": name,
+                    "parent_id": env("SUPERADMIN_ROLE_ID"),
+                    "team_id": team.team.id,
+                }
+            ],
+        )
+        assert not self._exists(team, name)
+
+    def test_a_superadmin_creates_a_role_under_admin_or_superadmin(self, team):
+        superadmin = team.member(env("SUPERADMIN_ROLE_ID"))
+        for parent_id in (env("ADMIN_ROLE_ID"), env("SUPERADMIN_ROLE_ID")):
+            self._created_under(team, superadmin.id, parent_id)
+
+    def test_root_and_system_create_any_role_without_membership(self, team):
+        for requester_id in (env("ROOT_ID"), env("SYSTEM_ID")):
+            for parent_id in (env("SUPERADMIN_ROLE_ID"), None):
+                self._created_under(team, requester_id, parent_id)
+
+
+class TestRootAdministersTeamRoles:
+    """Root administers every team without belonging to it. The hole:
+    ``RoleManager.get`` asked for the requester's membership in the role's
+    team and refused root (403), so root could neither read nor move a
+    team's role through the manager."""
+
+    def test_root_reads_and_moves_a_team_role(self, team):
+        mod = team.role(team.owner.id, env("USER_ROLE_ID"), _name("mod"))
+        roles = team.roles(env("ROOT_ID"))
+        assert roles.get(id=mod.id).id == mod.id
+        roles.update(mod.id, parent_id=env("SUPERADMIN_ROLE_ID"))
+        assert team.parent_of(mod.id) == env("SUPERADMIN_ROLE_ID")

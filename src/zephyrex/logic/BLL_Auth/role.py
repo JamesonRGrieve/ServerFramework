@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import can_manage_permissions
+from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
@@ -105,77 +105,6 @@ class RoleModel(
         friendly_name: Optional[StringSearchModel] | None = None
         mfa_count: Optional[NumericalSearchModel] | None = None
 
-    create_permission_reference: ClassVar[str] = "resource"
-
-    @classmethod
-    def user_can_create(cls, user_id, db, **kwargs):
-        """
-        Check if a user can create a permission record.
-        Users need SHARE permission on the resource they're creating a permission for.
-        """
-        from zephyrex.database.StaticPermissions import (
-            can_manage_permissions,
-            is_root_id,
-            is_system_user_id,
-        )
-
-        # Root and system users can create permissions
-        if is_root_id(user_id) or is_system_user_id(user_id):
-            return True
-
-        # Check if user can manage permissions for this resource
-        resource_type = kwargs.get("resource_type")
-        resource_id = kwargs.get("resource_id")
-
-        if not resource_type or not resource_id:
-            return False
-
-        # Check if the user has permission to manage permissions on this resource
-        can_manage, _ = can_manage_permissions(user_id, resource_type, resource_id, db)
-        return can_manage
-
-    @classmethod
-    def user_has_admin_access(
-        cls, user_id, id, db, db_manager=None, model_registry=None
-    ):
-        """
-        Overrides the default admin access check for Permission records.
-        Allow users with explicit permission to edit this record or with SHARE access to the target resource.
-        """
-        # Get Base from either model_registry or db_manager
-        if model_registry:
-            Base = model_registry.DB.manager.Base
-        elif db_manager:
-            Base = db_manager.Base
-        else:
-            raise ValueError("Either model_registry or db_manager is required")
-        from zephyrex.database.StaticPermissions import (
-            PermissionResult,
-            PermissionType,
-            check_permission,
-            is_root_id,
-            is_system_user_id,
-        )
-
-        # Root and system users always have admin access
-        if is_root_id(user_id) or is_system_user_id(user_id):
-            return True
-
-        # First check standard permission on this record
-        result, _ = check_permission(user_id, cls.DB, id, db, PermissionType.EDIT)
-        if result == PermissionResult.GRANTED:
-            return True
-
-        # If that fails, check if the user can manage permissions for the target resource
-        permission = db.query(cls.DB(Base)).filter(cls.DB(Base).id == id).first()
-        if permission:
-            can_manage, _ = can_manage_permissions(
-                user_id, permission.resource_type, permission.resource_id, db
-            )
-            return can_manage
-
-        return False
-
 
 class RoleManager(AbstractBLLManager, RouterMixin):
     _model = RoleModel
@@ -250,8 +179,8 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         """A role's parent sets what everyone holding it may do, so moving
         it is a grant of its new rank to all of them: only someone who may
         grant that rank in the role's team may (TeamAuthority). Without
-        this, whoever created a role (any member may) could make it extend
-        admin once it was granted to them."""
+        this, a role's creator could make it extend admin once it was
+        granted to them, though they no longer administer the team."""
         if "parent_id" in kwargs:
             role = self.get(id=id)
             if kwargs["parent_id"] != role.parent_id:
@@ -286,7 +215,13 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         )
         team_id = role.get("team_id") if isinstance(role, dict) else role.team_id
 
-        if created_by_user_id != self.requester.id:
+        # Root and system administer every team without belonging to it.
+        requester_id = self.requester.id
+        if (
+            created_by_user_id != requester_id
+            and not is_root_id(requester_id)
+            and not is_system_id(requester_id)
+        ):
             # Business logic validation: if accessing a team-specific role, validate team membership
             if team_id:
                 self.validate_user_team(self.requester.id, team_id)
@@ -360,10 +295,12 @@ class RoleManager(AbstractBLLManager, RouterMixin):
             except HTTPException:
                 raise HTTPException(status_code=404, detail="Parent role not found")
 
-        # Finally, validate user-team relationship (business logic, not permissions)
-        # Only validate if team_id is provided and not null
-        if entity.team_id:
-            self.validate_user_team(self.requester.id, entity.team_id)
+        # Finally, a team's roles are its admins' to shape: a role extending
+        # a parent grants that parent's rank to whoever later holds it, so
+        # the creator must be a team admin who may grant that parent.
+        TeamAuthority(
+            self.requester.id, entity.team_id, self.model_registry
+        ).assert_may_create_role(entity.parent_id)
 
     def search_validation(self, params):
         """Validate search parameters for business logic rules"""
