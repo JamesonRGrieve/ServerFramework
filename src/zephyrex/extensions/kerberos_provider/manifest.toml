@@ -5,15 +5,11 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "kerberos_provider"
-version = "1.0.0"
-description = "Run this server as a Kerberos KDC / SPNEGO application service."
+version = "2.0.0"
+description = "Parked, not built: would run this server as a Kerberos KDC that issues tickets for its users and services. Provides nothing yet; sign-in via keytab is kerberos_consumer."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_KerberosProvider"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
-
-[[extension_dependencies]]
-name = "auth_session"
-optional = false
