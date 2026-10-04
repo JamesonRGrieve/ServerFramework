@@ -1046,11 +1046,46 @@ class ProviderInstanceModel(
         from zephyrex.lib.SecretEncryption import decrypt_secret
 
         for row in rows:
-            if row.value is not None:
+            if row.value is not None and self._written_by_a_configurer(
+                registry, row.created_by_user_id
+            ):
                 return (
                     decrypt_secret(str(row.value)) if row.write_only else str(row.value)
                 )
         return default
+
+    def _written_by_a_configurer(self, registry: Any, author_id: str | None) -> bool:
+        """Whether a setting ``author_id`` wrote speaks for this instance:
+        its author is ROOT or SYSTEM, or may configure the instance now (as
+        ProviderInstanceChildManager holds a write). A row someone planted
+        before writes were checked, or wrote while they held an access since
+        revoked, does not apply."""
+        from zephyrex.database.StaticPermissions import (
+            is_root_id,
+            is_system_id,
+            user_can_edit,
+        )
+
+        if author_id is None:
+            return False
+        if is_root_id(author_id) or is_system_id(author_id):
+            return True
+        if self.scope in OPERATOR_SCOPES:
+            return False
+        base = registry.DB.manager.Base
+        session = registry.DB.session()
+        try:
+            return bool(
+                user_can_edit(
+                    author_id,
+                    ProviderInstanceModel.DB(base),
+                    self.id,
+                    session,
+                    declarative_base=base,
+                )
+            )
+        finally:
+            session.close()
 
     class Create(BaseModel):
         name: str

@@ -149,7 +149,7 @@ def generate_permission_filter(
 ```
 
 **Filter Components:**
-- **Ownership Filter**: `resource.user_id == user_id` OR `resource.created_by_user_id == user_id`
+- **Ownership Filter**: `resource.user_id == user_id` OR `resource.created_by_user_id == user_id` (not for a class that inherits its access; see Permission Inheritance)
   - **Exception**: The `invitations` and `Invitees` tables are explicitly excluded from ownership-based filtering. These tables use their own specialized permission logic (see Invitation Models section) rather than standard ownership checks, as invitation visibility is determined by team membership and invitee relationships rather than direct ownership.
 - **Team Filter**: `resource.team_id IN (accessible_team_ids)`
 - **Permission Filter**: `EXISTS(SELECT 1 FROM permissions WHERE ...)`
@@ -185,6 +185,17 @@ class Document(Base, BaseMixin, UserRefMixin, TeamRefMixin.Optional):
     permission_references = ["user", "team"]
     create_permission_reference = "team"  # Requires team admin to create
 ```
+
+**Inherit only.** A record whose class declares `permission_references`
+(`inherits_access`) answers only to its referenced records and to Permission
+rows on it: it is reachable at the level one of its parents is, or a
+Permission row grants. Its own `user_id`, `team_id` and `created_by_user_id`
+grant nothing, so a user whose share of a parent is revoked loses the
+children they wrote under it, and a row planted on someone else's parent is
+not its planter's. A child the server wrote (ROOT, SYSTEM, the template
+account) is seen through its parent like any other, but stays the server's
+to EDIT or DELETE (`server_row_modifiable_by`). Deleted children are ROOT's
+alone, and ROOT and SYSTEM requesters see everything, as elsewhere.
 
 **Reference Resolution:**
 ```python

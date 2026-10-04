@@ -451,7 +451,7 @@ class ChainEngine:
         if failed is not None:
             status = CANCELLED if isinstance(failed, ChainCancelledError) else FAILED
         recorded_input, recorded_output = self._recorded(state, outcome)
-        self._as(ChainStepResultManager, self.requester_id).record(
+        self._bookkeeping(ChainStepResultManager).create(
             chain_run_id=state.run.id,
             chain_step_id=step.id,
             step_name=step.name,

@@ -678,6 +678,7 @@ class BaseMixin:
         """
         from zephyrex.database.StaticPermissions import (
             PermissionResult,
+            inherits_access,
             is_any_internal_id,
             is_root_id,
         )
@@ -703,9 +704,12 @@ class BaseMixin:
             if not is_any_internal_id(user_id):
                 return False
 
-        # Check for records created by ROOT_ID - only ROOT_ID can access them
-        if hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
-            "ROOT_ID"
+        # Check for records created by ROOT_ID - only ROOT_ID can access them,
+        # unless they inherit their access, when their parents decide.
+        if (
+            hasattr(record, "created_by_user_id")
+            and record.created_by_user_id == env("ROOT_ID")
+            and not inherits_access(db_cls)
         ):
             return user_id == env("ROOT_ID")
 

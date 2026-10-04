@@ -720,19 +720,15 @@ class ChainStepResultManager(AbstractBLLManager, RouterMixin):
     ]
 
     def create(self, **kwargs: Any) -> Any:
-        """Step results are the engine's to record (see :meth:`record`);
-        only ROOT and SYSTEM create them otherwise."""
+        """Step results are the engine's to record, as ROOT: only ROOT and
+        SYSTEM create them. A result inherits access from its run alone, so
+        whoever may see the run sees what ROOT recorded, and none of them
+        may change it."""
         if not _server_side(self.requester.id):
             raise HTTPException(
                 status_code=403, detail="A run's step results are the server's"
             )
         return super().create(**kwargs)
-
-    def record(self, **fields: Any) -> Any:
-        """The engine's record of a step it executed, written as the
-        requester who started the run (a row ROOT writes is ROOT's alone, so
-        no one else could read it)."""
-        return super().create(**fields)
 
     def of(self, run_id: str) -> List[Any]:
         """The run's step results in the order they ran."""

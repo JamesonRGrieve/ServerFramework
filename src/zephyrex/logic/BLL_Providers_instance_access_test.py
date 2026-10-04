@@ -23,11 +23,13 @@ from zephyrex.logic.BLL_Providers import (
     ProviderExtensionManager,
     ProviderInstanceExtensionAbilityManager,
     ProviderInstanceManager,
+    ProviderInstanceModel,
     ProviderInstanceSettingManager,
     ProviderInstanceSettingModel,
     ProviderInstanceUsageManager,
     ProviderManager,
 )
+from zephyrex.pydantic2.registry import ModelRegistry
 
 ATTACKER_URL = "https://attacker.example.test"
 
@@ -231,6 +233,85 @@ class TestProviderInstanceChildAccess:
                     provider_instance_id=instance.id, key=key, value="v"
                 )
                 assert self.stored(model_registry, instance.id)[key] == "v"
+
+    # -- settings planted before writes were checked ---------------------
+
+    @staticmethod
+    def plant(model_registry, instance_id: str, author_id: str, value: str) -> str:
+        """A setting on ``instance_id`` recorded as ``author_id``'s, as rows
+        written before 6acbda48 checked writes are: the manager refuses
+        such a write now, so the row is written as ROOT and its author
+        rewritten underneath."""
+        row = ProviderInstanceSettingManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        ).create(provider_instance_id=instance_id, key="api_base", value=value)
+        setting_db = ProviderInstanceSettingModel.DB(model_registry.DB.manager.Base)
+        session = model_registry.DB.session()
+        try:
+            session.query(setting_db).filter(setting_db.id == row.id).update(
+                {"created_by_user_id": author_id}
+            )
+            session.commit()
+        finally:
+            session.close()
+        return str(row.id)
+
+    @staticmethod
+    def applied(model_registry, instance_id: str) -> Optional[str]:
+        """What the instance's provider reads for ``api_base``. Providers
+        read through the attached registry, which another test's app may
+        hold, so this test's is attached for the read and the earlier one
+        restored after."""
+        instance = ProviderInstanceManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        ).get(id=instance_id)
+        earlier = ModelRegistry.attached()
+        model_registry.bind_app(model_registry.app)
+        try:
+            return ProviderInstanceModel.model_validate(
+                instance, from_attributes=True
+            ).get_setting("api_base")
+        finally:
+            if earlier is not None and earlier is not model_registry:
+                earlier.bind_app(earlier.app)
+
+    def test_a_planted_setting_is_neither_its_planters_nor_applied(
+        self, admin_a, admin_b, server, model_registry, instance_of
+    ):
+        victim = instance_of(admin_a.id)
+        planted = self.plant(model_registry, victim.id, admin_b.id, ATTACKER_URL)
+        with self.settings(model_registry, admin_b.id) as settings:
+            _refused(404, settings.get, id=planted)
+            assert planted not in {s.id for s in settings.list()}
+            _refused(404, settings.update, planted, value=ATTACKER_URL)
+        assert self.applied(model_registry, victim.id) is None
+
+    def test_a_planted_setting_on_an_operator_instance_is_not_applied(
+        self, admin_b, server, model_registry, instance_of
+    ):
+        """Only the operator configures a system-scoped instance, so nothing
+        a user wrote on one applies, though the instance is theirs to see."""
+        operator = instance_of(env("SYSTEM_ID"), scope="system")
+        planted = self.plant(model_registry, operator.id, admin_b.id, ATTACKER_URL)
+        with self.settings(model_registry, admin_b.id) as settings:
+            _refused(403, settings.update, planted, value=ATTACKER_URL)
+        assert self.applied(model_registry, operator.id) is None
+
+    def test_settings_the_configurers_wrote_apply(
+        self, admin_a, server, model_registry, instance_of
+    ):
+        mine = instance_of(admin_a.id)
+        with self.settings(model_registry, admin_a.id) as settings:
+            settings.create(
+                provider_instance_id=mine.id, key="api_base", value="https://own"
+            )
+        assert self.applied(model_registry, mine.id) == "https://own"
+        served = instance_of(admin_a.id)
+        with self.settings(model_registry, env("SYSTEM_ID")) as settings:
+            settings.create(
+                provider_instance_id=served.id, key="api_base", value="https://op"
+            )
+        assert self.applied(model_registry, served.id) == "https://op"
 
     # -- usage ------------------------------------------------------------
 

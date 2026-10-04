@@ -122,6 +122,28 @@ def is_template_id(user_id: str) -> bool:
     return user_id == TEMPLATE_ID
 
 
+def inherits_access(db_cls: Any) -> bool:
+    """Whether records of ``db_cls`` take their access only from the
+    records they reference (its ``permission_references``) and from
+    Permission rows. Such a record's own owner, team and creator columns
+    grant nothing: a user who wrote a message keeps it only while they can
+    see its conversation, and a row planted on someone else's parent is
+    not its planter's."""
+    return bool(getattr(db_cls, "permission_references", None))
+
+
+def server_row_modifiable_by(user_id: str, created_by_user_id: Optional[str]) -> bool:
+    """Whether ``user_id`` may change a row ``created_by_user_id`` wrote,
+    as far as its author goes: what ROOT wrote is ROOT's, and what SYSTEM
+    or the template account wrote is ROOT's and SYSTEM's. Anyone may
+    change what a user wrote, given access."""
+    if created_by_user_id == ROOT_ID:
+        return is_root_id(user_id)
+    if created_by_user_id in (SYSTEM_ID, TEMPLATE_ID):
+        return is_root_id(user_id) or is_system_id(user_id)
+    return True
+
+
 def can_access_system_record(
     user_id: str, record_user_id: str, minimum_role: Optional[str] | None = None
 ) -> bool:
@@ -753,6 +775,11 @@ class PermissionType(PyEnum):  # Inherit from Python Enum
     SHARE = "can_share"
 
 
+# The levels at which a server-written row stays the server's
+# (server_row_modifiable_by), as the write paths hold it.
+SERVER_ROW_MODIFYING_LEVELS = frozenset({PermissionType.EDIT, PermissionType.DELETE})
+
+
 class PermissionResult(PyEnum):  # Inherit from Python Enum
     """Enum representing the result of a permission check."""
 
@@ -865,15 +892,28 @@ def check_permission(
                     f"User {user_id} cannot modify system table {record_cls.__name__}",
                 )
 
+        # A record that inherits its access answers only to its parents and
+        # to Permission rows (both in the filter below). Who wrote it grants
+        # nothing; it only keeps a row the server wrote the server's to change.
+        if inherits_access(record_db_cls):
+            if required_level in SERVER_ROW_MODIFYING_LEVELS and not (
+                server_row_modifiable_by(
+                    user_id, getattr(record, "created_by_user_id", None)
+                )
+            ):
+                return (
+                    PermissionResult.DENIED,
+                    f"User {user_id} cannot modify {record_cls.__name__} {record_id}, which the server wrote",
+                )
         # Check if the user is the creator of the record
-        if (
+        elif (
             hasattr(record, "created_by_user_id")
             and record.created_by_user_id == user_id
         ):
             return (PermissionResult.GRANTED, None)
 
         # Check for records created by ROOT_ID - only ROOT_ID can access them
-        if hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
+        elif hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
             "ROOT_ID"
         ):
             if not is_root_id(user_id):
@@ -888,7 +928,9 @@ def check_permission(
         # stamped as its own creator, so the grants below made the SYSTEM
         # and template accounts readable to anyone, as they would any user
         # row recorded as SYSTEM's; the filter excludes users from them too.
-        creator_grants_apply = record_db_cls.__tablename__ != USERS_TABLE
+        creator_grants_apply = record_db_cls.__tablename__ != USERS_TABLE and not (
+            inherits_access(record_db_cls)
+        )
 
         # Check for records created by SYSTEM_ID - all users can view, only ROOT_ID and SYSTEM_ID can modify
         if (
@@ -1405,6 +1447,74 @@ def _build_direct_permission_filter(
     )
 
 
+def _inherited_permission_filter(
+    user_id: str,
+    resource_cls: Type[Any],
+    resource_db_cls: Type[Any],
+    accessible_team_ids_cte: CTE,
+    db: Session,
+    declarative_base: Any,
+    required_permission_level: PermissionType,
+    visited_classes: set,
+    minimum_role: Optional[str],
+    db_manager: Any,
+) -> Any:
+    """The filter for a class that inherits its access (``inherits_access``),
+    for a requester who is neither ROOT nor SYSTEM: a record is reachable at
+    the level one of its referenced records is (a message, through its
+    conversation), or through a Permission row on it. Its own owner, team
+    and creator columns grant nothing. It is live (not deleted), and a row
+    the server wrote is reachable for EDIT or DELETE only by the server
+    (``server_row_modifiable_by``), as the write paths hold it."""
+    grants = [
+        _build_direct_permission_filter(
+            user_id,
+            resource_cls,
+            accessible_team_ids_cte,
+            db,
+            required_permission_level,
+            declarative_base,
+        )
+    ]
+    for ref_name in resource_db_cls.permission_references:
+        ref_cls = referenced_class(resource_db_cls, ref_name)
+        ref_column = getattr(resource_db_cls, f"{ref_name}_id", None)
+        if ref_cls is None or ref_column is None:
+            logger.warning(
+                f"Invalid permission reference '{ref_name}' on {resource_cls.__name__}"
+            )
+            continue
+        ref_filter = generate_permission_filter(
+            user_id,
+            ref_cls,
+            db,
+            declarative_base,
+            required_permission_level,
+            _visited_classes=set(visited_classes),
+            minimum_role=minimum_role,
+            db_manager=db_manager,
+        )
+        grants.append(ref_column.in_(select(ref_cls.id).where(ref_filter)))
+
+    restrictions = []
+    if hasattr(resource_db_cls, "deleted_at"):
+        restrictions.append(resource_db_cls.deleted_at.is_(None))
+    if (
+        hasattr(resource_db_cls, "created_by_user_id")
+        and required_permission_level in SERVER_ROW_MODIFYING_LEVELS
+    ):
+        # The requester is neither ROOT nor SYSTEM (both returned earlier).
+        restrictions.append(
+            or_(
+                resource_db_cls.created_by_user_id.is_(None),
+                resource_db_cls.created_by_user_id.notin_(
+                    [ROOT_ID, SYSTEM_ID, TEMPLATE_ID]
+                ),
+            )
+        )
+    return and_(or_(*grants), *restrictions)
+
+
 def generate_permission_filter(
     user_id: str,
     resource_cls: Type[Any],
@@ -1502,6 +1612,20 @@ def generate_permission_filter(
         max_depth=5,
         unique_suffix=unique_suffix,
     )
+
+    if inherits_access(resource_db_cls):
+        return _inherited_permission_filter(
+            user_id,
+            resource_cls,
+            resource_db_cls,
+            accessible_team_ids_cte,
+            db,
+            declarative_base,
+            required_permission_level,
+            _visited_classes,
+            minimum_role,
+            db_manager,
+        )
 
     # Deleted records are visible only to ROOT. This is an AND restriction
     # applied at the end; placing it in ``conditions`` (OR'd) would grant
@@ -1763,29 +1887,6 @@ def generate_permission_filter(
             declarative_base,
         )
         conditions.append(direct_permissions)
-
-    # 5. Access inherited through references: a record whose class declares
-    # ``permission_references`` is reachable at the level its referenced
-    # record is (a message, through its conversation).
-    for ref_name in getattr(resource_db_cls, "permission_references", None) or []:
-        ref_cls = referenced_class(resource_db_cls, ref_name)
-        ref_column = getattr(resource_db_cls, f"{ref_name}_id", None)
-        if ref_cls is None or ref_column is None:
-            logger.warning(
-                f"Invalid permission reference '{ref_name}' on {resource_cls.__name__}"
-            )
-            continue
-        ref_filter = generate_permission_filter(
-            user_id,
-            ref_cls,
-            db,
-            declarative_base,
-            required_permission_level,
-            _visited_classes=set(_visited_classes),
-            minimum_role=minimum_role,
-            db_manager=db_manager,
-        )
-        conditions.append(ref_column.in_(select(ref_cls.id).where(ref_filter)))
 
     # Combine all conditions with OR
     if not conditions:
