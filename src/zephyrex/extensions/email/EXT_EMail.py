@@ -1,9 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Email extension for AGInfrastructure.
 
 Provides email abilities including SendGrid, Gmail, Microsoft Outlook, Mailgun,
 Yahoo, POP3, and IMAP support. This extension provides static functionality and
 metadata to organize email-related components and manage email provider instances.
+
+Inbound mail enters through two sources, both feeding the hook point in
+InboundEmail: a signed endpoint mail servers POST raw messages to
+(InboundEndpoint), and a poller reading configured IMAP mailboxes
+(SVC_InboundIMAP).
 
 The extension focuses on:
 - Email sending and receiving abilities
@@ -32,6 +38,7 @@ from typing import (
     Mapping,
     Optional,
     Set,
+    Tuple,
     Type,
 )
 
@@ -41,9 +48,14 @@ from pydantic import BaseModel, EmailStr, Field
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
     AbstractStaticProvider,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.AbstractExternalModel import idempotent
+from zephyrex.extensions.email.InboundEndpoint import (
+    MIN_SIGNING_SECRET_LENGTH,
+    SIGNING_SECRET_SETTING,
+)
 from zephyrex.extensions.email.EmailErrors import (
     EmailValidationError,
     extract_status_code,
@@ -335,6 +347,22 @@ class AbstractEmailProvider(AbstractStaticProvider):
     # actually implement. Callers branch on ``Capability.X in cls.capabilities``
     # rather than catching ``NotImplementedError`` at the call site.
     capabilities: ClassVar[FrozenSet["Capability"]] = frozenset()
+
+    # Any email provider instance in the root or system scope can be an
+    # inbound endpoint a mail server POSTs messages to (see InboundEndpoint).
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            SIGNING_SECRET_SETTING,
+            "Signs mail a mail server POSTs to /v1/email/inbound/{this "
+            "instance's id}: HMAC-SHA256, at least "
+            f"{MIN_SIGNING_SECRET_LENGTH} characters. Honoured on root- and "
+            "system-scoped instances only",
+            secret=True,
+        ),
+    )
+    # Whether the inbound poller reads this provider's instances' mailboxes
+    # over IMAP (see SVC_InboundIMAP).
+    polls_imap: ClassVar[bool] = False
 
     @classmethod
     def _send_rate_bucket(cls) -> Any:
@@ -1156,7 +1184,7 @@ class EXT_EMail(AbstractStaticExtension):
 
     # Extension metadata
     name: ClassVar[str] = "email"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "1.1.0"
     description: ClassVar[str] = (
         "Email extension for interacting with various email providers"
     )
@@ -1312,6 +1340,16 @@ class EXT_EMail(AbstractStaticExtension):
             issues.append("SENDGRID_FROM_EMAIL environment variable not set")
 
         return issues
+
+    @classmethod
+    def register_services(cls, model_registry: Any, requester_id: str) -> List[Any]:
+        """The poller that reads configured IMAP mailboxes into the inbound
+        hook point, started by the framework's background services."""
+        from zephyrex.extensions.email.SVC_InboundIMAP import InboundIMAPService
+
+        return [
+            InboundIMAPService(requester_id=requester_id, model_registry=model_registry)
+        ]
 
     @classmethod
     def get_required_permissions(cls) -> List[str]:

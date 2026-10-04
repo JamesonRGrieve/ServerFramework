@@ -17,7 +17,7 @@ from email.header import decode_header
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 from pydantic import EmailStr, SecretStr
 
@@ -25,6 +25,7 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
@@ -33,6 +34,7 @@ from zephyrex.extensions.email.EXT_EMail import (
     Capability,
     _DeprecatedEnvDict,
 )
+from zephyrex.extensions.email.InboundIMAP import IMAP_INBOUND_SETTINGS
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.RateLimit import RateLimit
 from zephyrex.lib.Dependencies import Dependencies
@@ -83,6 +85,14 @@ class IMAPProvider(AbstractEmailProvider):
     )
 
     dependencies: ClassVar[Dependencies] = Dependencies([])
+
+    # An instance can also be a mailbox the inbound poller reads (see
+    # InboundIMAP and SVC_InboundIMAP).
+    polls_imap: ClassVar[bool] = True
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        *IMAP_INBOUND_SETTINGS,
+    )
 
     # Subclasses (Yahoo, etc.) override these host defaults.
     default_imap_host: ClassVar[str] = ""

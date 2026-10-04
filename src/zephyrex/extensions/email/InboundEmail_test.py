@@ -56,6 +56,21 @@ def test_an_html_only_message_reads_its_html():
     assert "Only markup." in InboundEmail.parse(message.as_bytes()).text
 
 
+def test_a_body_in_an_unknown_charset_is_read_not_refused():
+    """Mail is whatever a sender wrote: a body labelled with a charset
+    Python does not know raised LookupError out of parse, which the inbound
+    endpoint answered with a 500 and the poller dropped."""
+    raw = (
+        b"From: a@example.org\r\nTo: b@example.org\r\nSubject: Odd\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b"Content-Type: text/plain; charset=x-no-such-charset\r\n\r\n"
+        b"Words \xff here.\r\n"
+    )
+    parsed = InboundEmail.parse(raw)
+    assert parsed.subject == "Odd"
+    assert "Words" in parsed.text and "here." in parsed.text
+
+
 def test_an_oversized_message_is_refused():
     with pytest.raises(ValueError):
         InboundEmail.parse(b"x" * (MAX_INBOUND_EMAIL_BYTES + 1))

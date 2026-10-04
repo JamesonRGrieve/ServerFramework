@@ -102,6 +102,10 @@ class CustomRouteSpec:
     # A REST-only route that answers with this Response subclass itself (a
     # stream, a file) instead of an ``output_model`` body.
     response_class: Optional[Type[Response]] = None
+    # A REST-only write route whose body is not JSON (a raw RFC 5322
+    # message, a file): it has no ``input_model``, and the method reads the
+    # body from its ``request`` itself, bounding it as it reads.
+    raw_body: bool = False
 
     @property
     def auth_type(self) -> AuthType:
@@ -122,11 +126,14 @@ def custom_route(
     summary: Optional[str] | None = None,
     description: Optional[str] | None = None,
     response_class: Optional[Type[Response]] = None,
+    raw_body: bool = False,
 ) -> Callable:
     """Decorator: tag a method with its route/SDK/GraphQL contract.
 
     A route answers with an ``output_model`` body, or, REST only, with an
-    instance of ``response_class`` the method builds itself.
+    instance of ``response_class`` the method builds itself. A ``raw_body``
+    write route (REST only, no ``input_model``) takes a body that is not
+    JSON, which the method reads from its ``request``.
     """
 
     def deco(func):
@@ -142,8 +149,20 @@ def custom_route(
             summary=summary,
             description=description,
             response_class=response_class,
+            raw_body=raw_body,
         )
-        if spec.method not in ("GET", "DELETE") and spec.input_model is None:
+        if spec.raw_body:
+            if (
+                spec.method not in _BODY_METHODS
+                or spec.input_model is not None
+                or spec.expose_in != {ExposeIn.REST}
+            ):
+                raise ValueError(
+                    f"@custom_route on {func.__qualname__}: a raw_body route is "
+                    f"a POST, PUT or PATCH with no input_model, exposed on "
+                    f"REST only"
+                )
+        elif spec.method not in ("GET", "DELETE") and spec.input_model is None:
             raise ValueError(
                 f"@custom_route on {func.__qualname__}: method {spec.method} "
                 f"requires an input_model (typed contract preserved)"
@@ -268,6 +287,11 @@ class _RouteBinding:
             raise TypeError(
                 f"@custom_route {qualname}: path {spec.path!r} names "
                 f"{missing} but the method declares no such parameters"
+            )
+        if spec.raw_body and _REQUEST_PARAMETER not in parameters:
+            raise TypeError(
+                f"@custom_route {qualname}: a raw_body route reads its body "
+                f"from a '{_REQUEST_PARAMETER}' parameter, which it lacks"
             )
         input_model = spec.input_model if spec.method in _BODY_METHODS else None
         takes_body = _BODY_PARAMETER in parameters

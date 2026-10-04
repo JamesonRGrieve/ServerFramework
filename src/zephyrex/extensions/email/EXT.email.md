@@ -32,7 +32,7 @@ All three live in `extensions/email/PRV_SendGrid_EMail.py` so they share the val
 | `get_emails` / `search_emails` / `reply_to_email` / `delete_email` / `create_draft_email` / `process_attachments` | ⚠️ stub (warns + empty return) | ⚠️ stub | ⚠️ stub |
 | `move_email` / `mark_email_as_read` / `mark_email_as_unread` / `flag_email` / `unflag_email` / `get_email_threads` / `get_thread_messages` / `get_latest_email` / `download_attachment` | inherited abstract (no implementation) | inherited abstract | inherited abstract |
 
-Receive-side support (Gmail / Outlook / IMAP) is intentionally out of scope; if a future extension needs inbox handling, model it as a separate provider that implements the appropriate abstract methods.
+Inbound mail (mail received into the app, not listed on request) comes in through the signed endpoint and the IMAP poller described under [Inbound mail](#inbound-mail).
 
 ## Architecture
 
@@ -78,8 +78,105 @@ most 25 MiB) and calls `await receive_inbound_email(model_registry,
 message)`. Listeners registered with `on_inbound_email(listener)` are
 awaited as `listener(model_registry, message)` in registration order; one
 listener's failure is logged and the others still get the message. The
-`ai_agents` extension listens here to fire email triggers. No shipped
-provider or endpoint calls it yet: the providers above are send-only.
+`ai_agents` extension listens here to fire email triggers. Two sources feed
+it: the signed endpoint and the IMAP poller below.
+
+Both sources take their configuration from provider instances in the
+**root or system scope** only (which only ROOT and SYSTEM can create or
+configure): what they deliver is trusted as the operator's mail.
+
+#### Signed inbound endpoint
+
+A mail server (a Postfix `pipe` transport, a provider's inbound route) POSTs
+the raw message, exactly as received, to
+`POST /v1/email/inbound/{provider_instance_id}`. The instance is any email
+provider instance in the root or system scope, with its
+`inbound_signing_secret` setting set (write-only, stored encrypted, at
+least 32 characters).
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `message/rfc822` |
+| `X-Zephyrex-Timestamp` | Unix seconds at signing |
+| `X-Zephyrex-Recipients` | The envelope recipients (`RCPT TO`), comma-separated bare addresses; empty or absent when unknown |
+| `X-Zephyrex-Signature` | `sha256=` + lower-case hex HMAC-SHA256 |
+
+The signed bytes are the timestamp, a line feed (`\n`), the
+`X-Zephyrex-Recipients` value exactly as sent (empty when absent), a line
+feed, then the raw body, keyed by the secret:
+
+```
+signature = "sha256=" + hex(HMAC_SHA256(secret, timestamp + "\n" + recipients + "\n" + body))
+```
+
+A header value cannot contain a line feed, so the recipients cannot be
+shifted into the body (or back) under the same signature. From a shell:
+
+```sh
+ts=$(date +%s); rcpt="$RECIPIENT"
+sig=$( { printf '%s\n%s\n' "$ts" "$rcpt"; cat message.eml; } |
+       openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1)
+curl -sf -X POST "https://app.example.org/v1/email/inbound/$INSTANCE_ID" \
+  -H 'Content-Type: message/rfc822' -H "X-Zephyrex-Timestamp: $ts" \
+  -H "X-Zephyrex-Recipients: $rcpt" -H "X-Zephyrex-Signature: sha256=$sig" \
+  --data-binary @message.eml
+```
+
+Answers:
+
+- **200** `{"message_id", "listeners"}`: parsed and handed to the listeners.
+- **401** `Signature verification failed`, whatever the reason: an unknown,
+  disabled, deleted or user-scoped instance, no or a short secret, a wrong
+  signature, a timestamp more than 300 seconds from the server's clock, or
+  a signature already used within those 300 seconds (replay cache). The
+  answer says nothing about which instances exist.
+- **413**: a body over 25 MiB. The app-wide `MAX_REQUEST_BODY_BYTES` cap
+  (10 MiB by default) applies first; raise it to take larger mail.
+- **400**: a signed delivery whose body is empty or whose recipients are not
+  bare addresses (at most 100).
+
+The route is rate-limited (300 a minute per client address), takes no
+session or token (one sent is ignored), and is open to cross-site POSTs and
+non-JSON bodies.
+
+#### IMAP poller
+
+`SVC_InboundIMAP.InboundIMAPService` runs with the background services
+(`RUN_BACKGROUND_SERVICES=true`). Every 5 seconds it polls the mailboxes
+that are due: root- or system-scoped, enabled instances of the `imap`
+provider (or `yahoo`, which defaults the host) whose `inbound_enabled` is
+`true`.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `inbound_enabled` | `false` | `true` to poll this mailbox |
+| `inbound_host`, `inbound_port` | —, `993` | The IMAP server |
+| `inbound_security` | `tls` | `tls` (implicit), `starttls`, or `plain` |
+| `inbound_allow_plaintext` | `false` | `plain` is refused unless this is `true` **and** the host is loopback |
+| `inbound_ca_certificate` | — | PEM CA to verify the server against instead of the system store |
+| `inbound_username`, `inbound_password` | — | The account; the password is write-only and encrypted |
+| `inbound_mailbox` | `INBOX` | The mailbox read |
+| `inbound_poll_seconds` | `60` | 10 to 86400 |
+| `inbound_after` | `seen` | `seen` (flag `\Seen`; only unseen mail is read), `move` (to `inbound_move_to`; MOVE, or COPY + UID EXPUNGE with UIDPLUS) or `delete` (UID EXPUNGE, needs UIDPLUS) |
+
+The certificate and host name are always verified, and credentials are
+never sent before the link is encrypted (a server not offering STARTTLS is
+refused). Each socket operation times out after 30 seconds.
+
+Each poll reads at most 50 messages above the mailbox's cursor
+(`email_inbound_mailboxes`: its UIDVALIDITY and the highest UID taken),
+oldest first; with more waiting, the next poll is immediate. A message is
+fetched with `BODY.PEEK[]`, claimed by a compare-and-set of the cursor (of
+two workers, one delivers it), parsed, handed to the listeners, and then
+flagged, moved or deleted. A UID at or below the cursor is never delivered
+again. When UIDVALIDITY changes the cursor starts over under the new value;
+mail already delivered stays out by its `\Seen` flag, or by having been
+moved or deleted. A message over 25 MiB is passed over and left in place.
+
+A failed poll (unreachable, refused sign-in, a server missing what
+`inbound_after` needs) is logged without credentials, recorded as the
+cursor's `last_error`, and retried after twice the interval each time, up to
+an hour. Other mailboxes and the service carry on.
 
 ### Hook-based integration
 

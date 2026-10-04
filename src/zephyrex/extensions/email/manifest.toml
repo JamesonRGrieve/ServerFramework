@@ -5,7 +5,7 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "email"
-version = "1.0.0"
+version = "1.1.0"
 description = "Email extension for interacting with various email providers"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_EMail"

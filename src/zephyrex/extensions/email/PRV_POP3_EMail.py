@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import email as _email
 import poplib
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from pydantic import EmailStr, SecretStr
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.email.EXT_EMail import (
@@ -49,6 +50,13 @@ class POP3Provider(IMAPProvider):
     )
 
     _env_prefix: ClassVar[str] = "POP3"
+
+    # A POP3 mailbox is not read over IMAP: none of IMAPProvider's inbound
+    # poller settings apply.
+    polls_imap: ClassVar[bool] = False
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        AbstractEmailProvider.instance_settings
+    )
 
     class Settings(AbstractEmailProvider.Settings):
         from_email: EmailStr

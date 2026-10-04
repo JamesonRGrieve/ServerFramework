@@ -936,6 +936,93 @@ def test_generate_test_scaffold_no_header_omits_imports():
     assert "def test_promote_" in text
 
 
+def test_a_raw_body_write_route_needs_no_input_model():
+    @custom_route(
+        method="POST",
+        path="/raw",
+        output_model=DemoteOut,
+        raw_body=True,
+        expose_in=(ExposeIn.REST,),
+    )
+    def take(self, request):
+        return DemoteOut(ok=True)
+
+    spec = get_custom_route_spec(take)
+    assert spec is not None and spec.raw_body and spec.input_model is None
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"method": "POST", "input_model": PromoteIn, "expose_in": (ExposeIn.REST,)},
+        {"method": "GET", "expose_in": (ExposeIn.REST,)},
+        {"method": "POST"},
+        {"method": "POST", "expose_in": (ExposeIn.REST, ExposeIn.GRAPHQL)},
+    ],
+    ids=["with-input-model", "get", "default-exposure", "also-graphql"],
+)
+def test_a_raw_body_route_is_a_rest_write_without_input_model(options):
+    with pytest.raises(ValueError, match="raw_body route"):
+
+        @custom_route(path="/raw", output_model=DemoteOut, raw_body=True, **options)
+        def bad(self, request):
+            return None
+
+
+class _RawBodyManager:
+    """The smallest manager a REST custom route builds: no registry."""
+
+    def __init__(self, requester_id=None, **_):
+        self.requester_id = requester_id
+
+    @custom_route(
+        method="POST",
+        path="/raw",
+        output_model=FetchOut,
+        authentication_type="none",
+        raw_body=True,
+        expose_in=(ExposeIn.REST,),
+    )
+    async def take(self, request):
+        return FetchOut(items=[(await request.body()).decode()])
+
+
+def test_a_raw_body_route_hands_the_method_the_body_unparsed():
+    """Before raw_body, every POST custom route parsed its body as JSON, so
+    a raw RFC 5322 message (or any non-JSON body) was refused with 400."""
+    from fastapi import APIRouter, FastAPI
+    from fastapi.testclient import TestClient
+
+    router = APIRouter()
+    assert register_custom_routes(router, _RawBodyManager) == 1
+    app = FastAPI()
+    app.include_router(router)
+    raw = "Subject: hi\r\n\r\nnot JSON {"
+    answered = TestClient(app).post(
+        "/raw", content=raw, headers={"Content-Type": "message/rfc822"}
+    )
+    assert answered.status_code == 200, answered.text
+    assert answered.json() == {"items": [raw]}
+
+
+def test_a_raw_body_route_must_take_the_request():
+    from fastapi import APIRouter
+
+    class NoRequest:
+        @custom_route(
+            method="POST",
+            path="/raw",
+            output_model=FetchOut,
+            raw_body=True,
+            expose_in=(ExposeIn.REST,),
+        )
+        def take(self):
+            return FetchOut(items=[])
+
+    with pytest.raises(TypeError, match="'request' parameter"):
+        register_custom_routes(APIRouter(), NoRequest)
+
+
 def test_registered_route_openapi_builds_and_treats_request_as_the_request():
     """The generated endpoint's ``request: Request`` annotation is a string
     under postponed annotations; FastAPI must resolve it to the Request object,

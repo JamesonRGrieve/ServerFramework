@@ -10,7 +10,7 @@ the message from the rest.
 """
 
 from email import policy
-from email.message import EmailMessage
+from email.message import EmailMessage, MIMEPart
 from email.parser import BytesParser
 from email.utils import getaddresses
 from typing import Any, Awaitable, Callable, Dict, List, Sequence
@@ -73,9 +73,20 @@ class InboundEmail(BaseModel):
             sender=senders[0][1].strip().lower() if senders else "",
             recipients=recipients,
             subject=str(message.get("Subject", "")),
-            text=str(body.get_content()) if body is not None else "",
+            text=_text_of(body) if body is not None else "",
             headers={name: str(value) for name, value in message.items()},
         )
+
+
+def _text_of(part: MIMEPart) -> str:
+    """A text part's content. One labelled with a charset Python does not
+    know is read as UTF-8, undecodable bytes replaced: mail is whatever its
+    sender wrote, and is never refused for it."""
+    try:
+        return str(part.get_content())
+    except LookupError:
+        payload = part.get_payload(decode=True)
+        return payload.decode("utf-8", "replace") if isinstance(payload, bytes) else ""
 
 
 _LISTENERS: List[InboundEmailListener] = []

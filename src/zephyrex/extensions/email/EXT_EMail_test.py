@@ -214,7 +214,8 @@ class TestEXTEMail(ExtensionServerMixin):
     def test_extension_metadata(self):
         """Test static extension metadata"""
         assert EXT_EMail.name == "email"
-        assert EXT_EMail.version == "1.0.0"
+        # 1.1.0: inbound mail sources (signed endpoint, IMAP poller).
+        assert EXT_EMail.version == "1.1.0"
         assert "email" in EXT_EMail.description.lower()
 
     def test_provider_discovery(self):
@@ -428,7 +429,7 @@ class TestEXTEMail(ExtensionServerMixin):
         status = EXT_EMail.get_extension_status()
 
         assert status["extension"] == "email"
-        assert status["version"] == "1.0.0"
+        assert status["version"] == EXT_EMail.version
         assert status["configured"] is True
         assert status["default_provider"] == "sendgrid"
 
