@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Type, Union
+from typing import Any, ClassVar, Dict, List, Optional, Type
 
 from fastapi import HTTPException
 
@@ -197,36 +197,9 @@ class RoleManager(AbstractBLLManager, RouterMixin):
             return [RoleModel.DB(self.model_registry.DB.manager.Base).team_id == None]
         return [RoleModel.DB(self.model_registry.DB.manager.Base).team_id != None]
 
-    def get(
-        self,
-        include: Optional[Union[List[str], str]] = None,
-        fields: Optional[Union[List[str], str]] = None,
-        **kwargs,
-    ) -> Any:
-        """Get a role with optional included relationships. Returns 404 if not found."""
-        role = super().get(include=include, fields=fields, **kwargs)
-
-        # Handle both dict and object access patterns (dict when fields is specified)
-        created_by_user_id = (
-            role.get("created_by_user_id")
-            if isinstance(role, dict)
-            else role.created_by_user_id
-        )
-        team_id = role.get("team_id") if isinstance(role, dict) else role.team_id
-
-        # A team's role is read by its live members (TeamAuthority's rule:
-        # enabled, unexpired, undeleted, in a live team) and by its creator;
-        # root and system belong to every team.
-        if (
-            team_id
-            and created_by_user_id != self.requester.id
-            and not TeamAuthority(
-                self.requester.id, team_id, self.model_registry
-            ).holds_live_membership()
-        ):
-            raise HTTPException(status_code=403, detail="Access denied")
-
-        return role
+    # Who reads a role is the roles rule in StaticPermissions (_role_filter),
+    # which every read path asks: a team's role answers to the team's live
+    # members only, its creator included, and a system role to everyone.
 
     def create_validation(self, entity):
         """Validate role creation."""

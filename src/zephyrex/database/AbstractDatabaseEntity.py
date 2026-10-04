@@ -22,6 +22,7 @@ from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
 
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.database.StaticPermissions import (
+    ROLES_TABLE,
     PermissionType,
     check_permission,
     gen_not_found_msg,
@@ -705,11 +706,14 @@ class BaseMixin:
                 return False
 
         # Check for records created by ROOT_ID - only ROOT_ID can access them,
-        # unless they inherit their access, when their parents decide.
+        # unless they inherit their access, when their parents decide, or
+        # are roles, which answer to their own rule (a team's role root made
+        # is still the team's).
         if (
             hasattr(record, "created_by_user_id")
             and record.created_by_user_id == env("ROOT_ID")
             and not inherits_access(db_cls)
+            and getattr(db_cls, "__tablename__", None) != ROLES_TABLE
         ):
             return user_id == env("ROOT_ID")
 

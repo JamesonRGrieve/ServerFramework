@@ -73,8 +73,18 @@ creating it or by moving it (a new `parent_id`), grants its rank to everyone
 holding it, so both are `TeamAuthority.assert_may_place`'s to allow: a live
 admin membership of a live team, and a role ranking no higher than the
 requester's own (an admin places under `user`, a superadmin under `admin`).
-Root and system place any. Reading a team's role takes a live membership of
-the team (or having created it).
+Root and system place any.
+
+**Who reads a role:** roles answer to their own rule (`_role_filter`), which
+`generate_permission_filter` and `check_permission` both apply, so get, list,
+search, GraphQL and every embed agree. A system role (no team, written by
+the server: the seeded ones) is everyone's to read; a teamless role anyone
+else wrote below the manager is nobody's. A team's role is read by the team's live members only
+(an enabled, unexpired, undeleted membership of the team itself, the team not
+deleted), and edited, deleted or shared by its live admins; a role the server
+wrote stays the server's to edit or delete. Nothing else grants: not having
+created the role, not a parent team or a pending invitation, not a Permission
+row. Root and system read every role.
 
 ### Team Structure
 Hierarchical teams with parent-child relationships.

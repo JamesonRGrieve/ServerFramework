@@ -132,11 +132,6 @@ class TeamAuthority:
         (an admin creates under ``user``, a superadmin under ``admin``)."""
         self.assert_may_place(None, parent_id)
 
-    def holds_live_membership(self) -> bool:
-        """The requester belongs to the team through a live membership
-        (``live_membership_role``); root and system belong everywhere."""
-        return self.unlimited or self.role_id is not None
-
     def assert_may_act_on(self, member_role_id: str) -> None:
         """May change or remove a member who holds ``member_role_id``."""
         ceiling = self._own_rank()

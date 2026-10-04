@@ -14,6 +14,7 @@ from typing import Any
 from zephyrex.database.StaticPermissions import user_can_edit
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import RoleModel, TeamModel
+from zephyrex.logic.BLL_Providers import RotationManager, RotationModel
 from zephyrex.testing.factories import (
     add_user_to_team,
     create_role,
@@ -32,13 +33,21 @@ def _role_in(server: Any, owner: Any, team: Any) -> Any:
     return create_role(server, owner.id, team.id, name=f"role_{uuid.uuid4().hex[:8]}")
 
 
-def _sees(model_registry: Any, viewer: Any, role: Any) -> bool:
-    roles = RoleModel.DB(model_registry.DB.manager.Base)
-    listed = roles.list(
-        requester_id=viewer.id, model_registry=model_registry, id=role.id
+def _rotation_in(model_registry: Any, owner: Any, team: Any) -> Any:
+    return RotationManager(requester_id=owner.id, model_registry=model_registry).create(
+        name=f"rotation_{uuid.uuid4().hex[:8]}", team_id=team.id
     )
-    found = roles.exists(
-        requester_id=viewer.id, model_registry=model_registry, id=role.id
+
+
+def _sees(
+    model_registry: Any, viewer: Any, record: Any, model: Any = RoleModel
+) -> bool:
+    records = model.DB(model_registry.DB.manager.Base)
+    listed = records.list(
+        requester_id=viewer.id, model_registry=model_registry, id=record.id
+    )
+    found = records.exists(
+        requester_id=viewer.id, model_registry=model_registry, id=record.id
     )
     assert bool(listed) is found
     return found
@@ -85,16 +94,18 @@ def test_a_deleted_teams_admins_lose_its_records(server, model_registry):
 
 def test_a_deleted_parent_reaches_nothing_from_its_sub_teams(server, model_registry):
     """Team-scoped records reach a sub-team's members from its parents; a
-    deleted parent's records are reached by no one."""
+    deleted parent's records are reached by no one. (A rotation, not a
+    role: a team's roles are its own live members' alone, so they never
+    reach a sub-team; see Team_admin_edit_test.TestReadingATeamRole.)"""
     parent_owner, child_owner = create_user(server), create_user(server)
     parent = _team(server, parent_owner)
     _team(server, child_owner, parent_id=parent.id)
-    role = _role_in(server, parent_owner, parent)
-    assert _sees(model_registry, child_owner, role)
+    rotation = _rotation_in(model_registry, parent_owner, parent)
+    assert _sees(model_registry, child_owner, rotation, RotationModel)
 
     _delete(model_registry, parent)
 
-    assert not _sees(model_registry, child_owner, role)
+    assert not _sees(model_registry, child_owner, rotation, RotationModel)
 
 
 def test_a_live_team_keeps_its_records(server, model_registry):

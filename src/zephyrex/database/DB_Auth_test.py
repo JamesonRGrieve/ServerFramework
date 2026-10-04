@@ -359,6 +359,12 @@ class TestMetadataUserTeam(AbstractDBTest):
 class TestRole(AbstractDBTest):
     class_under_test = RoleModel
     create_fields = {
+        # A team role, filled with team_a (admin_a administers it). Without
+        # a team the row was a system role planted below the manager (which
+        # refuses one), editable only by its creator's standing grant; a
+        # system role is now nobody's but the server's, and a team role its
+        # live admins'.
+        "team_id": None,
         "name": "test_role",
         "friendly_name": "Test RoleModel",
         "mfa_count": 1,

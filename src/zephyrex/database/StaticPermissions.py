@@ -36,6 +36,10 @@ TEMPLATE_ID = env("TEMPLATE_ID")
 # generate_permission_filter).
 USERS_TABLE = "users"
 
+# The roles table, whose rule is its own too (_role_filter): a team's roles
+# answer only to that team's live members.
+ROLES_TABLE = "roles"
+
 
 def _active(model: Any) -> Any:
     """The predicate for a permission, membership or invitation row that
@@ -789,6 +793,30 @@ class PermissionResult(PyEnum):  # Inherit from Python Enum
     ERROR = "error"
 
 
+def _granted_by_filter(
+    user_id: str,
+    record_cls: Any,
+    record_db_cls: Any,
+    record_id: str,
+    db: Session,
+    declarative_base: Any,
+    required_level: PermissionType,
+    minimum_role: Optional[str],
+) -> tuple[PermissionResult, Optional[str]]:
+    """``check_permission``'s answer from ``generate_permission_filter``
+    alone: granted when the record matches it."""
+    permission_filter = generate_permission_filter(
+        user_id, record_cls, db, declarative_base, required_level
+    )
+    final_filter = and_(record_db_cls.id == record_id, permission_filter)
+    if db.query(exists().where(final_filter)).scalar():
+        return (PermissionResult.GRANTED, None)
+    return (
+        PermissionResult.DENIED,
+        f"User {user_id} does not have {minimum_role or required_level.name.lower()} access to {record_cls.__name__} {record_id}",
+    )
+
+
 def check_permission(
     user_id,
     record_cls,
@@ -891,6 +919,20 @@ def check_permission(
                     PermissionResult.DENIED,
                     f"User {user_id} cannot modify system table {record_cls.__name__}",
                 )
+
+        # A role answers only to its own rule (_role_filter): neither who
+        # wrote it nor a Permission row on it grants anything.
+        if record_db_cls.__tablename__ == ROLES_TABLE:
+            return _granted_by_filter(
+                user_id,
+                record_cls,
+                record_db_cls,
+                record_id,
+                db,
+                declarative_base,
+                required_level,
+                minimum_role,
+            )
 
         # A record that inherits its access answers only to its parents and
         # to Permission rows (both in the filter below). Who wrote it grants
@@ -996,24 +1038,17 @@ def check_permission(
             if direct_permission is not None:
                 return (PermissionResult.GRANTED, None)
 
-        # If no direct permission, generate the permission filter and check
-        permission_filter = generate_permission_filter(
-            user_id, record_cls, db, declarative_base, required_level
+        # If no direct permission, the permission filter decides.
+        return _granted_by_filter(
+            user_id,
+            record_cls,
+            record_db_cls,
+            record_id,
+            db,
+            declarative_base,
+            required_level,
+            minimum_role,
         )
-
-        # Combine with the specific record ID
-        final_filter = and_(record_db_cls.id == record_id, permission_filter)
-
-        # Check if a record exists matching the combined filter
-        has_access = db.query(exists().where(final_filter)).scalar()
-
-        if has_access:
-            return (PermissionResult.GRANTED, None)
-        else:
-            return (
-                PermissionResult.DENIED,
-                f"User {user_id} does not have {minimum_role or required_level.name.lower()} access to {record_cls.__name__} {record_id}",
-            )
 
     except Exception as e:
         logger.error(
@@ -1293,6 +1328,108 @@ def role_extends_admin(db: Session, declarative_base: Any, role_id: str) -> bool
     return found.first() is not None
 
 
+def _live_membership_in(
+    team_id_column: Any,
+    user_id: str,
+    declarative_base: Any,
+    unique_suffix: str,
+    role_ids: Optional[CTE] = None,
+) -> Any:
+    """Whether ``user_id`` belongs to the team ``team_id_column`` names
+    through an enabled, unexpired, undeleted membership, the team itself not
+    deleted (TeamAuthority's live membership); held under one of
+    ``role_ids`` when given (``admin_role_ids``: the team's admins)."""
+    from zephyrex.logic.BLL_Auth import TeamModel, UserTeamModel
+
+    team_db_cls = TeamModel.DB(declarative_base)
+    user_team_db_cls = UserTeamModel.DB(declarative_base)
+    live_team = aliased(team_db_cls, name=f"live_membership_team{unique_suffix}")
+    conditions = [
+        user_team_db_cls.user_id == user_id,
+        user_team_db_cls.team_id == team_id_column,
+        user_team_db_cls.enabled == True,
+        _active(user_team_db_cls),
+        team_id_column.in_(select(live_team.id).where(live_team.deleted_at.is_(None))),
+    ]
+    if role_ids is not None:
+        conditions.append(user_team_db_cls.role_id.in_(select(role_ids.c.id)))
+    return exists().where(and_(*conditions))
+
+
+def _server_rows_kept(
+    resource_db_cls: Any, required_permission_level: PermissionType
+) -> list[Any]:
+    """The restriction that keeps a row the server wrote the server's to
+    edit or delete (``server_row_modifiable_by``), for a requester who is
+    neither ROOT nor SYSTEM; none at other levels."""
+    if (
+        not hasattr(resource_db_cls, "created_by_user_id")
+        or required_permission_level not in SERVER_ROW_MODIFYING_LEVELS
+    ):
+        return []
+    return [
+        or_(
+            resource_db_cls.created_by_user_id.is_(None),
+            resource_db_cls.created_by_user_id.notin_(
+                [ROOT_ID, SYSTEM_ID, TEMPLATE_ID]
+            ),
+        )
+    ]
+
+
+def _role_filter(
+    user_id: str,
+    role_db_cls: Any,
+    declarative_base: Any,
+    required_permission_level: PermissionType,
+    unique_suffix: str,
+) -> Any:
+    """The rule for roles, for a requester who is neither ROOT nor SYSTEM.
+
+    A system role (no team, written by the server: the seeded ones) is
+    everyone's to read and nobody's to change; a teamless row anyone else
+    wrote below the manager (which refuses one) is nobody's. A team's role is read by the team's live members and edited,
+    deleted or shared by its live admins (``_live_membership_in``), as
+    ``TeamAuthority`` rules every write to it; a role the server wrote stays
+    the server's to edit or delete. Nothing else grants: not having created
+    the role (a creator who leaves the team keeps none of its roles), not a
+    parent team, a pending invitation or a Permission row. A deleted role is
+    ROOT's alone."""
+    conditions: list[Any]
+    if required_permission_level == PermissionType.VIEW:
+        conditions = [
+            or_(
+                and_(
+                    role_db_cls.team_id.is_(None),
+                    role_db_cls.created_by_user_id.in_(
+                        [ROOT_ID, SYSTEM_ID, TEMPLATE_ID]
+                    ),
+                ),
+                _live_membership_in(
+                    role_db_cls.team_id, user_id, declarative_base, unique_suffix
+                ),
+            )
+        ]
+    elif required_permission_level in (
+        PermissionType.EDIT,
+        PermissionType.DELETE,
+        PermissionType.SHARE,
+    ):
+        conditions = [
+            _live_membership_in(
+                role_db_cls.team_id,
+                user_id,
+                declarative_base,
+                unique_suffix,
+                role_ids=admin_role_ids(declarative_base, unique_suffix),
+            ),
+            *_server_rows_kept(role_db_cls, required_permission_level),
+        ]
+    else:
+        return false()
+    return and_(role_db_cls.deleted_at.is_(None), *conditions)
+
+
 def _resolve_db_class(resource_cls: Type[Any], declarative_base) -> Type[Any]:
     """Resolve a resource class to its SQLAlchemy model class.
 
@@ -1468,19 +1605,8 @@ def _inherited_permission_filter(
     restrictions = []
     if hasattr(resource_db_cls, "deleted_at"):
         restrictions.append(resource_db_cls.deleted_at.is_(None))
-    if (
-        hasattr(resource_db_cls, "created_by_user_id")
-        and required_permission_level in SERVER_ROW_MODIFYING_LEVELS
-    ):
-        # The requester is neither ROOT nor SYSTEM (both returned earlier).
-        restrictions.append(
-            or_(
-                resource_db_cls.created_by_user_id.is_(None),
-                resource_db_cls.created_by_user_id.notin_(
-                    [ROOT_ID, SYSTEM_ID, TEMPLATE_ID]
-                ),
-            )
-        )
+    # The requester is neither ROOT nor SYSTEM (both returned earlier).
+    restrictions.extend(_server_rows_kept(resource_db_cls, required_permission_level))
     return and_(or_(*grants), *restrictions)
 
 
@@ -1516,7 +1642,7 @@ def generate_permission_filter(
     from zephyrex.database.StaticPermissions import (
         PermissionType,
     )  # Local import if needed
-    from zephyrex.logic.BLL_Auth import TeamModel, UserTeamModel
+    from zephyrex.logic.BLL_Auth import UserTeamModel
 
     if required_permission_level is None:
         required_permission_level = PermissionType.VIEW
@@ -1524,7 +1650,6 @@ def generate_permission_filter(
     # Get SQLAlchemy models using the declarative base
     resource_db_cls = _resolve_db_class(resource_cls, declarative_base)
 
-    team_db_cls = TeamModel.DB(declarative_base)
     user_team_db_cls = UserTeamModel.DB(declarative_base)
 
     # 0. Root/System User Check
@@ -1567,6 +1692,15 @@ def generate_permission_filter(
     import uuid
 
     unique_suffix = f"_{resource_cls.__name__}_{str(uuid.uuid4())[-8:]}"
+
+    if resource_db_cls.__tablename__ == ROLES_TABLE:
+        return _role_filter(
+            user_id,
+            resource_db_cls,
+            declarative_base,
+            required_permission_level,
+            unique_suffix,
+        )
 
     # Get accessible teams CTE with depth limit and unique name
     accessible_team_ids_cte = _get_admin_accessible_team_ids_cte(
@@ -1628,25 +1762,16 @@ def generate_permission_filter(
             PermissionType.SHARE,
         ]:
             # A live member of the record's own team whose role administers
-            # it (admin_role_ids, the rule TeamAuthority applies).
-            admin_roles = admin_role_ids(declarative_base, unique_suffix)
-            live_team = aliased(
-                team_db_cls, name=f"admin_role_live_team{unique_suffix}"
-            )
+            # it (admin_role_ids, the rule TeamAuthority applies). A deleted
+            # team's admins keep no hold on its records, as its members keep
+            # no view of them.
             conditions.append(
-                exists().where(
-                    and_(
-                        user_team_db_cls.user_id == user_id,
-                        user_team_db_cls.team_id == resource_db_cls.team_id,
-                        user_team_db_cls.role_id.in_(select(admin_roles.c.id)),
-                        user_team_db_cls.enabled == True,
-                        _active(user_team_db_cls),
-                        # A deleted team's admins keep no hold on its
-                        # records, as its members keep no view of them.
-                        resource_db_cls.team_id.in_(
-                            select(live_team.id).where(live_team.deleted_at.is_(None))
-                        ),
-                    )
+                _live_membership_in(
+                    resource_db_cls.team_id,
+                    user_id,
+                    declarative_base,
+                    unique_suffix,
+                    role_ids=admin_role_ids(declarative_base, unique_suffix),
                 )
             )
 
