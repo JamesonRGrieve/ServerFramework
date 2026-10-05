@@ -19,7 +19,10 @@ from zephyrex.extensions.crypto.PRV_Bitcoin import (
 )
 from zephyrex.extensions.crypto.PRV_Ethereum import PRV_Ethereum_Crypto
 from zephyrex.extensions.crypto.PRV_Solana import PRV_Solana_Crypto
-from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
 
 GENESIS = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
 SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com"
@@ -37,6 +40,15 @@ def _online(url: str) -> bool:
 
 def reachable(url: str) -> pytest.MarkDecorator:
     return pytest.mark.xfail(not _online(url), reason=f"{url} is unreachable")
+
+
+def answering(url: str) -> pytest.MarkDecorator:
+    """A public node that stops answering mid-test (the provider raises
+    TransientExternalError) is not a defect here. Any other failure, a wrong
+    answer from a live node included, still fails."""
+    return pytest.mark.xfail(
+        raises=TransientExternalError, reason=f"{url} stopped answering"
+    )
 
 
 def utxo(value: int, confirmed: bool = True, n: int = 0) -> dict:
@@ -192,6 +204,7 @@ class TestChainReads:
         assert history and history[0]["tx_id"]
 
     @reachable(SEPOLIA_RPC)
+    @answering(SEPOLIA_RPC)
     async def test_sepolia(self, provider_instance):
         wallet = provider_instance(
             PRV_Ethereum_Crypto,
@@ -203,6 +216,7 @@ class TestChainReads:
         assert Decimal(fees["max_fee_gwei"]) > 0
 
     @reachable(SOLANA_DEVNET)
+    @answering(SOLANA_DEVNET)
     async def test_solana_devnet(self, provider_instance):
         fresh = PRV_Solana_Crypto.generate(None)["address"]
         wallet = provider_instance(

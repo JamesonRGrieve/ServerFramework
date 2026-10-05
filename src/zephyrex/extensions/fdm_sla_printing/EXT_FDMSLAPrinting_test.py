@@ -200,7 +200,10 @@ class TestPrinters:
     @staticmethod
     def assert_only_tried(error: HTTPException, instance) -> None:
         """The rotation gave up on the named printer alone, and said why."""
-        attempted = error.detail["attempted_providers"]
+        # Starlette types detail as str; the rotation raises a dict.
+        detail: object = error.detail
+        assert isinstance(detail, dict)
+        attempted = detail["attempted_providers"]
         assert {a["provider_instance_id"] for a in attempted} == {str(instance.id)}
         assert "address not configured" in str(attempted)
 
