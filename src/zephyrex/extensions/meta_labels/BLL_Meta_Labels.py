@@ -23,7 +23,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
-from zephyrex.lib.Environment import env
 from zephyrex.lib.Preconditions import expect_route_record
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
@@ -122,12 +121,16 @@ class LabelManager(AbstractBLLManager, RouterMixin):
     tags: ClassVar[Optional[List[str]]] = ["Labels"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def _attach(self, label_id: str, target_type: str, target_id: str) -> str:
-        """Idempotently link ``label_id`` to ``(target_type, target_id)``."""
+    def _visible_links(
+        self, label_id: str, target_type: str, target_id: str
+    ) -> List[LabelLinkModel]:
+        """The requester's view of the links between a label and a target:
+        a link they cannot read is neither returned nor told apart from
+        none."""
         LinkDB = LabelLinkModel.DB(self.model_registry.DB.manager.Base)
-        existing = (
+        return (
             LinkDB.list(
-                requester_id=env("ROOT_ID"),
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 filters=[
                     LinkDB.label_id == label_id,
@@ -139,12 +142,18 @@ class LabelManager(AbstractBLLManager, RouterMixin):
             )
             or []
         )
+
+    def _attach(self, label_id: str, target_type: str, target_id: str) -> str:
+        """Idempotently link ``label_id`` to ``(target_type, target_id)``.
+        Only a label the requester can read may be attached; one they
+        cannot is answered as missing."""
+        existing = self._visible_links(label_id, target_type, target_id)
         if existing:
-            return existing[0].id  # type: ignore[no-any-return]
+            return existing[0].id
         LabelDB = LabelModel.DB(self.model_registry.DB.manager.Base)
         if (
             LabelDB.get(
-                requester_id=env("ROOT_ID"),
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=label_id,
                 return_type="dto",
@@ -153,6 +162,7 @@ class LabelManager(AbstractBLLManager, RouterMixin):
             is None
         ):
             raise HTTPException(status_code=404, detail="Label not found")
+        LinkDB = LabelLinkModel.DB(self.model_registry.DB.manager.Base)
         link = LinkDB.create(
             requester_id=self.requester.id,
             model_registry=self.model_registry,
@@ -165,23 +175,10 @@ class LabelManager(AbstractBLLManager, RouterMixin):
         return link.id  # type: ignore[no-any-return]
 
     def _detach(self, label_id: str, target_type: str, target_id: str) -> bool:
-        LinkDB = LabelLinkModel.DB(self.model_registry.DB.manager.Base)
-        existing = (
-            LinkDB.list(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                filters=[
-                    LinkDB.label_id == label_id,
-                    LinkDB.target_type == target_type,
-                    LinkDB.target_id == target_id,
-                ],
-                return_type="dto",
-                override_dto=LabelLinkModel,
-            )
-            or []
-        )
+        existing = self._visible_links(label_id, target_type, target_id)
         if not existing:
             return False
+        LinkDB = LabelLinkModel.DB(self.model_registry.DB.manager.Base)
         # The route names the link by its label and target; it is held to
         # the link row's version, answered as the requester sees it.
         links = LabelLinkManager(

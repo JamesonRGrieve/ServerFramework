@@ -159,6 +159,36 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
         assert detached.json()["detached"] is True
         assert server.get(link_url, headers=headers).status_code == 404
 
+    def test_a_label_attaches_and_detaches_as_its_requester_sees_it(
+        self, server, admin_a, admin_b
+    ):
+        """Attach and detach looked the label and its links up as ROOT: anyone
+        could attach any label, learn whether a label id existed, and be
+        handed another user's link id by attaching where theirs already
+        was. They now answer as the requester sees the label and its links."""
+        headers_a = self._get_appropriate_headers(admin_a.jwt)
+        headers_b = self._get_appropriate_headers(admin_b.jwt)
+        label = self._create(server, admin_a.jwt, admin_a.id, key="attach_as_seen")
+        linked = f"/v1/{self.base_endpoint}/{label['id']}/attach/note/{uuid.uuid4()}"
+        attached = server.post(linked, json={}, headers=headers_a)
+        assert attached.status_code in (200, 201), attached.text
+        link_id = attached.json()["link_id"]
+
+        onto_theirs = server.post(linked, json={}, headers=headers_b)
+        assert onto_theirs.status_code == 404, onto_theirs.text
+        assert link_id not in onto_theirs.text
+        fresh = f"/v1/{self.base_endpoint}/{label['id']}/attach/note/{uuid.uuid4()}"
+        onto_new = server.post(fresh, json={}, headers=headers_b)
+        assert onto_new.status_code == 404, onto_new.text
+        missing = f"/v1/{self.base_endpoint}/{uuid.uuid4()}/attach/note/{uuid.uuid4()}"
+        assert server.post(missing, json={}, headers=headers_b).text == onto_new.text
+
+        detach = server.delete(linked, headers={**headers_b, "If-Match": "*"})
+        assert detach.status_code == 200, detach.text
+        assert detach.json()["detached"] is False
+        link_url = f"/v1/label-links/{link_id}"
+        assert server.get(link_url, headers=headers_a).status_code == 200
+
     @pytest.mark.skip(
         reason="Requires prompts extension which is not loaded in meta_labels test suite"
     )
