@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
 OUTPUT_LIMIT_BYTES = 256 * 1024
+_USAGE = "usage: LimitedProcess.py MEMORY CPU FILE [NAME…] -- PROGRAM [ARGS]"
 
 
 @dataclass(frozen=True)
@@ -45,13 +46,20 @@ async def run_limited(
     env: Mapping[str, str],
 ) -> Completed:
     """Run ``command`` (no shell) in ``cwd`` with only ``env``; its exit
-    status and (bounded) output."""
+    status and (bounded) output.
+
+    The launcher is told which names ``env`` holds and execs the program
+    with those alone: whatever patches ``subprocess.Popen`` (Sentry's
+    integration adds its trace headers to every child) cannot add to what
+    the program sees. The values travel in the environment, never on argv.
+    """
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         os.path.abspath(__file__),
         str(limits.memory_bytes),
         str(limits.cpu_seconds),
         str(limits.file_bytes),
+        *env,
         "--",
         *command,
         cwd=cwd,
@@ -77,18 +85,23 @@ async def run_limited(
 
 
 def _limit_and_exec(argv: Sequence[str]) -> None:
-    """``<memory> <cpu> <file> -- program args…``: set the limits, then
-    become the program."""
+    """``<memory> <cpu> <file> NAME… -- program args…``: set the limits,
+    then become the program with only the named environment variables."""
     import resource
 
-    memory, cpu, file_size, separator, *command = argv
-    if separator != "--" or not command:
-        raise SystemExit("usage: LimitedProcess.py MEMORY CPU FILE -- PROGRAM [ARGS]")
+    if "--" not in argv[3:]:
+        raise SystemExit(_USAGE)
+    separator = argv.index("--", 3)
+    memory, cpu, file_size = argv[:3]
+    names, command = argv[3:separator], list(argv[separator + 1 :])
+    if not command:
+        raise SystemExit(_USAGE)
+    environment = {name: os.environ[name] for name in names if name in os.environ}
     resource.setrlimit(resource.RLIMIT_AS, (int(memory), int(memory)))
     resource.setrlimit(resource.RLIMIT_CPU, (int(cpu), int(cpu)))
     resource.setrlimit(resource.RLIMIT_FSIZE, (int(file_size), int(file_size)))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    os.execvp(command[0], command)
+    os.execvpe(command[0], command, environment)
 
 
 def available(program: str, path: Optional[str] = None) -> bool:

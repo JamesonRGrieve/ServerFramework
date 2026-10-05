@@ -2,11 +2,13 @@
 """LimitedProcess: a program runs with only the environment given, and
 each limit holds: memory, CPU time, file size and wall-clock time."""
 
+import asyncio
 import sys
 from pathlib import Path
 
 import pytest
 
+from zephyrex.lib import LimitedProcess
 from zephyrex.lib.LimitedProcess import (
     LimitExceeded,
     Limits,
@@ -38,6 +40,31 @@ async def test_a_program_runs_with_only_the_given_environment(tmp_path):
     )
     assert done.returncode == 0
     assert done.stdout.strip() == "['ONLY', 'PATH']"
+
+
+async def test_what_the_spawn_adds_never_reaches_the_program(tmp_path):
+    """Sentry's subprocess integration adds its trace headers to every
+    child's environment; the launcher used to pass the lot to the program.
+    It now hands on only the names it was given."""
+    launcher = await asyncio.create_subprocess_exec(
+        sys.executable,
+        LimitedProcess.__file__,
+        str(GENEROUS.memory_bytes),
+        str(GENEROUS.cpu_seconds),
+        str(GENEROUS.file_bytes),
+        "ONLY",
+        "PATH",
+        "--",
+        sys.executable,
+        "-c",
+        "import os; print(sorted(k for k in os.environ if k != 'LC_CTYPE'))",
+        cwd=str(tmp_path),
+        env={"PATH": "/usr/bin:/bin", "ONLY": "1", "SUBPROCESS_SENTRY_TRACE": "x"},
+        stdout=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await launcher.communicate()
+    assert launcher.returncode == 0
+    assert stdout.decode().strip() == "['ONLY', 'PATH']"
 
 
 async def test_memory_is_capped(tmp_path):
