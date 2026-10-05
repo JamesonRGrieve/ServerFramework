@@ -9,7 +9,13 @@ that code can be imported: the extension's ``manifest.toml``
 from the code; ``--check`` reports drift and exits non-zero instead (the
 test suite runs it).
 
-    python -m zephyrex.extensions.sync_dependencies [--check]
+Reading the code imports every extension, and with them their optional
+packages, so it needs every extra installed. ``--from-manifests`` instead
+checks ``pyproject.toml``'s extras against the manifests alone, importing no
+extension: what a release checks on a core-only install, after the commit
+gate has held the manifests to the code.
+
+    python -m zephyrex.extensions.sync_dependencies [--check] [--from-manifests]
 """
 
 import argparse
@@ -64,13 +70,23 @@ def declared_requirements() -> Dict[str, List[str]]:
     return requirements
 
 
+def manifest_requirements() -> Dict[str, List[str]]:
+    """Each extension's pip requirements as its manifest states them: what
+    an installer reads, without importing the extension."""
+    return {
+        folder.name: list(
+            tomllib.loads((folder / "manifest.toml").read_text())["pip_dependencies"]
+        )
+        for folder in extension_folders()
+    }
+
+
 def _toml_list(values: List[str]) -> str:
     return json.dumps(values)
 
 
-def expected_files() -> Dict[Path, str]:
-    """Every file this tool owns, as it should read."""
-    requirements = declared_requirements()
+def expected_files(requirements: Dict[str, List[str]]) -> Dict[Path, str]:
+    """Every file this tool owns, as it should read for ``requirements``."""
     files: Dict[Path, str] = {}
     for folder in extension_folders():
         manifest = folder / "manifest.toml"
@@ -106,10 +122,13 @@ def expected_files() -> Dict[Path, str]:
     return files
 
 
-def drift() -> List[Tuple[Path, str]]:
+def drift(from_manifests: bool = False) -> List[Tuple[Path, str]]:
+    requirements = (
+        manifest_requirements() if from_manifests else declared_requirements()
+    )
     return [
         (path, text)
-        for path, text in expected_files().items()
+        for path, text in expected_files(requirements).items()
         if path.read_text() != text
     ]
 
@@ -117,10 +136,15 @@ def drift() -> List[Tuple[Path, str]]:
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--from-manifests",
+        action="store_true",
+        help="hold pyproject's extras to the manifests, importing no extension",
+    )
     args = parser.parse_args(argv)
     from zephyrex.lib.Logging import logger
 
-    stale = drift()
+    stale = drift(from_manifests=args.from_manifests)
     if args.check:
         for path, _ in stale:
             logger.error(f"out of date (run sync_dependencies): {path}")

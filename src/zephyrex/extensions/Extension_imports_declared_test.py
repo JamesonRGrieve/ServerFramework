@@ -22,6 +22,8 @@ from zephyrex.extensions.sync_dependencies import (
     extension_folders,
 )
 
+_RELEASE_CHECK_TIMEOUT_SECONDS = 120
+
 # Import names that differ from the distribution that provides them.
 _DISTRIBUTION_OF = {
     "azure": "azure-storage-blob",
@@ -125,3 +127,33 @@ def test_every_imported_package_is_declared(folder: Path, requirements) -> None:
 def test_manifests_and_extras_match_the_code() -> None:
     """Run ``python -m zephyrex.extensions.sync_dependencies`` to fix."""
     assert [str(path) for path, _ in drift()] == []
+
+
+_RELEASE_CHECK = """
+import sys
+from zephyrex.extensions.sync_dependencies import main
+code = main(["--check", "--from-manifests"])
+loaded = sorted(
+    name for name in sys.modules
+    if name.startswith("zephyrex.extensions.") and name.count(".") >= 3
+)
+print(code, loaded)
+"""
+
+
+def test_the_release_check_imports_no_extension() -> None:
+    """A release checks the extras on a core-only install, where an
+    extension's optional packages (croniter for ai_agents) are absent: the
+    check read the code, imported every extension, and failed on the first.
+    It holds pyproject's extras to the manifests without importing one."""
+    import subprocess
+
+    done = subprocess.run(
+        [sys.executable, "-c", _RELEASE_CHECK],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=_RELEASE_CHECK_TIMEOUT_SECONDS,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().splitlines()[-1] == "0 []"

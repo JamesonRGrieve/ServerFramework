@@ -59,9 +59,12 @@ jobs:
           fi
 
       - name: Check extras match the extensions' declarations
+        # Against the manifests, importing no extension: only core is
+        # installed here, and an extension's optional packages are not.
+        # The commit gate holds the manifests to the code.
         run: |
           python -m pip install -e .
-          python -m zephyrex.extensions.sync_dependencies --check
+          python -m zephyrex.extensions.sync_dependencies --check --from-manifests
 
       - name: Build wheel and sdist
         # Both from the checkout (not the wheel from the sdist), so the
