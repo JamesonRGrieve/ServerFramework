@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
+name = "erp"
+version = "1.0.0"
+description = "Every DocType of an ERPNext site, read and written live under the site's own validation and permissions, and its signed webhooks passed on to subscribers"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_ERP"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
+
+[[extension_dependencies]]
+name = "federation"
+optional = false
+
+[[extension_dependencies]]
+name = "webhooks"
+optional = false

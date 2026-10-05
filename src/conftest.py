@@ -289,6 +289,9 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     # InfluxDB — time-series database. Tests against a live InfluxDB
     # instance (1.x or 2.x) are gated on these vars.
     "influxdb": ["INFLUXDB_URL", "INFLUXDB_TOKEN"],
+    # ERPNext (erp): a site and the API key pair of a System Manager there
+    # (who may list DocTypes); the tests make and remove their own ToDos.
+    "erpnext": ["ERPNEXT_URL", "ERPNEXT_API_KEY", "ERPNEXT_API_SECRET"],
 }
 
 
