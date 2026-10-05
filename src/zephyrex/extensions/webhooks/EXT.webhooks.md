@@ -54,7 +54,11 @@ dispatch_webhook_event(
 
 Each active, undeleted subscription that wants the event type gets a
 **delivery** (`WebhookDeliveryModel`) only when its owner can read the record
-the event is about, so no one hears of a record they could not see.
+the event is about, so no one hears of a record they could not see. An event
+about something no local table holds (a document in an upstream system, as
+the `erp` extension passes on) names its audience instead, with
+`may_see=lambda user_id: ...` in place of `about_model`/`about_id`; exactly
+one of the two is given.
 Deliveries inherit their subscription's access: the owner reads them at
 `/v1/webhook-delivery` (GET, list and search only); only the server writes
 them.

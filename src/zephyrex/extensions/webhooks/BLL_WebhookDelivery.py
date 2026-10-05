@@ -316,19 +316,44 @@ def _live_subscriptions(model_registry: Any, **criteria: Any) -> List[Any]:
     ).list(filters=[SubscriptionDB.deleted_at.is_(None)], **criteria)
 
 
+def _audience(
+    model_registry: Any,
+    about_model: Optional[Type[Any]],
+    about_id: Optional[str],
+    may_see: Optional[Callable[[str], bool]],
+) -> Callable[[str], bool]:
+    """Who may hear of an event: those who can read the local record it is
+    about, or, for an event about something no local table holds (a record
+    in an upstream system), those ``may_see`` admits. Exactly one of the two
+    is named."""
+    if may_see is not None:
+        if about_model is not None or about_id is not None:
+            raise ValueError("Name the record an event is about, or may_see, not both")
+        return may_see
+    if about_model is None or about_id is None:
+        raise ValueError("An event names the record it is about, or may_see")
+    model: Type[Any] = about_model
+    record_id: str = about_id
+    return lambda user_id: _may_see(model_registry, user_id, model, record_id)
+
+
 def dispatch_webhook_event(
     model_registry: Any,
     event_type: str,
     body: Dict[str, Any],
     *,
-    about_model: Type[Any],
-    about_id: str,
+    about_model: Optional[Type[Any]] = None,
+    about_id: Optional[str] = None,
+    may_see: Optional[Callable[[str], bool]] = None,
 ) -> List[str]:
     """Queue ``body`` for every active subscription that wants
-    ``event_type`` and whose owner can read the record it is about (a
-    record of ``about_model`` with id ``about_id``). The delivery ids."""
+    ``event_type`` and whose owner may hear of it: who can read the record
+    it is about (a record of ``about_model`` with id ``about_id``), or, for
+    an event about no local record, whom ``may_see(user_id)`` admits. The
+    delivery ids."""
     if not _EVENT_TYPE.fullmatch(event_type) or event_type == ALL_EVENTS:
         raise ValueError(f"{event_type!r} is not an event type")
+    admitted = _audience(model_registry, about_model, about_id, may_see)
     subscriptions = _live_subscriptions(model_registry, active=True)
     payload = json.dumps(body, separators=(",", ":"), sort_keys=True)
     # SYSTEM writes deliveries throughout: a row ROOT made only ROOT may change.
@@ -337,8 +362,8 @@ def dispatch_webhook_event(
     )
     queued: List[str] = []
     for subscription in subscriptions:
-        if not subscription.matches(event_type) or not _may_see(
-            model_registry, subscription.user_id, about_model, about_id
+        if not subscription.matches(event_type) or not admitted(
+            str(subscription.user_id)
         ):
             continue
         delivery = deliveries.create(

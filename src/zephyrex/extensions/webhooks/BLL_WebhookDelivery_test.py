@@ -184,6 +184,63 @@ class TestSubscriptions(ExtensionServerMixin):
             with pytest.raises(ValueError):
                 dispatch(server, bad, team_a)
 
+    def test_an_event_names_its_record_or_who_may_see_it_but_not_both(
+        self, server, team_a
+    ):
+        registry = server.app.state.model_registry
+        with pytest.raises(ValueError):
+            dispatch_webhook_event(registry, "team.audited", {})
+        with pytest.raises(ValueError):
+            dispatch_webhook_event(
+                registry,
+                "team.audited",
+                {},
+                about_model=TeamModel,
+                about_id=str(team_a.id),
+                may_see=lambda user_id: True,
+            )
+
+    def test_an_event_about_no_local_record_reaches_only_whom_may_see_admits(
+        self, server, admin_a, admin_b
+    ):
+        """An upstream system's event (an ERP document) has no local record
+        to check: the predicate decides, and a subscriber it refuses gets
+        nothing although their subscription wants every event."""
+        event = f"upstream.changed.{uuid.uuid4().hex[:8]}"
+        admitted = subscribe(
+            server, admin_a, "https://hooks.example.com/u", event_types=event
+        )
+        subscribe(server, admin_b, "https://hooks.example.com/u", event_types="*")
+        asked: List[str] = []
+
+        def may_see(user_id: str) -> bool:
+            asked.append(user_id)
+            return user_id == str(admin_a.id)
+
+        delivery_ids = dispatch_webhook_event(
+            server.app.state.model_registry, event, {"n": 1}, may_see=may_see
+        )
+        registry = server.app.state.model_registry
+        owners = {
+            WebhookSubscriptionModel.DB(registry.DB.manager.Base)
+            .get(
+                requester_id=env("ROOT_ID"),
+                model_registry=registry,
+                id=as_root(server).get(id=delivery_id).webhook_subscription_id,
+                return_type="dto",
+                override_dto=WebhookSubscriptionModel,
+            )
+            .user_id
+            for delivery_id in delivery_ids
+        }
+        reached = {
+            as_root(server).get(id=delivery_id).webhook_subscription_id
+            for delivery_id in delivery_ids
+        }
+        assert admitted["id"] in reached
+        assert owners == {str(admin_a.id)}
+        assert str(admin_b.id) in asked
+
 
 class TestDelivery(ExtensionServerMixin):
     extension_class = EXT_Webhooks
