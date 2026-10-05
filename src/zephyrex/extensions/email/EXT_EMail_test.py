@@ -18,7 +18,6 @@ from zephyrex.extensions.AbstractEXTTest import (
     ExtensionTestConfig,
     ExtensionTestType,
 )
-from zephyrex.lib.Environment import env
 from zephyrex.extensions.email.EXT_EMail import (
     EXT_EMail,
     AbstractEmailProvider,
@@ -193,12 +192,23 @@ class TestEXTEMail(ExtensionServerMixin):
             ExtensionTestType.ROTATION,
         },
         expected_abilities={
+            "email_attachment",
+            "email_attachments",
+            "email_delete",
+            "email_draft",
+            "email_flag",
+            "email_get",
+            "email_latest",
+            "email_mark_read",
+            "email_mark_unread",
+            "email_move",
+            "email_reply",
+            "email_search",
             "email_send",
-            "email_receive",
-            "email_templates",
-            "email_tracking",
             "email_status",
-            "email_config",
+            "email_thread_messages",
+            "email_threads",
+            "email_unflag",
         },
         expected_env_vars={
             "SENDGRID_API_KEY": "",
@@ -281,33 +291,13 @@ class TestEXTEMail(ExtensionServerMixin):
         finally:
             self._restore_providers(original)
 
-    def test_validate_config_no_providers(self):
-        """Test configuration validation for missing environment variables"""
-        # Test validates that the method returns issues when environment variables are missing
-        # Since we can't mock (per CLAUDE.md), this tests the actual current environment
-        issues = EXT_EMail.validate_config()
-        assert isinstance(issues, list), "validate_config should return a list"
-
-        # If environment variables are not set, there should be issues
-        # This is the actual behavior of the validate_config method
-        if not env("SENDGRID_API_KEY") or not env("SENDGRID_FROM_EMAIL"):
-            assert (
-                len(issues) > 0
-            ), "Should report issues when environment variables are missing"
-
-    def test_validate_config_with_providers(self, monkeypatch):
-        """Test configuration validation with providers."""
-        # No-mock pillar: use monkeypatch.setenv on the real env vars and
-        # mutate the real ``providers`` attribute. The validate_config
-        # method reads the real env via lib.Environment.env.
-        monkeypatch.setenv("SENDGRID_API_KEY", "test_key")
-        monkeypatch.setenv("SENDGRID_FROM_EMAIL", "test@example.com")
-        original = self._swap_providers([ConcreteEmailProvider])
-        try:
-            issues = EXT_EMail.validate_config()
-            assert isinstance(issues, list)
-        finally:
-            self._restore_providers(original)
+    def test_validate_config_asks_nothing_of_the_environment(self, monkeypatch):
+        """Mail goes through configured provider instances, so the extension
+        needs no SendGrid (or any) variable set. It used to report SendGrid's
+        variables missing on every deployment that used another provider."""
+        monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+        monkeypatch.delenv("SENDGRID_FROM_EMAIL", raising=False)
+        assert EXT_EMail.validate_config() == []
 
     @pytest.mark.external_api(provider="sendgrid")
     @pytest.mark.asyncio
@@ -387,16 +377,6 @@ class TestEXTEMail(ExtensionServerMixin):
         assert result is not None
         assert "not configured" not in str(result).lower()
 
-    def test_required_permissions(self):
-        """Test required permissions list"""
-        permissions = EXT_EMail.get_required_permissions()
-
-        assert isinstance(permissions, list)
-        assert "email:send" in permissions
-        assert "email:receive" in permissions
-        assert "email:manage_templates" in permissions
-        assert "email:track_delivery" in permissions
-
     def test_env_property(self):
         """Test environment variable property"""
         env_vars = EXT_EMail.env
@@ -420,68 +400,30 @@ class TestEXTEMail(ExtensionServerMixin):
         pip_names = [dep.name for dep in pip_deps]
         assert "sendgrid" in pip_names
 
-    def test_extension_status_ability(self, monkeypatch):
-        """Test email_status meta ability using real env vars."""
-        # No-mock pillar: monkeypatch the real env, not lib.Environment.env.
-        monkeypatch.setenv("SENDGRID_API_KEY", "test_key")
-        monkeypatch.setenv("EMAIL_PROVIDER", "sendgrid")
-
+    def test_status_reports_the_providers_and_nothing_of_the_environment(
+        self, monkeypatch
+    ):
+        """email_status used to say "configured" whenever SENDGRID_API_KEY
+        was set, whichever provider sent the mail; it now reports the version
+        and the providers offered."""
+        monkeypatch.setenv("SMTP_SERVER", "smtp.internal.example")
         status = EXT_EMail.get_extension_status()
+        assert status == {
+            "extension": "email",
+            "version": EXT_EMail.version,
+            "providers": sorted(EXT_EMail.get_provider_names()),
+        }
+        assert "smtp.internal.example" not in str(status)
 
-        assert status["extension"] == "email"
-        assert status["version"] == EXT_EMail.version
-        assert status["configured"] is True
-        assert status["default_provider"] == "sendgrid"
-
-    def test_extension_config_ability(self):
-        """Test email_config meta ability"""
-        # Test that get_configuration returns a dictionary with expected keys
-        # Since we can't mock (per CLAUDE.md), test actual behavior
-        config = EXT_EMail.get_configuration()
-
-        assert isinstance(config, dict), "get_configuration should return a dict"
-        assert "email_provider" in config, "Should have email_provider key"
-        assert "smtp_server" in config, "Should have smtp_server key"
-        assert "smtp_port" in config, "Should have smtp_port key"
-        assert "imap_server" in config, "Should have imap_server key"
-        assert "imap_port" in config, "Should have imap_port key"
-        assert (
-            "from_email_configured" in config
-        ), "Should have from_email_configured key"
-
-        # Check that from_email_configured is boolean
-        assert isinstance(
-            config["from_email_configured"], bool
-        ), "from_email_configured should be boolean"
-
-    def test_validate_configuration(self):
-        """Test configuration validation"""
-        # Test that validate_configuration returns a boolean
-        # Since we can't mock (per CLAUDE.md), test actual behavior
-        result = EXT_EMail.validate_configuration()
-        assert isinstance(
-            result, bool
-        ), "validate_configuration should return a boolean"
-
-        # The result depends on actual environment variables
-        # If SENDGRID_API_KEY and SENDGRID_FROM_EMAIL are set, should return True
-        # If not set, should return False based on the implementation
-
-    def test_get_default_provider_name(self):
-        """Test default provider name retrieval"""
-        # Test that get_default_provider_name returns a string
-        # Since we can't mock (per CLAUDE.md), test actual behavior
-        provider_name = EXT_EMail.get_default_provider_name()
-        assert isinstance(
-            provider_name, str
-        ), "get_default_provider_name should return a string"
-        assert provider_name in [
-            "sendgrid",
-            "gmail",
-            "outlook",
-            "smtp",
-            "imap",
-        ], "Should return a valid provider name"
+    def test_no_ability_reads_out_the_servers_mail_settings(self):
+        """email_config handed any caller of abilities the server's SMTP and
+        IMAP hosts and ports from the environment. It is gone, and so are the
+        abilities that were declared without an implementation."""
+        abilities = EXT_EMail.get_abilities()
+        for removed in ("email_config", "email_receive", "email_templates"):
+            assert removed not in EXT_EMail._abilities
+        assert "email_config" not in abilities
+        assert not hasattr(EXT_EMail, "get_configuration")
 
 
 class TestAbstractEmailProvider:

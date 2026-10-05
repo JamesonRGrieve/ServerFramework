@@ -41,15 +41,14 @@ Inbound mail (mail received into the app, not listed on request) comes in throug
 ```python
 class EXT_EMail(AbstractStaticExtension):
     name: ClassVar[str] = "email"
-    _abilities: ClassVar[Set[str]] = {
-        "email_status",     # Meta: report extension status
-        "email_config",     # Meta: report effective config
-        "email_send",       # Provider ability: send a message
-        "email_receive",
-        "email_templates",
-        "email_tracking",
-    }
+    # Filled by the @ability methods: email_send, email_get, email_search,
+    # email_reply, email_draft, the message and thread actions, and
+    # email_status (the version and the providers offered).
+    _abilities: ClassVar[Set[str]] = set()
 ```
+
+Mail goes through configured provider instances, so no ability reports the
+server's environment.
 
 ### Abstract provider
 

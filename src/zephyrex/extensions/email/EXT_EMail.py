@@ -1233,15 +1233,8 @@ class EXT_EMail(AbstractStaticExtension):
         ]
     )
 
-    # Meta abilities - extension-level abilities that work regardless of provider
-    _abilities: ClassVar[Set[str]] = {
-        "email_status",  # Meta ability to check email service status
-        "email_config",  # Meta ability to manage email configuration
-        "email_send",  # Send email ability
-        "email_receive",  # Receive email ability
-        "email_templates",  # Email template management
-        "email_tracking",  # Email tracking and delivery status
-    }
+    # Filled by the @ability methods below.
+    _abilities: ClassVar[Set[str]] = set()
 
     @classproperty
     def pip_dependencies(cls):
@@ -1271,26 +1264,6 @@ class EXT_EMail(AbstractStaticExtension):
         return abilities
 
     @classmethod
-    def register_ability(cls, ability: str):
-        """Register a new ability with this extension."""
-        cls._abilities.add(ability)
-
-    @classmethod
-    def get_registered_abilities(cls) -> Set[str]:
-        """Get all registered abilities."""
-        return cls._abilities.copy()
-
-    @classmethod
-    def get_providers(cls) -> Set[str]:
-        """Get the names of every concrete email provider currently loaded.
-
-        Built from the auto-discovered ``cls.providers`` list rather than a
-        hardcoded set so newly added provider classes (Stalwart, SMTP2go)
-        appear automatically without touching this method.
-        """
-        return {p.name for p in cls.providers if hasattr(p, "name")}
-
-    @classmethod
     def get_provider_class(cls, provider_name: str):
         """Look up a provider class by its ``name`` attribute (case-insensitive)."""
         target = provider_name.lower()
@@ -1298,48 +1271,6 @@ class EXT_EMail(AbstractStaticExtension):
             if getattr(provider, "name", "").lower() == target:
                 return provider
         raise ValueError(f"Unknown provider: {provider_name}")
-
-    @classmethod
-    def discover_abilities(cls):
-        """Discover abilities from provider classes."""
-        # This method would scan for abilities in provider classes
-        # For now, we'll just ensure basic abilities are registered
-        cls.register_ability("send_email")
-        cls.register_ability("send_invitation_email")
-        cls.register_ability("get_emails")
-        cls.register_ability("create_draft_email")
-        cls.register_ability("search_emails")
-        cls.register_ability("reply_to_email")
-        cls.register_ability("delete_email")
-        cls.register_ability("process_attachments")
-
-    @classmethod
-    async def execute_ability(
-        cls, ability_name: str, params: dict | None = None
-    ) -> str:
-        """Execute an ability by name."""
-        if ability_name not in cls.get_abilities():
-            return f"Ability '{ability_name}' not found"
-
-        # This would route to the appropriate provider method
-        # For now, return a placeholder response
-        return f"Executed ability: {ability_name}"
-
-    @classmethod
-    def validate_config(cls) -> List[str]:
-        """Validate extension configuration and return list of issues."""
-        issues = []
-
-        # Import env at call time so tests that patch lib.Environment.env are respected
-        from zephyrex.lib.Environment import env as _env
-
-        if not _env("SENDGRID_API_KEY"):
-            issues.append("SENDGRID_API_KEY environment variable not set")
-
-        if not _env("SENDGRID_FROM_EMAIL"):
-            issues.append("SENDGRID_FROM_EMAIL environment variable not set")
-
-        return issues
 
     @classmethod
     def register_services(cls, model_registry: Any, requester_id: str) -> List[Any]:
@@ -1352,79 +1283,16 @@ class EXT_EMail(AbstractStaticExtension):
         ]
 
     @classmethod
-    def get_required_permissions(cls) -> List[str]:
-        """Get required permissions for this extension."""
-        return [
-            "email:send",
-            "email:receive",
-            "email:manage_templates",
-            "email:track_delivery",
-        ]
-
-    # Abstract provider is defined in AbstractProvider_EMail.py with extension_type = "email"
-
-    @classmethod
     @ability(name="email_status")
     def get_extension_status(cls) -> Dict[str, Any]:
-        """
-        Get the current status of the email extension.
-        This is a meta ability that works regardless of provider.
-        """
-        # Import env at call time so tests that patch lib.Environment.env are respected
-        from zephyrex.lib.Environment import env as _env
-
+        """The extension's version and the email providers it offers.
+        Mail is sent through configured provider instances, so nothing here
+        reads the server's environment."""
         return {
             "extension": cls.name,
             "version": cls.version,
-            "providers_available": len(cls.providers),
-            "configured": bool(_env("SENDGRID_API_KEY")),
-            "default_provider": _env("EMAIL_PROVIDER") or "sendgrid",
+            "providers": sorted(cls.get_provider_names()),
         }
-
-    @classmethod
-    @ability(name="email_config")
-    def get_configuration(cls) -> Dict[str, Any]:
-        """
-        Get the current email configuration.
-        This is a meta ability that works regardless of provider.
-        """
-        # Import env at call time so tests that patch lib.Environment.env are respected
-        from zephyrex.lib.Environment import env as _env
-
-        return {
-            "email_provider": _env("EMAIL_PROVIDER") or "sendgrid",
-            "smtp_server": _env("SMTP_SERVER"),
-            "smtp_port": _env("SMTP_PORT") or "587",
-            "imap_server": _env("IMAP_SERVER"),
-            "imap_port": _env("IMAP_PORT") or "993",
-            "from_email_configured": bool(_env("SENDGRID_FROM_EMAIL")),
-        }
-
-    @classmethod
-    def validate_configuration(cls) -> bool:
-        """
-        Validate that the email extension is properly configured.
-        """
-        # Check for required environment variables
-        # Import env at call time so tests that patch lib.Environment.env are respected
-        from zephyrex.lib.Environment import env as _env
-
-        email_provider = _env("EMAIL_PROVIDER") or "sendgrid"
-
-        if email_provider == "sendgrid":
-            return bool(_env("SENDGRID_API_KEY") and _env("SENDGRID_FROM_EMAIL"))
-        elif email_provider in ["smtp", "imap"]:
-            return bool(_env("SMTP_SERVER") or _env("IMAP_SERVER"))
-
-        return False
-
-    @classmethod
-    def get_default_provider_name(cls) -> str:
-        """Get the default email provider name from configuration."""
-        # Import env at call time so tests that patch lib.Environment.env are respected
-        from zephyrex.lib.Environment import env as _env
-
-        return _env("EMAIL_PROVIDER") or "sendgrid"
 
     @classmethod
     def get_provider_names(cls) -> List[str]:
