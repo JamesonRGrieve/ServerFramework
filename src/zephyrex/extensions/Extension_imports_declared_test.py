@@ -24,10 +24,12 @@ from zephyrex.extensions.sync_dependencies import (
 
 # Import names that differ from the distribution that provides them.
 _DISTRIBUTION_OF = {
+    "azure": "azure-storage-blob",
     "google": "google-auth",
     "googleapiclient": "google-api-python-client",
     "influxdb_client": "influxdb-client",
     "llama_cpp": "llama-cpp-python",
+    "markdown_it": "markdown-it-py",
     "mysql": "mysql-connector-python",
     "opentelemetry": "opentelemetry-api",
     "prometheus_client": "prometheus-client",
@@ -46,6 +48,7 @@ _CORE_IMPORTS = frozenset(
         "broadcaster",
         "colorama",
         "cryptography",
+        "defusedxml",
         "distro",
         "dotenv",
         "email_validator",

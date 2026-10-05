@@ -491,7 +491,7 @@ Registers a static method as a webhook handler at /webhook/{ext}/{provider}/{eve
 ### `CustomRouteSpec` (class)
 
 - Module: `zephyrex.lib.CustomRoute`
-- Signature: `CustomRouteSpec(method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]]', output_model: 'Optional[Type[BaseModel]]', authentication_type: 'str' = 'session', openapi_tags: 'Tuple[str, ...]' = (), expose_in: 'FrozenSet[ExposeIn]' = frozenset({<ExposeIn.ALL: 'all'>}), graphql_kind: 'Optional[str] | None' = None, summary: 'Optional[str] | None' = None, description: 'Optional[str] | None' = None, response_class: 'Optional[Type[Response]]' = None) -> None`
+- Signature: `CustomRouteSpec(method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]]', output_model: 'Optional[Type[BaseModel]]', authentication_type: 'str' = 'session', openapi_tags: 'Tuple[str, ...]' = (), expose_in: 'FrozenSet[ExposeIn]' = frozenset({<ExposeIn.ALL: 'all'>}), graphql_kind: 'Optional[str] | None' = None, summary: 'Optional[str] | None' = None, description: 'Optional[str] | None' = None, response_class: 'Optional[Type[Response]]' = None, raw_body: 'bool' = False) -> None`
 - Live docstring: Frozen contract captured by the @custom_route decorator.
 
 Frozen specification produced by @custom_route.
@@ -515,7 +515,7 @@ Mixin that turns a BLL manager into a FastAPI router source.
 ### `custom_route` (decorator)
 
 - Module: `zephyrex.lib.CustomRoute`
-- Signature: `custom_route(*, method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]] | None' = None, output_model: 'Optional[Type[BaseModel]] | None' = None, authentication_type: 'str' = 'session', openapi_tags: 'Iterable[str]' = (), expose_in: 'Iterable[ExposeIn]' = (<ExposeIn.ALL: 'all'>,), graphql_kind: 'Optional[str] | None' = None, summary: 'Optional[str] | None' = None, description: 'Optional[str] | None' = None, response_class: 'Optional[Type[Response]]' = None) -> 'Callable'`
+- Signature: `custom_route(*, method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]] | None' = None, output_model: 'Optional[Type[BaseModel]] | None' = None, authentication_type: 'str' = 'session', openapi_tags: 'Iterable[str]' = (), expose_in: 'Iterable[ExposeIn]' = (<ExposeIn.ALL: 'all'>,), graphql_kind: 'Optional[str] | None' = None, summary: 'Optional[str] | None' = None, description: 'Optional[str] | None' = None, response_class: 'Optional[Type[Response]]' = None, raw_body: 'bool' = False) -> 'Callable'`
 - Live docstring: Decorator: tag a method with its route/SDK/GraphQL contract.
 
 Declares a non-CRUD REST/GraphQL/SDK route on a RouterMixin manager.

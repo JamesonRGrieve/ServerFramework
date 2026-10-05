@@ -377,7 +377,7 @@ class TestPipExtras:
         [
             ("email", "sendgrid"),
             ("auth-mfa", "pyotp"),
-            ("payment", "stripe"),
+            ("sms", "twilio"),
             ("cache", "redis"),
         ],
     )
