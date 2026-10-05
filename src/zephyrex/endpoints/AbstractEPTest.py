@@ -5901,21 +5901,21 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         headers_a = self._get_appropriate_headers(admin_a.jwt)
         headers_b = self._get_appropriate_headers(admin_b.jwt)
         nonexistent = f"{self.get_list_endpoint({})}/{uuid.uuid4()}"
-
-        times_404: list[float] = []
-        for _ in range(5):
-            t0 = time.perf_counter()
-            server.get(nonexistent, headers=headers_a)
-            times_404.append(time.perf_counter() - t0)
-
         entity = self._create(
             server, admin_a.jwt, admin_a.id, team_a.id, key="timing_check"
         )
         path_parent_ids = self._extract_path_parent_ids(entity)
         detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
 
+        # The two reads alternate, so load on a shared runner (the create's
+        # own hooks, other workers) falls on both alike; timed one batch
+        # after the other, only the forbidden reads ran in its wake.
+        times_404: list[float] = []
         times_403: list[float] = []
         for _ in range(5):
+            t0 = time.perf_counter()
+            server.get(nonexistent, headers=headers_a)
+            times_404.append(time.perf_counter() - t0)
             t0 = time.perf_counter()
             server.get(detail, headers=headers_b)
             times_403.append(time.perf_counter() - t0)
