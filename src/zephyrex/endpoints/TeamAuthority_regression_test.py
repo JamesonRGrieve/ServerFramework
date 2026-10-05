@@ -61,16 +61,32 @@ def _role_in(server: Any, owner: Any, team: Any, user: Any) -> Optional[str]:
     )
 
 
+def _saving_membership(server: Any, actor: Any, team: Any, user: Any) -> Dict[str, str]:
+    """``actor``'s headers for a save of ``user``'s membership, naming its
+    version as ``actor`` reads it (none when they cannot read it, so a
+    refusal is for who they are)."""
+    from zephyrex.testing.factories import if_match_of
+
+    rows = server.get(f"/v1/team/{team.id}/user", headers=_headers(actor))
+    if rows.status_code != 200:
+        return _headers(actor)
+    mine = [r for r in rows.json()["user_teams"] if r["user_id"] == user.id]
+    return {**_headers(actor), **(if_match_of(mine[0]) if mine else {})}
+
+
 def _set_role(server: Any, actor: Any, team: Any, user: Any, role_id: str) -> Any:
     return server.patch(
         f"/v1/team/{team.id}/user/{user.id}",
         json={"user_team": {"role_id": role_id}},
-        headers=_headers(actor),
+        headers=_saving_membership(server, actor, team, user),
     )
 
 
 def _remove(server: Any, actor: Any, team: Any, user: Any) -> Any:
-    return server.delete(f"/v1/team/{team.id}/user/{user.id}", headers=_headers(actor))
+    return server.delete(
+        f"/v1/team/{team.id}/user/{user.id}",
+        headers=_saving_membership(server, actor, team, user),
+    )
 
 
 # -- the member's own membership is read-only -------------------------------

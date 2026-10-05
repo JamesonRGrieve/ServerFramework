@@ -27,6 +27,7 @@ from zephyrex.extensions.auth_api_keys.BLL_Auth_APIKeys import (
 from zephyrex.extensions.auth_api_keys.EXT_Auth_APIKeys import EXT_Auth_APIKeys
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import UserManager, _api_key_hooks
+from zephyrex.testing.factories import current_if_match
 
 API_KEYS = "/v1/auth/api-keys"
 # The envelope key is the model's wire name, acronyms kept whole.
@@ -139,7 +140,14 @@ class TestAPIKeyEndpoints(ExtensionServerMixin):
 
     def test_validate_rejects_revoked_key(self, server, model_registry, admin_a):
         issued = self._issue(model_registry, admin_a.id)
-        revoked = server.delete(f"{API_KEYS}/{issued.id}", headers=_bearer(admin_a.jwt))
+        headers = _bearer(admin_a.jwt)
+        revoked = server.delete(
+            f"{API_KEYS}/{issued.id}",
+            headers={
+                **headers,
+                **current_if_match(server, f"{API_KEYS}/{issued.id}", headers),
+            },
+        )
         assert revoked.status_code in (200, 204), revoked.text
         assert not self._is_valid(model_registry, issued.key)
 

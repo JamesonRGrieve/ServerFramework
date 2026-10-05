@@ -168,7 +168,7 @@ class TestPayment_UserAndSessionEndpoints(
         response = server.put(
             "/v1/user",
             json={"user": {"external_payment_id": "cus_someone_else"}},
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._self_save_headers(server, admin_a.jwt),
         )
         assert response.status_code == 403, response.text
 
@@ -176,17 +176,20 @@ class TestPayment_UserAndSessionEndpoints(
         self, server: Any, admin_a: Any
     ) -> None:
         field = convert_field_name("external_payment_id")
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        # The save names the current version: the refusal is for the field.
+        if_match_arg = self._gql_if_match_arg(server, {"id": admin_a.id}, headers)
         mutation = (
-            'mutation { updateUser(input: {%s: "cus_someone_else"}) { id %s } }'
-            % (field, field)
+            'mutation { updateUser(input: {%s: "cus_someone_else"}%s) { id %s } }'
+            % (field, if_match_arg, field)
         )
-        response = server.post(
-            "/graphql",
-            json={"query": mutation},
-            headers=self._get_appropriate_headers(admin_a.jwt),
-        )
+        response = server.post("/graphql", json={"query": mutation}, headers=headers)
         data = response.json()
         assert data.get("errors"), json.dumps(data)
+        assert all(
+            error.get("extensions", {}).get("code") != "PRECONDITION_REQUIRED"
+            for error in data["errors"]
+        ), json.dumps(data)
         assert not (data.get("data") or {}).get("updateUser")
 
     def test_a_new_user_logs_in(self, server: Any) -> None:

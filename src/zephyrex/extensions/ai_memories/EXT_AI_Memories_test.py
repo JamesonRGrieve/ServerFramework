@@ -18,6 +18,7 @@ from zephyrex.extensions.ai_memories.BLL_AI_Memories import cosine, rank, words
 from zephyrex.extensions.ai_memories.EXT_AI_Memories import EXT_AI_Memories
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.pydantic2.registry import ModelRegistry
+from zephyrex.testing.factories import current_if_match
 
 
 def memory(content, embedding=None, model=None, created="2026-10-01"):
@@ -175,5 +176,11 @@ class TestMemories(ExtensionServerMixin):
             headers={"Authorization": f"Bearer {admin_b.jwt}"},
         )
         assert other.status_code == 404
-        gone = server.delete(f"/v1/memory/{memory_id}", headers=headers)
+        gone = server.delete(
+            f"/v1/memory/{memory_id}",
+            headers={
+                **headers,
+                **current_if_match(server, f"/v1/memory/{memory_id}", headers),
+            },
+        )
         assert gone.status_code == 204, gone.text

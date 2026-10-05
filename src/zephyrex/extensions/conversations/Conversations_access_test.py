@@ -22,9 +22,16 @@ from zephyrex.extensions.conversations.BLL_Conversations import (
 )
 from zephyrex.extensions.conversations.EXT_Conversations import EXT_Conversations
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.lib import Environment
 from zephyrex.lib.Environment import env
+from zephyrex.lib.Preconditions import IF_MATCH_REQUIRED_SETTING
 from zephyrex.pydantic2.registry import ModelRegistry
-from zephyrex.testing.factories import add_user_to_team, create_team
+from zephyrex.testing.factories import (
+    add_user_to_team,
+    create_team,
+    current_if_match,
+    if_match_of,
+)
 
 
 def auth(user) -> Dict[str, str]:
@@ -81,6 +88,28 @@ class TestConversationAccess(AcquaintedServer):
             json={"user_id": user_id},
             headers=auth(user),
         )
+
+    def _saving(self, server, user, url) -> Dict[str, str]:
+        """``user``'s headers for a save of the record at ``url``, naming the
+        version it reads there, as a client does."""
+        return {**auth(user), **current_if_match(server, url, auth(user))}
+
+    def _membership(self, server, user, conversation_id, user_id) -> Dict[str, Any]:
+        """The conversation_user row seating ``user_id``, as ``user`` reads it."""
+        response = server.get(
+            "/v1/conversation/user",
+            params={"conversation_id": conversation_id},
+            headers=auth(user),
+        )
+        assert response.status_code == 200, response.text
+        rows = [
+            row
+            for row in response.json()["conversation_users"]
+            if row["conversation_id"] == conversation_id and row["user_id"] == user_id
+        ]
+        assert len(rows) == 1, rows
+        found: Dict[str, Any] = rows[0]
+        return found
 
     def _messages(self, server, user, conversation_id):
         response = server.get(
@@ -150,16 +179,17 @@ class TestConversationAccess(AcquaintedServer):
 
     def test_only_the_author_edits(self, server, admin_a, user_b, shared):
         message = self._post(server, admin_a, shared["id"]).json()["message"]
+        url = f"/v1/message/{message['id']}"
         refused = server.put(
-            f"/v1/message/{message['id']}",
+            url,
             json={"message": {"content": "rewritten"}},
-            headers=auth(user_b),
+            headers=self._saving(server, user_b, url),
         )
         assert refused.status_code == 403, refused.text
         edited = server.put(
-            f"/v1/message/{message['id']}",
+            url,
             json={"message": {"content": "fixed typo"}},
-            headers=auth(admin_a),
+            headers=self._saving(server, admin_a, url),
         )
         assert edited.status_code == 200, edited.text
         assert edited.json()["message"]["edited_at"]
@@ -167,9 +197,15 @@ class TestConversationAccess(AcquaintedServer):
     def test_the_owner_deletes_anyones_message(self, server, admin_a, user_b, shared):
         theirs = self._post(server, user_b, shared["id"]).json()["message"]
         mine = self._post(server, admin_a, shared["id"]).json()["message"]
-        refused = server.delete(f"/v1/message/{mine['id']}", headers=auth(user_b))
+        mine_url = f"/v1/message/{mine['id']}"
+        theirs_url = f"/v1/message/{theirs['id']}"
+        refused = server.delete(
+            mine_url, headers=self._saving(server, user_b, mine_url)
+        )
         assert refused.status_code == 403, refused.text
-        removed = server.delete(f"/v1/message/{theirs['id']}", headers=auth(admin_a))
+        removed = server.delete(
+            theirs_url, headers=self._saving(server, admin_a, theirs_url)
+        )
         assert removed.status_code == 204, removed.text
 
     def test_an_outsider_cannot_add_people(self, server, admin_b, user_b, shared):
@@ -190,31 +226,53 @@ class TestConversationAccess(AcquaintedServer):
     def test_removal(self, server, admin_a, user_b, admin_b, shared):
         added = self._add(server, admin_a, shared["id"], admin_b.id)
         assert added.status_code == 200, added.text
-        # A participant cannot remove someone else, but can leave.
-        refused = server.delete(
-            f"/v1/conversation/{shared['id']}/participants/{admin_b.id}",
-            headers=auth(user_b),
+        # A participant cannot remove someone else, but can leave. The
+        # removal names the membership row's version.
+        url = f"/v1/conversation/{shared['id']}/participants/{admin_b.id}"
+        version = if_match_of(
+            self._membership(server, admin_b, shared["id"], admin_b.id)
         )
+        refused = server.delete(url, headers={**auth(user_b), **version})
         assert refused.status_code == 403, refused.text
-        left = server.delete(
-            f"/v1/conversation/{shared['id']}/participants/{admin_b.id}",
-            headers=auth(admin_b),
-        )
+        left = server.delete(url, headers={**auth(admin_b), **version})
         assert left.status_code == 200, left.text
         # Leaving revokes access.
         assert self._post(server, admin_b, shared["id"]).status_code in (403, 404)
         assert self._messages(server, admin_b, shared["id"]) == []
 
+    def test_removal_is_held_to_the_membership_version(
+        self, server, admin_a, admin_b, shared, monkeypatch
+    ):
+        """Regression: the route names the membership by two ids, so nothing
+        bound its If-Match and a stale removal (or one naming no version)
+        went through. It is held to the membership row's version."""
+        monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "true")
+        added = self._add(server, admin_a, shared["id"], admin_b.id)
+        assert added.status_code == 200, added.text
+        membership = self._membership(server, admin_a, shared["id"], admin_b.id)
+        url = f"/v1/conversation/{shared['id']}/participants/{admin_b.id}"
+
+        stale = server.delete(
+            url, headers={**auth(admin_a), "If-Match": '"1970-01-01T00:00:00"'}
+        )
+        assert stale.status_code == 412, stale.text
+        assert stale.json()["current"]["id"] == membership["id"]
+        missing = server.delete(url, headers=auth(admin_a))
+        assert missing.status_code == 428, missing.text
+        assert self._post(server, admin_b, shared["id"]).status_code == 201
+
+        removed = server.delete(
+            url, headers={**auth(admin_a), **if_match_of(membership)}
+        )
+        assert removed.status_code == 200, removed.text
+
     def test_only_the_owner_deletes_the_conversation(
         self, server, admin_a, user_b, shared
     ):
-        refused = server.delete(
-            f"/v1/conversation/{shared['id']}", headers=auth(user_b)
-        )
+        url = f"/v1/conversation/{shared['id']}"
+        refused = server.delete(url, headers=self._saving(server, user_b, url))
         assert refused.status_code == 403, refused.text
-        removed = server.delete(
-            f"/v1/conversation/{shared['id']}", headers=auth(admin_a)
-        )
+        removed = server.delete(url, headers=self._saving(server, admin_a, url))
         assert removed.status_code == 204, removed.text
 
     def test_feedback_is_its_authors(self, server, admin_a, user_b, shared):
@@ -237,7 +295,7 @@ class TestConversationAccess(AcquaintedServer):
         refused = server.put(
             f"/v1/feedback/{feedback['id']}",
             json={"feedback": {"positive": False}},
-            headers=auth(admin_a),
+            headers={**auth(admin_a), **if_match_of(feedback)},
         )
         assert refused.status_code == 403, refused.text
 

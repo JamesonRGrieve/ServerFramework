@@ -16,6 +16,7 @@ from zephyrex.extensions.health.BLL_Health import moment, sleep_minutes
 from zephyrex.extensions.health.EXT_Health import EXT_Health
 from zephyrex.extensions.health.Summary import summarize
 from zephyrex.pydantic2.registry import ModelRegistry
+from zephyrex.testing.factories import if_match_of
 
 MONDAY = datetime(2026, 9, 28, tzinfo=UTC)
 
@@ -123,7 +124,7 @@ class TestHealthLog(ExtensionServerMixin):
         moved = server.put(
             f"/v1/health_sleep/{night['id']}",
             json={"health_sleep": {"wake_time": "2026-09-29T07:00:00Z"}},
-            headers=auth(admin_a),
+            headers={**auth(admin_a), **if_match_of(night)},
         )
         assert moved.status_code == 200, moved.text
         assert moved.json()["health_sleep"]["duration_minutes"] == 480

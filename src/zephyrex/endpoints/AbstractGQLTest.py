@@ -6,6 +6,7 @@ import stringcase
 
 from zephyrex.lib.Environment import env, inflection
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.Preconditions import entity_etag
 from zephyrex.pydantic2.strawberry import convert_field_name
 from zephyrex.pydantic2.util import reference_relationship_name
 
@@ -106,6 +107,24 @@ class AbstractGraphQLTest:
             if gql_string_field is not None:
                 fields.insert(1, gql_string_field)
         return fields
+
+    def _gql_if_match_arg(
+        self, server: Any, entity: Dict[str, Any], headers: Dict[str, str]
+    ) -> str:
+        """The ``ifMatch`` argument a correct client passes to save (update
+        or delete) ``entity``: the version a read of it answers now
+        (``updatedAt``, else ``createdAt``), else the one on the row it
+        holds; nothing when it knows none."""
+        singular_name = self._gql_singular_name
+        args = "" if singular_name.lower() == "user" else f'(id: "{entity["id"]}")'
+        query = f"query {{ {singular_name}{args} {{ updatedAt createdAt }} }}"
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        read = (response.json().get("data") or {}).get(singular_name)
+        version = None
+        if isinstance(read, dict):
+            version = read.get("updatedAt") or read.get("createdAt")
+        etag = f'"{version}"' if version else entity_etag(entity)
+        return "" if etag is None else f", ifMatch: {json.dumps(etag)}"
 
     def test_GQL_query_single(self, server: Any, admin_a: Any, team_a: Any):
         """Test GraphQL single entity query."""
@@ -870,10 +889,11 @@ class AbstractGraphQLTest:
         input_str = "{" + ", ".join(input_fields) + "}"
 
         response_fields = self._gql_response_fields()
+        if_match_arg = self._gql_if_match_arg(server, entity, headers)
 
         mutation = f"""
         mutation {{
-            {mutation_name}(id: "{entity['id']}", input: {input_str}) {{
+            {mutation_name}(id: "{entity['id']}", input: {input_str}{if_match_arg}) {{
                 {chr(10).join("                " + field for field in response_fields)}
             }}
         }}
@@ -925,9 +945,10 @@ class AbstractGraphQLTest:
         )
 
         # Build the mutation
+        if_match_arg = self._gql_if_match_arg(server, entity, headers)
         mutation = f"""
         mutation {{
-            {mutation_name}(id: "{entity['id']}")
+            {mutation_name}(id: "{entity['id']}"{if_match_arg})
         }}
         """
 

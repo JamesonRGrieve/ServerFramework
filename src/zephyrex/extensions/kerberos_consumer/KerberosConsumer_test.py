@@ -44,7 +44,7 @@ from zephyrex.extensions.kerberos_consumer.PRV_KerberosKeytab import (
     tls_server_end_point,
 )
 from zephyrex.lib.Environment import env
-from zephyrex.testing.factories import INTERNAL_ACCOUNTS
+from zephyrex.testing.factories import INTERNAL_ACCOUNTS, if_match_of
 from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceManager,
@@ -560,9 +560,11 @@ class TestKerberosNegotiate(ExtensionServerMixin):
         assert [p["principal"] for p in mine.json()["kerberos_principals"]] == [
             principal("dave")
         ]
+        # The sign-in may stamp the link; the removal names the version listed.
+        (listed,) = mine.json()["kerberos_principals"]
         removed = server.delete(
             f"/v1/auth/kerberos/{link.id}",
-            headers={"Authorization": f"Bearer {user.jwt}"},
+            headers={"Authorization": f"Bearer {user.jwt}", **if_match_of(listed)},
         )
         assert removed.status_code == 204, removed.text
         again = client_token(realm.kinit("dave"))

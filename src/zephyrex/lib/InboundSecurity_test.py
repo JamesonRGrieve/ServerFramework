@@ -22,6 +22,7 @@ from zephyrex.lib.InboundSecurity import (
     rate_limit,
     validate_cors_config,
 )
+from zephyrex.testing.factories import current_if_match
 
 
 def _etag_app() -> TestClient:
@@ -1236,10 +1237,11 @@ class TestEmailUpdateValidation:
     """Email update uses the same validator as create."""
 
     def test_invalid_email_rejected_on_update(self, server, admin_a):
+        headers = {"Authorization": f"Bearer {admin_a.jwt}"}
         response = server.put(
             "/v1/user",
             json={"user": {"email": "not-an-email"}},
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            headers={**headers, **current_if_match(server, "/v1/user", headers)},
         )
         assert response.status_code in (
             400,

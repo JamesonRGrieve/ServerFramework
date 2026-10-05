@@ -24,7 +24,7 @@ from zephyrex.extensions.proxy_auth_consumer.EXT_ProxyAuthConsumer import (
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
-from zephyrex.testing.factories import create_user, generate_test_email
+from zephyrex.testing.factories import create_user, generate_test_email, if_match_of
 
 LOGIN = "/v1/auth/proxy/login"
 LINKS = "/v1/auth/proxy"
@@ -386,7 +386,8 @@ class TestProxySignIn(ExtensionServerMixin):
         [listed] = mine.json()["user_proxy_auth_links"]
         assert listed["identity"] == name
         removed = server.delete(
-            f"{LINKS}/{link.id}", headers={"Authorization": f"Bearer {user.jwt}"}
+            f"{LINKS}/{link.id}",
+            headers={"Authorization": f"Bearer {user.jwt}", **if_match_of(listed)},
         )
         assert removed.status_code == 204, removed.text
         assert self.login(proxied, {USER_HEADER: name}).status_code == 403

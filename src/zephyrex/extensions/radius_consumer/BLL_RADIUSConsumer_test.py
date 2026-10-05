@@ -38,7 +38,7 @@ from zephyrex.extensions.radius_consumer.RADIUSTestServers import (
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import reset_rate_limit_counts
 from zephyrex.logic.BLL_Auth import UserManager, UserModel
-from zephyrex.testing.factories import INTERNAL_ACCOUNTS
+from zephyrex.testing.factories import INTERNAL_ACCOUNTS, current_if_match
 
 SECRET = "a-long-shared-secret-for-the-tests-7f3a"
 USERS = {"alice": "wonderland", "bob": "builder", "carol": "singer"}
@@ -60,6 +60,12 @@ def _root() -> Dict[str, str]:
 
 def _bearer(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _root_saving(server: Any, path: str) -> Dict[str, str]:
+    """ROOT's headers for a save of the record at ``path``, naming the
+    version ROOT reads there, as a client does."""
+    return {**_root(), **current_if_match(server, path, _root())}
 
 
 @pytest.fixture(scope="module")
@@ -211,11 +217,17 @@ class TestRadiusSignIn(ExtensionServerMixin):
     def test_only_root_changes_or_deletes_a_server(self, server, admin_a, freeradius):
         created = self._udp(server, freeradius.udp_port)
         path = f"{SERVERS}/{created['id']}"
+        # The admin names the server's current version: the refusal is for
+        # who they are, not for a missing one.
+        saving = {
+            **_bearer(admin_a.jwt),
+            **current_if_match(server, path, _root()),
+        }
         changed = server.put(
-            path, json={"radius_server": {"name": "x"}}, headers=_bearer(admin_a.jwt)
+            path, json={"radius_server": {"name": "x"}}, headers=saving
         )
         assert changed.status_code in (403, 404)
-        deleted = server.delete(path, headers=_bearer(admin_a.jwt))
+        deleted = server.delete(path, headers=saving)
         assert deleted.status_code in (403, 404)
         assert server.get(path, headers=_root()).status_code == 200
 
@@ -299,11 +311,15 @@ class TestRadiusSignIn(ExtensionServerMixin):
         created = self._udp(server, freeradius.udp_port)
         path = f"{SERVERS}/{created['id']}"
         refused = server.put(
-            path, json={"radius_server": {"hosts": []}}, headers=_root()
+            path,
+            json={"radius_server": {"hosts": []}},
+            headers=_root_saving(server, path),
         )
         assert refused.status_code == 422
         renamed = server.put(
-            path, json={"radius_server": {"name": "renamed"}}, headers=_root()
+            path,
+            json={"radius_server": {"name": "renamed"}},
+            headers=_root_saving(server, path),
         )
         assert renamed.status_code == 200, renamed.text
         assert self._login(server, created, "alice", "wonderland").status_code == 200
@@ -418,7 +434,8 @@ class TestRadiusSignIn(ExtensionServerMixin):
     def test_a_deleted_server_signs_no_one_in(self, server, freeradius):
         """Root's reads include soft-deleted rows; sign-in must not."""
         radius_server = self._udp(server, freeradius.udp_port)
-        deleted = server.delete(f"{SERVERS}/{radius_server['id']}", headers=_root())
+        path = f"{SERVERS}/{radius_server['id']}"
+        deleted = server.delete(path, headers=_root_saving(server, path))
         assert deleted.status_code in (200, 204), deleted.text
         assert (
             self._login(server, radius_server, "alice", "wonderland").status_code == 404
@@ -434,7 +451,11 @@ class TestRadiusSignIn(ExtensionServerMixin):
         assert (
             self._login(server, radius_server, "alice", "wonderland").status_code == 200
         )
-        server.delete(f"{IDENTITIES}/{identity['id']}", headers=_root())
+        unlinked_path = f"{IDENTITIES}/{identity['id']}"
+        unlinked = server.delete(
+            unlinked_path, headers=_root_saving(server, unlinked_path)
+        )
+        assert unlinked.status_code in (200, 204), unlinked.text
         assert (
             self._login(server, radius_server, "alice", "wonderland").status_code == 403
         )

@@ -24,6 +24,7 @@ from pydantic import Field, model_validator
 
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
+from zephyrex.lib.Preconditions import expect_route_record
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -240,7 +241,10 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
             requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
         for membership in memberships:
-            root.delete_row(membership.id)
+            # The route names the membership by two ids; it is held to the
+            # membership row's version, answered as the requester sees it.
+            with expect_route_record(self.conversation_users, membership.id):
+                root.delete_row(membership.id)
         _revoke(self.model_registry, conversation_id, user_id)
 
     def get_participants(self, conversation_id: str) -> List[ConversationUserModel]:

@@ -9,12 +9,13 @@ entities, returning the created object.
 import base64
 import uuid
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Dict, Iterator, Mapping
 
 from faker import Faker
 from starlette.testclient import TestClient
 
 from zephyrex.lib.Environment import env
+from zephyrex.lib.Preconditions import IF_MATCH_HEADER, entity_etag
 from zephyrex.logic.BLL_Auth import (
     RoleModel,
     TeamModel,
@@ -133,6 +134,29 @@ def authorize_user(server, email: str, password=TEST_PASSWORD):
     )
     assert "token" in response.json(), "JWT token missing from authorization response."
     return response.json()["token"]
+
+
+def if_match_of(row: Any) -> Dict[str, str]:
+    """The If-Match header a client sends to save (PUT/PATCH/DELETE) a row
+    it holds (a serialised row or a model): the row's version,
+    ``"<updated_at ?? created_at>"``."""
+    etag = entity_etag(row)
+    if etag is None:
+        raise ValueError(f"the row carries no version: {row!r}")
+    return {IF_MATCH_HEADER: etag}
+
+
+def current_if_match(
+    server: TestClient, url: str, headers: Mapping[str, str]
+) -> Dict[str, str]:
+    """The If-Match header a correct client sends to save the record at
+    ``url``: it reads the record (GET, as ``headers``' caller) and names
+    the version the read answered with (its ETag)."""
+    response = server.get(url, headers=dict(headers))
+    assert response.status_code == 200, f"GET {url}: {response.text}"
+    etag = response.headers.get("etag")
+    assert etag is not None, f"GET {url} answered with no ETag"
+    return {IF_MATCH_HEADER: etag}
 
 
 def create_team(server, user_id, name="Test Team", parent_id=None):

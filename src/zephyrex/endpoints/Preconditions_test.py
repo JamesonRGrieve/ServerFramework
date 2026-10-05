@@ -5,7 +5,8 @@ A record's ETag is ``"<updated_at>"`` (``created_at`` before any update),
 exactly as its body serialises it. GET, create and update answer with it; a
 PUT or DELETE naming a version that is no longer current is refused with 412
 and the record as it stands, a batch with one stale record is refused whole,
-and with IF_MATCH_REQUIRED a save naming no version is refused with 428.
+and a save naming no version is refused with 428 unless the deployment opted
+out with IF_MATCH_REQUIRED=false (the default is required).
 
 Regression: before this, the REST PUT never handed If-Match to the manager,
 DELETE and batches had no check at all, and the manager compared a hash of
@@ -70,6 +71,90 @@ def if_match_required(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv(IF_MATCH_REQUIRED_SETTING, "true")
     monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "true")
     yield
+
+
+@pytest.fixture
+def if_match_lenient(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run the test as a deployment that opted out: IF_MATCH_REQUIRED=false."""
+    monkeypatch.setenv(IF_MATCH_REQUIRED_SETTING, "false")
+    monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "false")
+    yield
+
+
+@pytest.fixture
+def if_match_unset(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run the test with IF_MATCH_REQUIRED unset: the framework default."""
+    monkeypatch.delenv(IF_MATCH_REQUIRED_SETTING, raising=False)
+    default = Environment.AppSettings.model_fields[IF_MATCH_REQUIRED_SETTING].default
+    monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, default)
+    yield
+
+
+class TestRequiredByDefault:
+    """With IF_MATCH_REQUIRED unset, a save naming no version is refused
+    (428); reads and creates need none, and an action route is checked only
+    when it sends one."""
+
+    def test_a_save_naming_no_version_is_428(self, server, admin_a, if_match_unset):
+        team = _team(server, admin_a)
+        refused = _put(server, admin_a, team["id"])
+        assert refused.status_code == 428, refused.text
+        assert refused.json() == {"detail": REQUIRED_DETAIL}
+        assert _get(server, admin_a, team["id"]).json()["team"] == team
+
+    def test_a_delete_naming_no_version_is_428(self, server, admin_a, if_match_unset):
+        team = _team(server, admin_a)
+        refused = server.delete(f"{TEAMS}/{team['id']}", headers=_headers(admin_a))
+        assert refused.status_code == 428, refused.text
+        assert _get(server, admin_a, team["id"]).status_code == 200
+
+    def test_a_batch_lists_the_targets_naming_no_version(
+        self, server, admin_a, if_match_unset
+    ):
+        versioned, bare = _team(server, admin_a), _team(server, admin_a)
+        refused = server.put(
+            TEAMS,
+            json={
+                "team": {"description": "batched"},
+                "target_ids": [
+                    {"id": versioned["id"], "if_match": entity_etag(versioned)},
+                    bare["id"],
+                ],
+            },
+            headers=_headers(admin_a),
+        )
+        assert refused.status_code == 428, refused.text
+        assert refused.json() == {
+            "detail": REQUIRED_DETAIL,
+            "missing_ids": [bare["id"]],
+        }
+
+    def test_a_graphql_save_naming_no_version_is_refused(
+        self, server, admin_a, if_match_unset
+    ):
+        team = _team(server, admin_a)
+        query = 'mutation { updateTeam(id: "%s", input: {name: "GQL"}) { id } }' % (
+            team["id"]
+        )
+        response = server.post(
+            "/graphql", json={"query": query}, headers=_headers(admin_a)
+        )
+        assert response.status_code == 200, response.text
+        (error,) = response.json()["errors"]
+        assert error["extensions"]["code"] == "PRECONDITION_REQUIRED"
+        assert error["extensions"]["status"] == 428
+
+    def test_reads_and_creates_need_none(self, server, admin_a, if_match_unset):
+        created = _create(server, admin_a)
+        assert created.status_code == 201, created.text
+        team_id = created.json()["team"]["id"]
+        assert _get(server, admin_a, team_id).status_code == 200
+
+    def test_the_current_version_saves(self, server, admin_a, if_match_unset):
+        team = _team(server, admin_a)
+        etag = entity_etag(team)
+        assert etag is not None
+        assert _put(server, admin_a, team["id"], **_if_match(etag)).status_code == 200
 
 
 class TestTheETag:
@@ -172,7 +257,7 @@ class TestSave:
         saved = _put(server, admin_a, team["id"], **_if_match(header))
         assert saved.status_code == 200, saved.text
 
-    def test_no_version_saves_while_lenient(self, server, admin_a):
+    def test_no_version_saves_while_lenient(self, server, admin_a, if_match_lenient):
         team = _team(server, admin_a)
         assert _put(server, admin_a, team["id"]).status_code == 200
 
@@ -212,7 +297,7 @@ class TestDelete:
         assert deleted.status_code == 204, deleted.text
         assert _get(server, admin_a, team["id"]).status_code == 404
 
-    def test_no_version_deletes_while_lenient(self, server, admin_a):
+    def test_no_version_deletes_while_lenient(self, server, admin_a, if_match_lenient):
         team = _team(server, admin_a)
         assert self._delete(server, admin_a, team["id"]).status_code == 204
 
@@ -364,7 +449,9 @@ class TestSelfScopedUser:
         assert after["display_name"] == "Fresh"
         assert entity_etag(after) != etag
 
-    def test_a_profile_save_naming_no_version_saves_while_lenient(self, server, user):
+    def test_a_profile_save_naming_no_version_saves_while_lenient(
+        self, server, user, if_match_lenient
+    ):
         assert self._profile(server, user, "Unversioned").status_code == 200
         assert self._me(server, user)["display_name"] == "Unversioned"
 
@@ -376,6 +463,36 @@ class TestSelfScopedUser:
         assert refused.status_code == 428, refused.text
         assert refused.json() == {"detail": REQUIRED_DETAIL}
         assert self._me(server, user) == before
+
+    def test_the_profile_answers_with_its_version_as_the_etag(self, server, user):
+        """Regression: GET /v1/user answered with a body-hash validator, so
+        a client that copied its ETag into If-Match was refused (412) on
+        every profile save."""
+        read = server.get("/v1/user", headers=_headers(user))
+        assert read.status_code == 200, read.text
+        assert read.headers["etag"] == entity_etag(read.json()["user"])
+        saved = self._profile(server, user, "Header", **_if_match(read.headers["etag"]))
+        assert saved.status_code == 200, saved.text
+        assert saved.headers["etag"] == entity_etag(saved.json()["user"])
+        assert saved.headers["etag"] != read.headers["etag"]
+
+    def test_self_deletion_is_held_to_the_requesters_row(
+        self, server, user, if_match_required
+    ):
+        """Regression: ``DELETE /v1/user`` names no record in its path and
+        nothing bound its If-Match, so a stale self-deletion went through."""
+        stale = self._make_stale(server, user)
+        refused = server.delete("/v1/user", headers=_headers(user, **_if_match(stale)))
+        assert refused.status_code == 412, refused.text
+        assert refused.json()["current"]["id"] == user.id
+        missing = server.delete("/v1/user", headers=_headers(user))
+        assert missing.status_code == 428, missing.text
+        current = entity_etag(self._me(server, user))
+        assert current is not None
+        deleted = server.delete(
+            "/v1/user", headers=_headers(user, **_if_match(current))
+        )
+        assert deleted.status_code == 204, deleted.text
 
     def test_a_stale_password_change_is_refused_and_changes_nothing(self, server, user):
         from zephyrex.testing.factories import TEST_PASSWORD
@@ -399,7 +516,7 @@ class TestSelfScopedUser:
         assert self._signs_in_with(server, user, self.NEW_PASSWORD)
 
     def test_a_password_change_naming_no_version_goes_through_while_lenient(
-        self, server, user
+        self, server, user, if_match_lenient
     ):
         assert self._password(server, user).status_code == 200
         assert self._signs_in_with(server, user, self.NEW_PASSWORD)
@@ -441,7 +558,9 @@ class TestBatch:
             unchanged = _get(server, admin_a, team["id"]).json()["team"]
             assert unchanged["description"] == "concurrency"
 
-    def test_current_versions_and_bare_ids_save(self, server, admin_a):
+    def test_current_versions_and_bare_ids_save_while_lenient(
+        self, server, admin_a, if_match_lenient
+    ):
         versioned, bare = _team(server, admin_a), _team(server, admin_a)
         saved = self._batch_put(
             server,

@@ -19,8 +19,11 @@ reach the database through manager overrides and custom-route code whose
 signatures the framework does not own; a write to a row no request named is
 never affected.
 
-``IF_MATCH_REQUIRED`` (default false) turns a missing If-Match on a bound
-save (PUT/PATCH/DELETE) from accepted into 428.
+``IF_MATCH_REQUIRED`` (default true) refuses a bound save (PUT/PATCH/DELETE)
+that names no version with 428; ``false`` accepts it. Bindings are made only
+by the HTTP layer for the request's own records, so a write the server makes
+on its own (background services, hooks, migrations, seeding) is never held
+to it.
 """
 
 from __future__ import annotations
@@ -78,7 +81,7 @@ def etag_headers(entity: Any) -> Dict[str, str]:
 
 def if_match_required() -> bool:
     """Whether a bound write without If-Match is refused (428)."""
-    return env_bool(IF_MATCH_REQUIRED_SETTING)
+    return env_bool(IF_MATCH_REQUIRED_SETTING, default=True)
 
 
 @dataclass(frozen=True)
@@ -192,6 +195,10 @@ class _Expectations:
     # sends one.
     may_require: bool = True
     claimed: Set[str] = field(default_factory=set)
+    # Closed when the request's write ends. Work the request spawned (a task
+    # or thread that copied its context) and that outlives it is the
+    # server's own and holds no client version.
+    open: bool = True
 
     def requires(self) -> bool:
         return self.may_require and if_match_required()
@@ -232,12 +239,14 @@ def expect_versions(
     by_id = {
         str(entity_id): _parse(header) for entity_id, header in if_match_by_id.items()
     }
-    token = _expectations.set(_Expectations(table, by_id, may_require))
+    expectations = _Expectations(table, by_id, may_require)
+    token = _expectations.set(expectations)
     try:
         yield
     except StaleVersionError as stale:
         raise PreconditionFailed(manager.visible_current(stale.entity_id)) from stale
     finally:
+        expectations.open = False
         _expectations.reset(token)
 
 
@@ -270,10 +279,12 @@ def expect_route_version(
         # The path names its record by more than one id (a membership is
         # /{team_id}/user/{user_id}) or by none (the requester's own
         # account): the route resolves it and binds it itself.
-        token = _route_if_match.set(_RouteIfMatch(if_match, verb in _SAVE_METHODS))
+        pending = _RouteIfMatch(if_match, verb in _SAVE_METHODS)
+        token = _route_if_match.set(pending)
         try:
             yield
         finally:
+            pending.open = False
             _route_if_match.reset(token)
         return
     with expect_versions(
@@ -282,10 +293,12 @@ def expect_route_version(
         yield
 
 
-@dataclass(frozen=True)
+@dataclass
 class _RouteIfMatch:
     header: Optional[str]
     may_require: bool
+    # Closed when the route returns, as _Expectations.open.
+    open: bool = True
 
 
 _route_if_match: ContextVar[Optional[_RouteIfMatch]] = ContextVar(
@@ -293,12 +306,18 @@ _route_if_match: ContextVar[Optional[_RouteIfMatch]] = ContextVar(
 )
 
 
+def _pending_route_if_match() -> Optional[_RouteIfMatch]:
+    """The If-Match a running custom route recorded, or None outside one."""
+    pending = _route_if_match.get()
+    return pending if pending is not None and pending.open else None
+
+
 @contextmanager
 def expect_route_record(manager: Any, entity_id: str) -> Iterator[None]:
     """Hold a write to the record a custom route resolved itself to the
     request's If-Match, for a route whose path names its record by several
     ids. Outside such a request it binds nothing."""
-    pending = _route_if_match.get()
+    pending = _pending_route_if_match()
     if pending is None:
         yield
         return
@@ -315,7 +334,7 @@ def check_route_record(manager: Any, entity_id: str) -> None:
     with the record as the requester may see it when it has moved on, 428
     when one is required and the request sent none. Outside a route that
     recorded an If-Match it checks nothing."""
-    pending = _route_if_match.get()
+    pending = _pending_route_if_match()
     if pending is None:
         return
     if_match = _parse(pending.header)
@@ -330,16 +349,22 @@ def check_route_record(manager: Any, entity_id: str) -> None:
 
 def expected_version(table: str, entity_id: str) -> Tuple[bool, Optional[IfMatch]]:
     """``(bound, if_match)`` for a record, without claiming it."""
-    bound = _expectations.get()
+    bound = _open_expectations()
     if bound is None or bound.table != table or entity_id not in bound.by_id:
         return False, None
     return True, bound.by_id[entity_id]
 
 
+def _open_expectations() -> Optional[_Expectations]:
+    """The running request write's binding, or None outside one."""
+    bound = _expectations.get()
+    return bound if bound is not None and bound.open else None
+
+
 def missing_is_refused() -> bool:
     """Whether the bound request must name a version (IF_MATCH_REQUIRED, for
     a save)."""
-    bound = _expectations.get()
+    bound = _open_expectations()
     return bound is not None and bound.requires()
 
 
@@ -351,7 +376,7 @@ def claim_expected_version(table: str, entity_id: str) -> Optional[IfMatch]:
     bound, if_match = expected_version(table, entity_id)
     if not bound:
         return None
-    expectations = _expectations.get()
+    expectations = _open_expectations()
     assert expectations is not None
     if entity_id in expectations.claimed:
         return None

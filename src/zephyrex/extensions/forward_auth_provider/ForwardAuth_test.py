@@ -47,6 +47,7 @@ from zephyrex.testing.factories import (
     create_team,
     create_user,
     generate_test_email,
+    if_match_of,
 )
 
 VERIFY = "/v1/auth/forward/verify"
@@ -188,7 +189,8 @@ def rule(server: TestClient) -> Iterator[Callable[..., Dict[str, Any]]]:
 
     yield _make
     for rule_id in made:
-        server.delete(f"{RULES}/{rule_id}", headers=root())
+        # Cleanup removes the rule whatever its version (If-Match: *).
+        server.delete(f"{RULES}/{rule_id}", headers={**root(), "If-Match": "*"})
 
 
 class TestSignedIn:
@@ -468,7 +470,10 @@ class TestRules:
         deleted = rule(path_prefix="/gone", required_team_id=team.id)
         assert ask(proxy, token=outsider.jwt, uri="/gone").status_code == 403
         assert (
-            server.delete(f"{RULES}/{deleted['id']}", headers=root()).status_code == 204
+            server.delete(
+                f"{RULES}/{deleted['id']}", headers={**root(), **if_match_of(deleted)}
+            ).status_code
+            == 204
         )
         assert ask(proxy, token=outsider.jwt, uri="/gone").status_code == 200
         rule(path_prefix="/off", required_team_id=team.id, enabled=False)
@@ -531,13 +536,16 @@ class TestRuleAdministration:
             headers=bearer,
         )
         assert created.status_code == 403
+        # The caller names the rule's current version: the refusal is for who
+        # they are, not for a missing one.
+        saving = {**bearer, **if_match_of(made)}
         changed = server.put(
             f"{RULES}/{made['id']}",
             json={"forward_auth_rule": {"enabled": False}},
-            headers=bearer,
+            headers=saving,
         )
         assert changed.status_code == 403
-        assert server.delete(f"{RULES}/{made['id']}", headers=bearer).status_code == 403
+        assert server.delete(f"{RULES}/{made['id']}", headers=saving).status_code == 403
 
     def test_malformed_rules_are_refused(self, server: TestClient) -> None:
         for fields in (

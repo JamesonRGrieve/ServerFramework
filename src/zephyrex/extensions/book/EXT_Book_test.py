@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.book.EXT_Book import EXT_Book
 from zephyrex.pydantic2.registry import ModelRegistry
+from zephyrex.testing.factories import if_match_of
 
 
 def auth(user) -> Dict[str, str]:
@@ -76,8 +77,9 @@ class TestBooks(ExtensionServerMixin):
         updated = server.put(
             f"/v1/book_chapter/{chapter['id']}",
             json={"book_chapter": {"word_count": 999}},
-            headers=auth(admin_a),
+            headers={**auth(admin_a), **if_match_of(chapter)},
         )
+        assert updated.status_code == 200, updated.text
         assert updated.json()["book_chapter"]["word_count"] == 2
 
     def test_a_chapter_counts_its_own_words(self, server, admin_a, book):
@@ -86,7 +88,7 @@ class TestBooks(ExtensionServerMixin):
         updated = server.put(
             f"/v1/book_chapter/{chapter['id']}",
             json={"book_chapter": {"content": "just two"}},
-            headers=auth(admin_a),
+            headers={**auth(admin_a), **if_match_of(chapter)},
         )
         assert updated.status_code == 200, updated.text
         assert updated.json()["book_chapter"]["word_count"] == 2

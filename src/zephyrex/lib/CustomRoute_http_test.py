@@ -25,6 +25,7 @@ from zephyrex.extensions.auth_notifications.EXT_Auth_Notifications import (
     EXT_Auth_Notifications,
 )
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route, register_custom_routes
+from zephyrex.testing.factories import current_if_match
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     HookContext,
@@ -426,11 +427,23 @@ class TestNotificationRoutesOverHTTP(ExtensionServerMixin):
         state: Dict[str, Any] = fetched.json()["user_notification"]
         return state
 
+    @staticmethod
+    def _version(server: TestClient, user: Any, row_id: str) -> Dict[str, str]:
+        """The If-Match naming the row's version as ``user`` reads it."""
+        return current_if_match(
+            server, f"{USER_NOTIFICATIONS}/{row_id}", _bearer(user.jwt)
+        )
+
     def test_mark_read_and_acknowledge(self, server, admin_a):
         row_id = self._deliver(server, admin_a, "http read")
 
         read = server.patch(
-            f"{USER_NOTIFICATIONS}/{row_id}/read", json={}, headers=_bearer(admin_a.jwt)
+            f"{USER_NOTIFICATIONS}/{row_id}/read",
+            json={},
+            headers={
+                **_bearer(admin_a.jwt),
+                **self._version(server, admin_a, row_id),
+            },
         )
         assert read.status_code == 200, read.text
         assert read.json()["id"] == row_id
@@ -440,7 +453,10 @@ class TestNotificationRoutesOverHTTP(ExtensionServerMixin):
         acknowledged = server.patch(
             f"{USER_NOTIFICATIONS}/{row_id}/acknowledge",
             json={},
-            headers=_bearer(admin_a.jwt),
+            headers={
+                **_bearer(admin_a.jwt),
+                **self._version(server, admin_a, row_id),
+            },
         )
         assert acknowledged.status_code == 200, acknowledged.text
         assert acknowledged.json()["acknowledged"] is True
@@ -452,11 +468,14 @@ class TestNotificationRoutesOverHTTP(ExtensionServerMixin):
 
     def test_other_user_cannot_mark_or_acknowledge(self, server, admin_a, admin_b):
         row_id = self._deliver(server, admin_a, "http not yours")
+        # admin_b names the row's current version: the refusal is for who
+        # they are, not for a missing or stale one.
+        version = self._version(server, admin_a, row_id)
         for action in ("read", "acknowledge"):
             response = server.patch(
                 f"{USER_NOTIFICATIONS}/{row_id}/{action}",
                 json={},
-                headers=_bearer(admin_b.jwt),
+                headers={**_bearer(admin_b.jwt), **version},
             )
             assert response.status_code == 403, response.text
 

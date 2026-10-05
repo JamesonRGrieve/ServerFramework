@@ -47,6 +47,7 @@ from zephyrex.logic.BLL_Auth import UserManager
 from zephyrex.testing.factories import (
     INTERNAL_ACCOUNTS,
     create_user,
+    if_match_of,
     internal_account_email,
 )
 
@@ -252,7 +253,7 @@ class TestDirectories:
         response = server.put(
             f"{DIRECTORY_ROUTE}/{created['id']}",
             json={"ldap_directory": {"security": "plain"}},
-            headers=root(),
+            headers={**root(), **if_match_of(created)},
         )
         assert response.status_code == 422, response.text
 
@@ -264,7 +265,7 @@ class TestDirectories:
         response = server.put(
             f"{DIRECTORY_ROUTE}/{created['id']}",
             json={"ldap_directory": {cleared: None}},
-            headers=root(),
+            headers={**root(), **if_match_of(created)},
         )
         assert response.status_code == 422, response.text
 
@@ -279,7 +280,7 @@ class TestDirectories:
         updated = server.put(
             f"{DIRECTORY_ROUTE}/{created['id']}",
             json={"ldap_directory": {"bind_password": SERVICE_PASSWORD}},
-            headers=root(),
+            headers={**root(), **if_match_of(created)},
         )
         assert updated.status_code == 200, updated.text
         assert "bind_password" not in updated.json()["ldap_directory"]

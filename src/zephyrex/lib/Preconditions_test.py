@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The version/ETag rules and the request-scoped If-Match binding."""
 
+import asyncio
 from datetime import datetime
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import pytest
 from pydantic import BaseModel
@@ -15,12 +16,15 @@ from zephyrex.lib.Preconditions import (
     PreconditionFailed,
     PreconditionRequired,
     StaleVersionError,
+    check_route_record,
     claim_expected_version,
     entity_etag,
     entity_version,
+    expect_route_record,
     expect_route_version,
     expect_versions,
     expected_version,
+    if_match_required,
     missing_is_refused,
     none_match_hits,
     route_target_id,
@@ -57,6 +61,28 @@ def required(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv(IF_MATCH_REQUIRED_SETTING, "true")
     monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "true")
     yield
+
+
+@pytest.fixture
+def lenient(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """A deployment that opted out: IF_MATCH_REQUIRED=false."""
+    monkeypatch.setenv(IF_MATCH_REQUIRED_SETTING, "false")
+    monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "false")
+    yield
+
+
+class TestDefault:
+    def test_the_setting_defaults_to_required(self):
+        field = Environment.AppSettings.model_fields[IF_MATCH_REQUIRED_SETTING]
+        assert field.default == "true"
+
+    def test_an_unset_setting_is_required(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv(IF_MATCH_REQUIRED_SETTING, raising=False)
+        monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "")
+        assert if_match_required()
+
+    def test_false_opts_out(self, lenient):
+        assert not if_match_required()
 
 
 class TestVersion:
@@ -146,7 +172,7 @@ class TestBinding:
         with expect_versions(ModelLessManager(), {"w1": '"v1"'}):
             assert expected_version(TABLE, "w1") == (False, None)
 
-    def test_missing_is_accepted_while_lenient(self):
+    def test_missing_is_accepted_while_lenient(self, lenient):
         with expect_versions(WidgetManager(), {"w1": None}):
             assert not missing_is_refused()
             assert claim_expected_version(TABLE, "w1") is None
@@ -162,6 +188,25 @@ class TestBinding:
             with expect_versions(WidgetManager(), {"w1": '"v1"'}):
                 raise StaleVersionError(TABLE, "w1")
         assert refused.value.body()["current"]["id"] == "w1"
+
+    async def test_work_that_outlives_the_request_is_not_held(self, required):
+        """A task the request spawned copies its context, binding included;
+        once the request's write ends, the task's own writes are the
+        server's and are held to no client version (no 428, no 412)."""
+        release = asyncio.Event()
+        seen: List[Any] = []
+
+        async def background() -> None:
+            await release.wait()
+            seen.append(expected_version(TABLE, "w1"))
+            seen.append(missing_is_refused())
+            seen.append(claim_expected_version(TABLE, "w1"))
+
+        with expect_versions(WidgetManager(), {"w1": None}):
+            task = asyncio.create_task(background())
+        release.set()
+        await task
+        assert seen == [(False, None), False, None]
 
 
 class TestRouteBinding:
@@ -186,3 +231,28 @@ class TestRouteBinding:
         with expect_route_version(WidgetManager(), "POST", {"id": "w1"}, None):
             assert not missing_is_refused()
             assert claim_expected_version(TABLE, "w1") is None
+
+    def test_a_route_resolving_its_record_is_required(self, required):
+        with expect_route_version(WidgetManager(), "PATCH", {}, None):
+            with pytest.raises(PreconditionRequired):
+                check_route_record(WidgetManager(), "w1")
+            with expect_route_record(WidgetManager(), "w1"):
+                assert missing_is_refused()
+
+    async def test_work_that_outlives_the_route_is_not_held(self, required):
+        """As for a bound write: a task spawned by a route that resolves its
+        own record holds nothing once the route returns."""
+        release = asyncio.Event()
+        seen: List[Any] = []
+
+        async def background() -> None:
+            await release.wait()
+            check_route_record(WidgetManager(), "w1")
+            with expect_route_record(WidgetManager(), "w1"):
+                seen.append(expected_version(TABLE, "w1"))
+
+        with expect_route_version(WidgetManager(), "PATCH", {}, None):
+            task = asyncio.create_task(background())
+        release.set()
+        await task
+        assert seen == [(False, None)]

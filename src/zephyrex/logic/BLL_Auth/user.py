@@ -1781,19 +1781,22 @@ class UserManager(AbstractBLLManager, RouterMixin):
         return updated_user
 
     def delete(self, id: str | None = None):
-        """Override delete to handle special self-deletion logic."""
+        """Override delete to handle special self-deletion logic. ``DELETE
+        /v1/user`` names no record in its path, so the request's If-Match
+        is bound to the requester's own row here."""
         target_id = id or self.requester.id
 
         if target_id == self.requester.id:
             current_model = self.Model.DB(self.model_registry.DB.manager.Base)
-            deleted_user = current_model.delete(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
-                filters=[
-                    current_model.id == self.requester.id,
-                    current_model.deleted_at == None,
-                ],
-            )
+            with expect_route_record(self, self.requester.id):
+                deleted_user = current_model.delete(
+                    requester_id=self.requester.id,
+                    model_registry=self.model_registry,
+                    filters=[
+                        current_model.id == self.requester.id,
+                        current_model.deleted_at == None,
+                    ],
+                )
             return deleted_user
         else:
             raise NotImplementedError(

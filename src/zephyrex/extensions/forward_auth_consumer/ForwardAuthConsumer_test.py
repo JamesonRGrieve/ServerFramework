@@ -37,7 +37,11 @@ from zephyrex.logic.BLL_Providers import (
     ProviderInstanceSettingManager,
     ProviderManager,
 )
-from zephyrex.testing.factories import INTERNAL_ACCOUNTS, internal_account_email
+from zephyrex.testing.factories import (
+    INTERNAL_ACCOUNTS,
+    if_match_of,
+    internal_account_email,
+)
 
 LOGIN_PATH = "/v1/auth/forward-auth/login"
 LINKS_PATH = "/v1/auth/forward-auth"
@@ -674,8 +678,11 @@ class TestForwardAuthSignIn(ExtensionServerMixin):
         assert [i["identity"] for i in mine.json()["forward_auth_identities"]] == [
             name("rupert")
         ]
+        # The sign-in stamped the link; the removal names the version listed.
+        (listed,) = mine.json()["forward_auth_identities"]
         removed = server.delete(
-            f"{LINKS_PATH}/{link.id}", headers={"Authorization": f"Bearer {user.jwt}"}
+            f"{LINKS_PATH}/{link.id}",
+            headers={"Authorization": f"Bearer {user.jwt}", **if_match_of(listed)},
         )
         assert removed.status_code == 204, removed.text
         assert server.get(LOGIN_PATH, headers=browser(cookie)).status_code == 403

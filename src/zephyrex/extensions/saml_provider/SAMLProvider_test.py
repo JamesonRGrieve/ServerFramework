@@ -55,7 +55,7 @@ from zephyrex.logic.BLL_Providers import (
     ProviderInstanceSettingManager,
     ProviderManager,
 )
-from zephyrex.testing.factories import authorize_user
+from zephyrex.testing.factories import authorize_user, current_if_match
 
 # Minted and verified tokens must agree on issuer and audience whichever
 # module runs first (see EP_Conversations_test).
@@ -97,6 +97,12 @@ def keypair(common_name: str) -> Tuple[str, str]:
 def root_headers() -> Dict[str, str]:
     """The administrator's credential (read when used: settings refresh)."""
     return {"X-API-Key": env("ROOT_API_KEY")}
+
+
+def root_saving(server: Any, path: str) -> Dict[str, str]:
+    """The administrator's headers for a save of the record at ``path``,
+    naming the version they read there, as a client does."""
+    return {**root_headers(), **current_if_match(server, path, root_headers())}
 
 
 def session(user: Any) -> Dict[str, str]:
@@ -578,10 +584,11 @@ class TestSAMLIdentityProvider(ExtensionServerMixin):
     def test_a_disabled_sp_is_refused(self, server, make_sp, admin_a):
         sp, registration = make_sp()
         assert registration is not None
+        path = f"{PREFIX}/service_provider/{registration['id']}"
         disabled = server.put(
-            f"{PREFIX}/service_provider/{registration['id']}",
+            path,
             json={"saml_service_provider": {"enabled": False}},
-            headers=root_headers(),
+            headers=root_saving(server, path),
         )
         assert disabled.status_code == 200, disabled.text
         _, target = sp.redirect_request(sign=True)
@@ -619,10 +626,11 @@ class TestSAMLIdentityProvider(ExtensionServerMixin):
         sp, registration = make_sp()
         assert registration is not None
         _, other_certificate = keypair("someone-else")
+        path = f"{PREFIX}/service_provider/{registration['id']}"
         changed = server.put(
-            f"{PREFIX}/service_provider/{registration['id']}",
+            path,
             json={"saml_service_provider": {"certificate": other_certificate}},
-            headers=root_headers(),
+            headers=root_saving(server, path),
         )
         assert changed.status_code == 200, changed.text
         _, target = sp.redirect_request(sign=True)
@@ -837,10 +845,8 @@ class TestSAMLIdentityProvider(ExtensionServerMixin):
         registration must still be no registration."""
         sp, registration = make_sp()
         assert registration is not None
-        deleted = server.delete(
-            f"{PREFIX}/service_provider/{registration['id']}",
-            headers=root_headers(),
-        )
+        path = f"{PREFIX}/service_provider/{registration['id']}"
+        deleted = server.delete(path, headers=root_saving(server, path))
         assert deleted.status_code in (200, 204), deleted.text
         _, target = sp.redirect_request(sign=True)
         response = server.get(target, headers=session(admin_a), follow_redirects=False)
@@ -853,10 +859,9 @@ class TestSAMLIdentityProvider(ExtensionServerMixin):
         assert registration is not None
         _, target = sp.redirect_request(sign=True)
         received = server.get(target, headers=session(admin_a), follow_redirects=False)
-        server.delete(
-            f"{PREFIX}/service_provider/{registration['id']}",
-            headers=root_headers(),
-        )
+        path = f"{PREFIX}/service_provider/{registration['id']}"
+        deleted = server.delete(path, headers=root_saving(server, path))
+        assert deleted.status_code in (200, 204), deleted.text
         page = server.get(
             received.headers["location"],
             headers=session(admin_a),

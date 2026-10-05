@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
+from zephyrex.lib.Preconditions import expect_route_record
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -181,12 +182,18 @@ class LabelManager(AbstractBLLManager, RouterMixin):
         )
         if not existing:
             return False
+        # The route names the link by its label and target; it is held to
+        # the link row's version, answered as the requester sees it.
+        links = LabelLinkManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        )
         for row in existing:
-            LinkDB.delete(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
-                id=row.id,
-            )
+            with expect_route_record(links, row.id):
+                LinkDB.delete(
+                    requester_id=self.requester.id,
+                    model_registry=self.model_registry,
+                    id=row.id,
+                )
         return True
 
     @custom_route(

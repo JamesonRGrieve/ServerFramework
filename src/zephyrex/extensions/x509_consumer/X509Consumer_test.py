@@ -43,6 +43,7 @@ from zephyrex.testing.factories import (
     INTERNAL_ACCOUNTS,
     create_user,
     generate_test_email,
+    if_match_of,
     internal_account_email,
 )
 
@@ -987,7 +988,7 @@ class TestCertificateSignIn(ExtensionServerMixin):
         assert listed["identity"] == name
         removed = server.delete(
             f"/v1/auth/x509/{link.id}",
-            headers={"Authorization": f"Bearer {user.jwt}"},
+            headers={"Authorization": f"Bearer {user.jwt}", **if_match_of(listed)},
         )
         assert removed.status_code == 204, removed.text
         assert self.login(proxied, pki.client(name), pki.issuing).status_code == 403

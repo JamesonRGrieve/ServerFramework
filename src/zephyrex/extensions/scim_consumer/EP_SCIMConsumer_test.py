@@ -17,7 +17,7 @@ from zephyrex.extensions.scim_consumer.SCIMPatch import PATCH_OP_URN
 from zephyrex.lib.Environment import env, refresh_settings
 from zephyrex.logic.BLL_Auth import TeamModel, UserManager, UserModel, UserTeamModel
 from zephyrex.pydantic2.registry import ModelRegistry
-from zephyrex.testing.factories import create_user
+from zephyrex.testing.factories import create_user, current_if_match
 
 # Pin the JWT audience/issuer before any token is minted (see
 # conversations/EP_Conversations_test.py for why).
@@ -157,13 +157,18 @@ class TestConnections(ScimServer):
         )
         assert rows[0].token_hash == token_digest(okta["token"])
 
-    def test_other_users_cannot_see_or_change_connections(self, server, admin_a, okta):
+    def test_other_users_cannot_see_or_change_connections(
+        self, server, admin_a, okta, root
+    ):
         listed = server.get(CONNECTIONS, headers=bearer(admin_a.jwt))
         assert okta["id"] not in listed.text
+        # They name the connection's current version: the refusal is for who
+        # they are, not for a missing one.
+        path = f"{CONNECTIONS}/{okta['id']}"
         changed = server.put(
-            f"{CONNECTIONS}/{okta['id']}",
+            path,
             json={"scim_connection": {"is_enabled": False}},
-            headers=bearer(admin_a.jwt),
+            headers={**bearer(admin_a.jwt), **current_if_match(server, path, root)},
         )
         assert changed.status_code in (403, 404), changed.text
         rotated = server.post(
@@ -203,16 +208,20 @@ class TestAuthentication(ScimServer):
         connection = self.register(server, root)
         headers = bearer(connection["token"])
         assert server.get(f"{SCIM}/Users", headers=headers).status_code == 200
+        path = f"{CONNECTIONS}/{connection['id']}"
         disabled = server.put(
-            f"{CONNECTIONS}/{connection['id']}",
+            path,
             json={"scim_connection": {"is_enabled": False}},
-            headers=root,
+            headers={**root, **current_if_match(server, path, root)},
         )
         assert disabled.status_code == 200, disabled.text
         scim_error(server.get(f"{SCIM}/Users", headers=headers), 401)
 
         other = self.register(server, root)
-        deleted = server.delete(f"{CONNECTIONS}/{other['id']}", headers=root)
+        other_path = f"{CONNECTIONS}/{other['id']}"
+        deleted = server.delete(
+            other_path, headers={**root, **current_if_match(server, other_path, root)}
+        )
         assert deleted.status_code == 204, deleted.text
         scim_error(server.get(f"{SCIM}/Users", headers=bearer(other["token"])), 401)
 

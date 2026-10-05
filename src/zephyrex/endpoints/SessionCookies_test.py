@@ -10,7 +10,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from zephyrex.lib.SessionCookies import CSRF_COOKIE, SESSION_COOKIE
-from zephyrex.testing.factories import TEST_PASSWORD
+from zephyrex.testing.factories import TEST_PASSWORD, current_if_match
 
 PASSWORD = TEST_PASSWORD
 
@@ -46,12 +46,16 @@ def test_the_session_cookie_authenticates_reads(server):
 def test_cookie_writes_need_the_csrf_token(server):
     browser = _signed_in(server)
     body = {"user": {"display_name": "Cookie Person"}}
+    # The save names the version the browser read, as a client does.
+    version = current_if_match(browser, "/v1/user", {})
 
-    refused = browser.put("/v1/user", json=body)
+    refused = browser.put("/v1/user", json=body, headers=version)
     assert refused.status_code == 403, refused.text
 
     allowed = browser.put(
-        "/v1/user", json=body, headers={"X-CSRF-Token": browser.cookies[CSRF_COOKIE]}
+        "/v1/user",
+        json=body,
+        headers={**version, "X-CSRF-Token": browser.cookies[CSRF_COOKIE]},
     )
     assert allowed.status_code == 200, allowed.text
 

@@ -43,6 +43,7 @@ from zephyrex.testing.factories import (
     TEST_PASSWORD,
     authorize_user,
     create_user,
+    current_if_match,
 )
 
 RP_ID = "example.test"
@@ -322,7 +323,10 @@ class TestCredentials:
                     "user_id": str(uuid.uuid4()),
                 }
             },
-            headers=bearer(owner.jwt),
+            headers={
+                **bearer(owner.jwt),
+                **current_if_match(server, path, bearer(owner.jwt)),
+            },
         )
         stored = stored_credential(server, registered["id"])
         assert stored.public_key == registered["public_key"]
@@ -386,8 +390,13 @@ class TestCredentials:
         user = new_user(server)
         authenticator = SoftwareAuthenticator()
         registered = register(server, user, authenticator)
+        path = f"{CREDENTIALS}/{registered['id']}"
         removed = server.delete(
-            f"{CREDENTIALS}/{registered['id']}", headers=bearer(user.jwt)
+            path,
+            headers={
+                **bearer(user.jwt),
+                **current_if_match(server, path, bearer(user.jwt)),
+            },
         )
         assert removed.status_code in (200, 204), removed.text
         assert sign_in(server, authenticator).status_code == 401
@@ -628,8 +637,13 @@ class TestSecondFactor:
     def test_a_removed_key_no_longer_challenges(self, server) -> None:
         user = new_user(server)
         registered = register(server, user, SoftwareAuthenticator())
+        path = f"{CREDENTIALS}/{registered['id']}"
         removed = server.delete(
-            f"{CREDENTIALS}/{registered['id']}", headers=bearer(user.jwt)
+            path,
+            headers={
+                **bearer(user.jwt),
+                **current_if_match(server, path, bearer(user.jwt)),
+            },
         )
         assert removed.status_code in (200, 204), removed.text
         assert authorize_user(server, user.email, TEST_PASSWORD)

@@ -17,6 +17,7 @@ from zephyrex.logic.BLL_Providers import (
     ProviderInstanceModel,
     ProviderInstanceSettingModel,
 )
+from zephyrex.testing.factories import if_match_of
 
 
 class TestProviderSettings(ExtensionServerMixin):
@@ -144,7 +145,10 @@ class TestProviderSettings(ExtensionServerMixin):
             json={
                 "provider_instance_setting": {"value": "second", "write_only": False}
             },
-            headers=headers,
+            headers={
+                **headers,
+                **if_match_of(created.json()["provider_instance_setting"]),
+            },
         )
         assert updated.status_code == 200, updated.text
         row = updated.json()["provider_instance_setting"]

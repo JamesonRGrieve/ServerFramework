@@ -9,7 +9,7 @@ a 500 instead of a refusal.
 
 import uuid
 
-from zephyrex.testing.factories import TEST_PASSWORD
+from zephyrex.testing.factories import TEST_PASSWORD, current_if_match
 
 POLICY = "/v1/user/password-policy"
 REGISTER = "/v1/user"
@@ -54,10 +54,11 @@ def test_a_password_past_bcrypts_limit_is_refused_not_crashed(server):
 
 
 def test_change_password_uses_the_same_refusal(server, admin_a):
+    headers = {"Authorization": f"Bearer {admin_a.jwt}"}
     response = server.patch(
         "/v1/user",
         json={"current_password": TEST_PASSWORD, "new_password": "nodigits"},
-        headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        headers={**headers, **current_if_match(server, "/v1/user", headers)},
     )
     assert response.status_code == 422, response.text
     assert response.json()["detail"] == {

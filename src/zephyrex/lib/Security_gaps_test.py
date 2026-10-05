@@ -22,6 +22,14 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("SEED_DATA", "false")
 
 from zephyrex.testing.factories import TEST_PASSWORD  # noqa: E402 (env first)
+from zephyrex.testing.factories import current_if_match  # noqa: E402 (env first)
+
+
+def _saving(server, url: str, headers: dict) -> dict:
+    """``headers`` for a save of the record at ``url``, naming the version
+    the caller reads there, as a client does."""
+    return {**headers, **current_if_match(server, url, headers)}
+
 
 # ------------------------------------------------------------------ #
 # §11 — SSRF: ProviderHTTPClient must reject internal addresses
@@ -531,7 +539,11 @@ class TestPropertyLevelAuth:
         response = server.put(
             f"/v1/team/{team_a.id}",
             json={"team": {"created_at": "2000-01-01T00:00:00Z"}},
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            headers=_saving(
+                server,
+                f"/v1/team/{team_a.id}",
+                {"Authorization": f"Bearer {admin_a.jwt}"},
+            ),
         )
         if response.status_code == 200:
             body = response.json()
@@ -548,7 +560,7 @@ class TestPropertyLevelAuth:
         response = server.put(
             f"/v1/team/{team_a.id}",
             json={"team": {"is_verified": True, "email_verified": True}},
-            headers=headers,
+            headers=_saving(server, f"/v1/team/{team_a.id}", headers),
         )
         assert response.status_code != 500
         # Re-fetch the team: the client-supplied verification flags must NOT have
@@ -585,7 +597,10 @@ class TestRelationshipAuth:
         before = server.get(f"/v1/team/{team_id}/user", headers=headers)
         assert before.status_code == 200, before.text
 
-        deleted = server.delete(f"/v1/team/{team_id}", headers=headers)
+        deleted = server.delete(
+            f"/v1/team/{team_id}",
+            headers=_saving(server, f"/v1/team/{team_id}", headers),
+        )
         assert deleted.status_code in (200, 204), deleted.text
 
         after = server.get(f"/v1/team/{team_id}/user", headers=headers)
@@ -1446,7 +1461,11 @@ class TestStateMachineSecurity:
         response = server.put(
             f"/v1/team/{team_a.id}",
             json={"team": {"status": "deleted", "state": "archived"}},
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            headers=_saving(
+                server,
+                f"/v1/team/{team_a.id}",
+                {"Authorization": f"Bearer {admin_a.jwt}"},
+            ),
         )
         if response.status_code == 200:
             body = response.json()
@@ -1552,7 +1571,11 @@ class TestTeamLifecycleAdvanced:
         if r1.status_code not in (200, 201):
             pytest.skip("Cannot create team")
         team1_id = r1.json().get("team", {}).get("id")
-        server.delete(f"/v1/team/{team1_id}", headers=headers)
+        deleted = server.delete(
+            f"/v1/team/{team1_id}",
+            headers=_saving(server, f"/v1/team/{team1_id}", headers),
+        )
+        assert deleted.status_code == 204, deleted.text
         r2 = server.post(
             "/v1/team",
             json={"team": {"name": name}},

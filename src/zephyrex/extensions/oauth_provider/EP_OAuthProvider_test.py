@@ -43,7 +43,7 @@ from zephyrex.extensions.oauth_provider.EXT_OAuthProvider import EXT_OAuthProvid
 from zephyrex.extensions.oauth_provider.OAuthProtocol import digest, s256
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import _RATE_LIMIT_REGISTRY
-from zephyrex.testing.factories import create_user
+from zephyrex.testing.factories import create_user, current_if_match, if_match_of
 
 ISSUER = "https://id.example.test"
 CONSENT_URL = "https://ui.example.test/consent"
@@ -838,8 +838,13 @@ class TestClientsAndGrants(OAuthFlows):
         path = f"/v1/oauth2/clients/{row.id}"
 
         def put(user, **fields: Any) -> Any:
+            # Every save names the client's current version, as the owner
+            # reads it: a refusal is for who saves or what, not a version.
+            version = current_if_match(server, path, bearer(admin_a.jwt))
             return server.put(
-                path, json={"oauth_client": fields}, headers=bearer(user.jwt)
+                path,
+                json={"oauth_client": fields},
+                headers={**bearer(user.jwt), **version},
             )
 
         insecure = put(admin_a, redirect_uris=json.dumps(["http://rp.example.test/cb"]))
@@ -914,8 +919,13 @@ class TestClientsAndGrants(OAuthFlows):
         issued = self.tokens(server, client, user)
         engine = AuthorizationServer(self.registry(server))
         row = engine.clients.first(engine.clients.db.client_id == client.client_id)
+        path = f"/v1/oauth2/clients/{row.id}"
         deleted = server.delete(
-            f"/v1/oauth2/clients/{row.id}", headers=bearer(admin_a.jwt)
+            path,
+            headers={
+                **bearer(admin_a.jwt),
+                **current_if_match(server, path, bearer(admin_a.jwt)),
+            },
         )
         assert deleted.status_code in (200, 204), deleted.text
         assert (
@@ -943,7 +953,8 @@ class TestClientsAndGrants(OAuthFlows):
         )
         assert theirs.status_code in (403, 404)
         revoked = server.delete(
-            f"/v1/oauth2/grants/{grant_id}", headers=bearer(user.jwt)
+            f"/v1/oauth2/grants/{grant_id}",
+            headers={**bearer(user.jwt), **if_match_of(grants[0])},
         )
         assert revoked.status_code in (200, 204), revoked.text
         assert (

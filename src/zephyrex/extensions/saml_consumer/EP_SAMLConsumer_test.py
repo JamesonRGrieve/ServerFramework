@@ -29,6 +29,8 @@ from zephyrex.logic.BLL_Auth import SessionModel, UserManager, UserModel, UserTe
 from zephyrex.testing.factories import (
     INTERNAL_ACCOUNTS,
     create_user,
+    current_if_match,
+    if_match_of,
     internal_account_email,
 )
 
@@ -212,10 +214,17 @@ class TestSAMLSignIn(ExtensionServerMixin):
         )
         assert created.status_code in (401, 403), created.text
         summary = self.add_idp(server, idp)
+        # The user names the provider's current version: the refusal is for
+        # who they are, not for a missing one.
         changed = server.put(
             f"{ROUTE_PREFIX}/{summary['id']}",
             json={"saml_identity_provider": {"emails_verified": True}},
-            headers=user_auth,
+            headers={
+                **user_auth,
+                **current_if_match(
+                    server, f"{ROUTE_PREFIX}/{summary['id']}", root_headers()
+                ),
+            },
         )
         assert changed.status_code in (401, 403), changed.text
 
@@ -681,6 +690,6 @@ class TestSAMLSignIn(ExtensionServerMixin):
         assert others.status_code == 404, others.text
         unlinked = TestClient(server.app).delete(
             f"/v1/auth/saml/identity/{identity['id']}",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", **if_match_of(identity)},
         )
         assert unlinked.status_code in (200, 204), unlinked.text

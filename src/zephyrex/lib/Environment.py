@@ -98,9 +98,10 @@ class AppSettings(BaseModel):
     REGISTRATION_DISABLED: str = "false"
     REGISTRATION_MODE: Literal["open", "invite", "closed"] = "open"
     SEED_DATA: str = "true"
-    # Optimistic concurrency (zephyrex.lib.Preconditions): a write that names
-    # no If-Match is accepted while false; true refuses it with 428.
-    IF_MATCH_REQUIRED: str = "false"
+    # Optimistic concurrency (zephyrex.lib.Preconditions): a save
+    # (PUT/PATCH/DELETE) that names no If-Match is refused with 428; a
+    # deployment whose clients do not send it yet opts out with false.
+    IF_MATCH_REQUIRED: str = "true"
 
     ROOT_ID: str = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
     SYSTEM_ID: str = "FFFFFFFF-FFFF-FFFF-AAAA-FFFFFFFFFFFF"

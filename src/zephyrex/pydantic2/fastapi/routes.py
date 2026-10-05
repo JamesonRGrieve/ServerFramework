@@ -74,7 +74,8 @@ if TYPE_CHECKING:
     from .types import NetworkModelProtocol as NetworkModelProtocol
 
 # The If-Match request header of a single-record write: the record's ETag as
-# the client read it. Missing is accepted unless IF_MATCH_REQUIRED is set.
+# the client read it. Missing is refused (428) unless the deployment set
+# IF_MATCH_REQUIRED=false.
 _IF_MATCH = Header(
     default=None,
     alias=IF_MATCH_HEADER,
@@ -1939,6 +1940,9 @@ def register_custom_route(
                 custom_route.response_model, str
             ):
                 if "ResponseSingle" in custom_route.response_model:
+                    # One record, as GET /v1/user answers: its version is
+                    # the ETag, as a generic single-record answer's is.
+                    response.headers.update(etag_headers(result))
                     return {manager_resource_name(manager_class): result}
 
             return result

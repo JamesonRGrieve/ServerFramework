@@ -16,7 +16,7 @@ from zephyrex.pydantic2.strawberry import convert_field_name
 
 from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
 from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserManager, UserModel
-from zephyrex.testing.factories import TEST_PASSWORD
+from zephyrex.testing.factories import TEST_PASSWORD, current_if_match, if_match_of
 
 
 def generate_jwt_for_user(user_data: Dict[str, Any], server: Any = None) -> str:
@@ -1070,7 +1070,9 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         endpoint = "/v1/user"
         response = server.put(
-            endpoint, json=payload, headers=self._get_appropriate_headers(test_user.jwt)
+            endpoint,
+            json=payload,
+            headers=self._self_save_headers(server, test_user.jwt),
         )
         self._assert_response_status(response, 200, "PUT", endpoint, payload)
         self._assert_entity_in_response(response, "display_name", display_name)
@@ -1096,7 +1098,9 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         before = server.get("/v1/user", headers=headers).json()["user"]
 
         response = server.put(
-            "/v1/user", json={"user": {field: value}}, headers=headers
+            "/v1/user",
+            json={"user": {field: value}},
+            headers=self._self_save_headers(server, test_user.jwt),
         )
         assert response.status_code == 403, response.text
         assert field in response.json()["detail"]
@@ -1124,7 +1128,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
                     "display_name": "Audit Self",
                 }
             },
-            headers=headers,
+            headers=self._self_save_headers(server, user.jwt),
         )
         assert response.status_code in (200, 422), response.text
 
@@ -1132,6 +1136,12 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         for field in ("id", "created_by_user_id", "created_at"):
             assert after[field] == before[field], field
         assert after["updated_by_user_id"] != attacker
+
+    def _self_save_headers(self, server: Any, jwt: str) -> Dict[str, str]:
+        """Headers for a save of the caller's own account (``/v1/user``),
+        naming the version they read there, as a client does."""
+        headers = self._get_appropriate_headers(jwt)
+        return {**headers, **current_if_match(server, "/v1/user", headers)}
 
     def _isolated_user(self, server: Any, prefix: str) -> Any:
         from conftest import create_user
@@ -1198,7 +1208,9 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         endpoint = "/v1/user"
         response = server.patch(
-            endpoint, json=payload, headers=self._get_appropriate_headers(test_user.jwt)
+            endpoint,
+            json=payload,
+            headers=self._self_save_headers(server, test_user.jwt),
         )
         self._assert_response_status(response, 200, "PATCH password", endpoint)
 
@@ -1215,7 +1227,9 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         endpoint = "/v1/user"
         response = server.put(
-            endpoint, json=payload, headers=self._get_appropriate_headers(admin_a.jwt)
+            endpoint,
+            json=payload,
+            headers=self._self_save_headers(server, admin_a.jwt),
         )
 
         assert (
@@ -1234,7 +1248,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             endpoint,
             data=malformed_json,
             headers={
-                **self._get_appropriate_headers(admin_a.jwt),
+                **self._self_save_headers(server, admin_a.jwt),
                 "Content-Type": "application/json",
             },
         )
@@ -1256,7 +1270,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         response = server.put(
             endpoint,
             json=invalid_payload,
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._self_save_headers(server, admin_a.jwt),
         )
         assert (
             response.status_code == 422
@@ -1404,7 +1418,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         )
         delete_response = server.delete(
             f"/v1/session/{session_id}",
-            headers=self._get_appropriate_headers(test_user.jwt),
+            headers={
+                **self._get_appropriate_headers(test_user.jwt),
+                **if_match_of(sessions[0]),
+            },
         )
 
         logger.debug(f"Delete response status code: {delete_response.status_code}")
@@ -1635,7 +1652,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         session_id = sessions[0]["id"]
         revoke = server.delete(
             f"/v1/session/{session_id}",
-            headers=self._get_appropriate_headers(test_user.jwt),
+            headers={
+                **self._get_appropriate_headers(test_user.jwt),
+                **if_match_of(sessions[0]),
+            },
         )
         assert revoke.status_code == 204, "Could not revoke session"
 
@@ -1757,7 +1777,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         r1 = server.patch(
             "/v1/user",
             json={"new_password": "Strong-Password-1!"},
-            headers=self._get_appropriate_headers(test_user.jwt),
+            headers=self._self_save_headers(server, test_user.jwt),
         )
         assert r1.status_code in (
             400,
@@ -1773,7 +1793,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
                 "current_password": "incorrect",
                 "new_password": "Strong-Password-1!",
             },
-            headers=self._get_appropriate_headers(test_user.jwt),
+            headers=self._self_save_headers(server, test_user.jwt),
         )
         assert r2.status_code in (
             401,
@@ -1800,7 +1820,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         r = server.patch(
             "/v1/user",
             json={"current_password": TEST_PASSWORD, "new_password": "a"},
-            headers=self._get_appropriate_headers(test_user.jwt),
+            headers=self._self_save_headers(server, test_user.jwt),
         )
         assert (
             r.status_code == 422
@@ -1838,9 +1858,14 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             pytest.skip("user_x has no session to target")
         target = x_sessions[0]["id"]
 
+        # user_y names the session's current version: the refusal is for
+        # who they are, not for a missing one.
         response = server.delete(
             f"/v1/session/{target}",
-            headers=self._get_appropriate_headers(user_y.jwt),
+            headers={
+                **self._get_appropriate_headers(user_y.jwt),
+                **if_match_of(x_sessions[0]),
+            },
         )
         assert response.status_code in (
             403,
@@ -1863,7 +1888,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         endpoint = self.get_delete_endpoint(resource_id=test_user.id)
         response = server.delete(
-            endpoint, headers=self._get_appropriate_headers(test_user.jwt)
+            endpoint, headers=self._self_save_headers(server, test_user.jwt)
         )
         self._assert_response_status(response, 204, "DELETE user", endpoint)
 
@@ -2172,10 +2197,13 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         # Build the response fields
         response_fields = ["id", "createdAt", "updatedAt", gql_string_field]
+        if_match_arg = self._gql_if_match_arg(
+            server, {"id": admin_a.id}, self._get_appropriate_headers(admin_a.jwt)
+        )
 
         mutation = f"""
         mutation {{
-            updateUser(input: {input_str}) {{
+            updateUser(input: {input_str}{if_match_arg}) {{
                 {chr(10).join("                " + field for field in response_fields)}
             }}
         }}
@@ -2298,18 +2326,17 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             last_name="User",
         )
 
-        # For users, delete mutation doesn't take an ID and deletes the requester
-        mutation = """
-        mutation {
-            deleteUser
-        }
-        """
-
         headers = {
             "Authorization": f"Bearer {test_user.jwt}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+        # For users, delete mutation doesn't take an ID and deletes the
+        # requester; it names the version the client read.
+        if_match_arg = self._gql_if_match_arg(server, {"id": test_user.id}, headers)
+        assert if_match_arg, "the requester's row carries no version"
+        mutation = f"mutation {{ deleteUser({if_match_arg.lstrip(', ')}) }}"
 
         response = server.post("/graphql", json={"query": mutation}, headers=headers)
         assert response.status_code == 200
@@ -2625,17 +2652,18 @@ class TestRoleEndpoints(AbstractEPTest):
         else:
             payload = None
 
-        # Execute request
+        # Execute request; a save names the version the client read
         headers = self._get_appropriate_headers(working_user.jwt)
+        save_headers = self._save_headers(server, role, {}, headers)
 
         if method == HttpMethod.GET:
             response = server.get(endpoint, headers=headers)
         elif method == HttpMethod.POST:
             response = server.post(endpoint, json=payload, headers=headers)
         elif method == HttpMethod.PUT:
-            response = server.put(endpoint, json=payload, headers=headers)
+            response = server.put(endpoint, json=payload, headers=save_headers)
         elif method == HttpMethod.DELETE:
-            response = server.delete(endpoint, headers=headers)
+            response = server.delete(endpoint, headers=save_headers)
         else:
             pytest.fail(f"Unsupported method {method} in test_role_nesting_behaviors")
 
@@ -2701,7 +2729,12 @@ class TestRoleEndpoints(AbstractEPTest):
         response = server.put(
             endpoint,
             json={self.entity_name: update_data},
-            headers=self._get_appropriate_headers(jwt_token, api_key),
+            headers=self._save_headers(
+                server,
+                entity_to_update,
+                path_parent_ids,
+                self._get_appropriate_headers(jwt_token, api_key),
+            ),
         )
         print(f"Response status code: {response.status_code}")
         print(f"Response body: {response.text}")
@@ -2762,7 +2795,12 @@ class TestRoleEndpoints(AbstractEPTest):
         response = server.put(
             endpoint,
             json=request_data,
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._save_headers(
+                server,
+                entity_to_update,
+                path_parent_ids,
+                self._get_appropriate_headers(admin_a.jwt),
+            ),
         )
 
         print(f"Response JSON: {response.json()}")
@@ -2822,7 +2860,12 @@ class TestRoleEndpoints(AbstractEPTest):
             endpoint,
             data='{"malformed": json}',  # Invalid JSON syntax
             headers={
-                **self._get_appropriate_headers(admin_a.jwt),
+                **self._save_headers(
+                    server,
+                    entity,
+                    path_parent_ids,
+                    self._get_appropriate_headers(admin_a.jwt),
+                ),
                 "Content-Type": "application/json",
             },
         )

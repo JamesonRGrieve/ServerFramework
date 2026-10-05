@@ -45,7 +45,7 @@ from zephyrex.lib.ContentNegotiation import (
 from zephyrex.lib.Environment import env, inflection
 from zephyrex.lib.InboundSecurity import reset_rate_limit_counts
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Preconditions import entity_etag
+from zephyrex.lib.Preconditions import IF_MATCH_HEADER, entity_etag
 from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.registry import PydanticUtility
 from zephyrex.lib.Scalability import (
@@ -2129,7 +2129,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             endpoint,
             json={self.entity_name: update_data},
-            headers=self._get_appropriate_headers(jwt_token, api_key),
+            headers=self._save_headers(
+                server,
+                entity_to_update,
+                path_parent_ids,
+                self._get_appropriate_headers(jwt_token, api_key),
+            ),
         )
         logger.debug(f"Response status code: {response.status_code}")
         logger.debug(f"Response body: {response.text}")
@@ -2200,7 +2205,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             endpoint,
             json=request_data,
-            headers=self._get_appropriate_headers(admin_a.jwt, api_key),
+            headers=self._save_headers(
+                server,
+                entity,
+                path_parent_ids,
+                self._get_appropriate_headers(admin_a.jwt, api_key),
+            ),
         )
 
         logger.debug(f"Response JSON: {response.json()}")
@@ -2262,7 +2272,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             self.get_update_endpoint(entity["id"], path_parent_ids),
             data='{"malformed": json}',  # Invalid JSON syntax
             headers={
-                **self._get_appropriate_headers(admin_a.jwt),
+                **self._save_headers(
+                    server,
+                    entity,
+                    path_parent_ids,
+                    self._get_appropriate_headers(admin_a.jwt),
+                ),
                 "Content-Type": "application/json",
             },
         )
@@ -2300,7 +2315,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             json={
                 self.resource_name_plural: update_data
             },  # Should be array, not object
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._save_headers(
+                server, entity, {}, self._get_appropriate_headers(admin_a.jwt)
+            ),
         )
         assert response.status_code == 422, (
             f"Plural key with singular data should return 422, got {response.status_code}. "
@@ -2329,7 +2346,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             endpoint,
             json=invalid_payload,
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._save_headers(
+                server, entity, {}, self._get_appropriate_headers(admin_a.jwt)
+            ),
         )
         response_data = response.json()
         logger.debug(f"Response data: {response_data}")
@@ -2363,7 +2382,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             self.get_update_endpoint(entity["id"], {}),
             json={self.entity_name: update_data},
-            headers=self._get_appropriate_headers(user_b.jwt),
+            headers=self._save_headers(
+                server, entity, {}, self._get_appropriate_headers(user_b.jwt)
+            ),
         )
 
         # 404 prevents information leakage about whether resources exist
@@ -2438,6 +2459,37 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 break
             if test_name in vars(cls):
                 pytest.skip(f"{type(self).__name__} replaces {test_name}")
+
+    def _current_etag(
+        self,
+        server: Any,
+        entity: Dict[str, Any],
+        path_parent_ids: Dict[str, str],
+        headers: Dict[str, str],
+    ) -> Optional[str]:
+        """The version a correct client names when it saves ``entity``: the
+        one a read of the record answers now, else (a record the caller
+        cannot read) the one on the row it holds."""
+        response = server.get(
+            self.get_detail_endpoint(entity["id"], path_parent_ids), headers=headers
+        )
+        if response.status_code == 200:
+            etag = entity_etag(self._created_entity(response))
+            if etag is not None:
+                return etag
+        return entity_etag(entity)
+
+    def _save_headers(
+        self,
+        server: Any,
+        entity: Dict[str, Any],
+        path_parent_ids: Dict[str, str],
+        headers: Dict[str, str],
+    ) -> Dict[str, str]:
+        """``headers`` plus the If-Match a correct client sends to save
+        (PUT/PATCH/DELETE) ``entity``: its version as last read."""
+        etag = self._current_etag(server, entity, path_parent_ids, headers)
+        return headers if etag is None else {**headers, IF_MATCH_HEADER: etag}
 
     def _versioned(self, server: Any, admin_a: Any, team_a: Any, key: str):
         """A fresh record, its nested-path ids, write headers and its ETag
@@ -2583,7 +2635,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Make the request
         response = server.delete(
             self.get_delete_endpoint(entity_to_delete["id"], path_parent_ids),
-            headers=self._get_appropriate_headers(jwt_token, api_key),
+            headers=self._save_headers(
+                server,
+                entity_to_delete,
+                path_parent_ids,
+                self._get_appropriate_headers(jwt_token, api_key),
+            ),
         )
 
         # Assert response
@@ -2619,7 +2676,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # User B tries to delete it
         response = server.delete(
             self.get_delete_endpoint(entity["id"], {}),
-            headers=self._get_appropriate_headers(user_b.jwt),
+            headers=self._save_headers(
+                server, entity, {}, self._get_appropriate_headers(user_b.jwt)
+            ),
         )
 
         # 404 prevents information leakage about whether resources exist
@@ -2743,7 +2802,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Try to delete without API key
         response = server.delete(
             self.get_delete_endpoint(entity["id"], {}),
-            headers=self._get_appropriate_headers(admin_a.jwt, skip_auto_api_key=True),
+            headers=self._save_headers(
+                server,
+                entity,
+                {},
+                self._get_appropriate_headers(admin_a.jwt, skip_auto_api_key=True),
+            ),
         )
 
         assert (
@@ -2910,7 +2974,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             self.get_update_endpoint(entity["id"], path_parent_ids),
             json={self.entity_name: update_data},
-            headers=self._get_appropriate_headers(admin_b.jwt),
+            headers=self._save_headers(
+                server,
+                entity,
+                path_parent_ids,
+                self._get_appropriate_headers(admin_b.jwt),
+            ),
         )
 
         assert response.status_code in (
@@ -2932,7 +3001,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         response = server.delete(
             self.get_delete_endpoint(entity["id"], {}),
-            headers=self._get_appropriate_headers(admin_b.jwt),
+            headers=self._save_headers(
+                server, entity, {}, self._get_appropriate_headers(admin_b.jwt)
+            ),
         )
 
         assert response.status_code in (
@@ -3034,7 +3105,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             self.get_update_endpoint(entity["id"], {}),
             json={self.entity_name: update_data},
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._save_headers(
+                server, entity, {}, self._get_appropriate_headers(admin_a.jwt)
+            ),
         )
 
         assert response.status_code in (200, 422), (
@@ -3703,17 +3776,26 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             self._create_parent_entities(server, jwt_token, user_id, team_id, None)
         )
 
-        # Create update payload
-        target_ids = [e["id"] for e in entities_to_update]
+        # Create update payload: each target names the version it was read at
+        headers = self._get_appropriate_headers(jwt_token, api_key)
+        targets = [
+            {
+                "id": e["id"],
+                "if_match": self._current_etag(
+                    server, e, self._extract_path_parent_ids(e), headers
+                ),
+            }
+            for e in entities_to_update
+        ]
         update_data = self._batch_update_data()
 
-        payload = {"target_ids": target_ids, self.entity_name: update_data}
+        payload = {"target_ids": targets, self.entity_name: update_data}
 
         # Make the request
         response = server.put(
             self.get_list_endpoint(path_parent_ids),
             json=payload,
-            headers=self._get_appropriate_headers(jwt_token, api_key),
+            headers=headers,
         )
 
         # Assert response and store entities
@@ -3788,11 +3870,18 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Create delete payload
         target_ids = [e["id"] for e in entities_to_delete]
         target_ids_str = ",".join(target_ids)
+        # One If-Match lists the version each record was read at.
+        headers = self._get_appropriate_headers(jwt_token, api_key)
+        etags = [
+            self._current_etag(server, e, self._extract_path_parent_ids(e), headers)
+            for e in entities_to_delete
+        ]
+        if_match = ", ".join(etag for etag in etags if etag is not None)
 
         # Make the request
         response = server.delete(
             f"{self.get_list_endpoint(path_parent_ids)}?target_ids={target_ids_str}",
-            headers=self._get_appropriate_headers(jwt_token, api_key),
+            headers={**headers, IF_MATCH_HEADER: if_match} if if_match else headers,
         )
 
         # Assert response
@@ -4926,7 +5015,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             endpoint,
             json=payload,
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._save_headers(
+                server,
+                entity,
+                path_parent_ids,
+                self._get_appropriate_headers(admin_a.jwt),
+            ),
         )
         if response.status_code == 200:
             body = response.json()
@@ -5577,7 +5671,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
         response = server.delete(
-            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+            endpoint,
+            headers=self._save_headers(
+                server,
+                entity,
+                path_parent_ids,
+                self._get_appropriate_headers(admin_a.jwt),
+            ),
         )
         if response.status_code == 204:
             assert (
@@ -5600,7 +5700,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
         path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
-        headers = self._get_appropriate_headers(admin_a.jwt)
+        # Both deletes name the version the client read before the first.
+        headers = self._save_headers(
+            server,
+            entity,
+            path_parent_ids,
+            self._get_appropriate_headers(admin_a.jwt),
+        )
         r1 = server.delete(endpoint, headers=headers)
         if r1.status_code == 405:
             pytest.skip("Entity does not support DELETE")
@@ -5628,7 +5734,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         path_parent_ids = self._extract_path_parent_ids(entity)
         detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
         headers = self._get_appropriate_headers(admin_a.jwt)
-        dr = server.delete(detail, headers=headers)
+        dr = server.delete(
+            detail, headers=self._save_headers(server, entity, path_parent_ids, headers)
+        )
         if dr.status_code in (403, 405):
             pytest.skip(
                 "Entity does not support DELETE or requires elevated permissions"
@@ -5990,7 +6098,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
         path_parent_ids = self._extract_path_parent_ids(entity)
         detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
-        headers = self._get_appropriate_headers(admin_a.jwt)
+        # Both writes name the version the client read before either.
+        headers = self._save_headers(
+            server,
+            entity,
+            path_parent_ids,
+            self._get_appropriate_headers(admin_a.jwt),
+        )
         resolved = {k: v() if callable(v) else v for k, v in self.update_fields.items()}
         r1 = server.delete(detail, headers=headers)
         r2 = server.put(detail, json={self.entity_name: resolved}, headers=headers)
@@ -6018,7 +6132,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             detail,
             json={self.entity_name: resolved},
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._save_headers(
+                server,
+                entity,
+                path_parent_ids,
+                self._get_appropriate_headers(admin_a.jwt),
+            ),
         )
         if response.status_code == 200:
             body = response.json()
@@ -6232,6 +6351,14 @@ class FormatTestMixin:
             jwt_token: Optional[str] = None,
             api_key: Optional[str] = None,
             skip_auto_api_key: bool = False,
+        ) -> Dict[str, str]: ...
+
+        def _save_headers(
+            self,
+            server: Any,
+            entity: Dict[str, Any],
+            path_parent_ids: Dict[str, str],
+            headers: Dict[str, str],
         ) -> Dict[str, str]: ...
 
         def _create_parent_entities(
@@ -6591,7 +6718,15 @@ class FormatTestMixin:
         else:
             body = self._serialize_fmt(serializable_payload, fmt)
 
-        headers = {**self._get_appropriate_headers(admin_a.jwt), "Content-Type": mime}
+        headers = {
+            **self._save_headers(
+                server,
+                entity,
+                path_parent_ids,
+                self._get_appropriate_headers(admin_a.jwt),
+            ),
+            "Content-Type": mime,
+        }
         resp = server.put(endpoint, content=body, headers=headers)
 
         assert (

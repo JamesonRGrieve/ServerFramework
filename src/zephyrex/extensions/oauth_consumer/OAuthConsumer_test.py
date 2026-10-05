@@ -63,7 +63,11 @@ from zephyrex.logic.BLL_Providers import (
     ProviderInstanceSettingManager,
     ProviderManager,
 )
-from zephyrex.testing.factories import INTERNAL_ACCOUNTS, internal_account_email
+from zephyrex.testing.factories import (
+    INTERNAL_ACCOUNTS,
+    current_if_match,
+    internal_account_email,
+)
 
 Response = Any
 
@@ -801,9 +805,15 @@ class TestLinking(OAuthCase):
             headers={"Authorization": f"Bearer {user_b.jwt}"},
         )
         assert other.status_code in (403, 404)
+        owner = {"Authorization": f"Bearer {admin_b.jwt}"}
         unlinked = flow.server.delete(
             f"{OAUTH_PREFIX}/identity/{identity_id}",
-            headers={"Authorization": f"Bearer {admin_b.jwt}"},
+            headers={
+                **owner,
+                **current_if_match(
+                    flow.server, f"{OAUTH_PREFIX}/identity/{identity_id}", owner
+                ),
+            },
         )
         assert unlinked.status_code in (200, 204), unlinked.text
         assert all(i.id != identity_id for i in flow.identities(admin_b.id))

@@ -30,11 +30,17 @@ from zephyrex.extensions.payment.EXT_Payment_test import (
 from zephyrex.extensions.payment.PRV_Stripe_Payment import PRV_Stripe_Payment
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import UserManager, UserModel
-from zephyrex.testing.factories import TEST_PASSWORD
+from zephyrex.testing.factories import TEST_PASSWORD, current_if_match
 
 
 def auth(user: Any) -> Dict[str, str]:
     return {"Authorization": f"Bearer {user.jwt}"}
+
+
+def saving_self(server: Any, user: Any) -> Dict[str, str]:
+    """``user``'s headers for a save of their own account, naming the
+    version they read, as a client does."""
+    return {**auth(user), **current_if_match(server, "/v1/user", auth(user))}
 
 
 def subscription(status: str) -> Dict[str, Any]:
@@ -83,11 +89,13 @@ class TestPaymentRecords(ExtensionServerMixin):
             response = server.put(
                 "/v1/user",
                 json={"user": {field: "cus_someone_else"}},
-                headers=auth(payer),
+                headers=saving_self(server, payer),
             )
             assert response.status_code == 403, response.text
         response = server.put(
-            "/v1/user", json={"user": {"display_name": "Payer"}}, headers=auth(payer)
+            "/v1/user",
+            json={"user": {"display_name": "Payer"}},
+            headers=saving_self(server, payer),
         )
         assert response.status_code == 200, response.text
 

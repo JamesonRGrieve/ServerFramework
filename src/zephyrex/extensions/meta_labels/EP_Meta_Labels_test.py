@@ -9,6 +9,9 @@ from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.meta_labels.BLL_Meta_Labels import LabelModel
 from zephyrex.extensions.meta_labels.EXT_Meta_Labels import EXT_Meta_Labels
+from zephyrex.lib import Environment
+from zephyrex.lib.Preconditions import IF_MATCH_REQUIRED_SETTING
+from zephyrex.testing.factories import current_if_match
 
 
 @pytest.mark.labels
@@ -126,6 +129,35 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
             f"Got: {entity['color']}\n"
             f"Entity: {entity}"
         )
+
+    def test_detach_is_held_to_the_link_version(self, server, admin_a, monkeypatch):
+        """Regression: DELETE /v1/labels/{label_id}/attach/{type}/{target_id}
+        names the link by its label and target, so nothing bound its
+        If-Match and a stale detach (or one naming no version) went
+        through. It is held to the link row's version, which a client reads
+        at /v1/label-links/{link_id}."""
+        monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "true")
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        label = self._create(server, admin_a.jwt, admin_a.id, key="detach_versioned")
+        url = f"/v1/{self.base_endpoint}/{label['id']}/attach/note/{uuid.uuid4()}"
+        attached = server.post(url, json={}, headers=headers)
+        assert attached.status_code in (200, 201), attached.text
+        link_url = f"/v1/label-links/{attached.json()['link_id']}"
+        version = current_if_match(server, link_url, headers)
+
+        stale = server.delete(
+            url, headers={**headers, "If-Match": '"1970-01-01T00:00:00"'}
+        )
+        assert stale.status_code == 412, stale.text
+        assert stale.json()["current"]["id"] == attached.json()["link_id"]
+        missing = server.delete(url, headers=headers)
+        assert missing.status_code == 428, missing.text
+        assert server.get(link_url, headers=headers).status_code == 200
+
+        detached = server.delete(url, headers={**headers, **version})
+        assert detached.status_code == 200, detached.text
+        assert detached.json()["detached"] is True
+        assert server.get(link_url, headers=headers).status_code == 404
 
     @pytest.mark.skip(
         reason="Requires prompts extension which is not loaded in meta_labels test suite"
