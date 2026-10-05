@@ -2,7 +2,7 @@
 
 Extensible Python (FastAPI) server framework. Installable via `pip install zephyrex` (PyPI). Consumer projects define extensions in a separate directory and boot via `zephyrex.run()`.
 
-**PyPI package:** `zephyrex` v0.0.1a2
+**PyPI package:** `zephyrex` v0.0.1a3
 **Import:** `from zephyrex import run, instance`
 
 ## Stack Standards
