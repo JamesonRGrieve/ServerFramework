@@ -465,6 +465,31 @@ class TestAbstractExtensionProvider:
         assert "child_only_ability" not in ParentProvider.abilities
         assert "child_only_ability" not in SiblingProvider.abilities
 
+    def test_env_registration_does_not_leak_into_the_base(self):
+        """An external extension declaring no ``_env`` of its own used to write
+        its settings into AbstractStaticExtension's map, so every extension
+        defined afterwards (the parked providers among them) reported them."""
+
+        class LeakingExternal(AbstractStaticExtension):
+            name: ClassVar[str] = "env_leak_external"
+            description: ClassVar[str] = "External extension with no _env"
+            version: ClassVar[str] = "1.0.0"
+            dependencies: ClassVar[Dependencies] = Dependencies([])
+
+            @classproperty
+            def types(cls) -> Set[ExtensionType]:
+                return {ExtensionType.EXTERNAL}
+
+        class LaterSibling(AbstractStaticExtension):
+            name: ClassVar[str] = "env_leak_sibling"
+            description: ClassVar[str] = "Extension defined afterwards"
+            version: ClassVar[str] = "1.0.0"
+            dependencies: ClassVar[Dependencies] = Dependencies([])
+
+        assert "ENV_LEAK_EXTERNAL_API_KEY" in LeakingExternal._env
+        assert "ENV_LEAK_EXTERNAL_API_KEY" not in AbstractStaticExtension._env
+        assert "ENV_LEAK_EXTERNAL_API_KEY" not in LaterSibling._env
+
     def test_hook_decorator(self):
         """Test hook decorator functionality."""
         result = TestExtension.test_hook_handler()

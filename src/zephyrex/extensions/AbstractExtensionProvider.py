@@ -978,13 +978,15 @@ class AbstractStaticExtensionSystemComponent(ABC):
         ]:
             return
 
-        # Give every class its own abilities set. ``_abilities`` is always
-        # inherited, so without this a subclass that declares none shares its
-        # ancestor's set and ability registration below writes into it,
-        # leaking one extension's abilities into every sibling. Copying keeps
-        # the inherited abilities visible.
+        # Give every class its own abilities set and env map. Both are always
+        # inherited, so without this a subclass that declares neither shares
+        # its ancestor's and registration below writes into it, leaking one
+        # extension's abilities and settings into every sibling. Copying keeps
+        # the inherited entries visible.
         if "_abilities" not in cls.__dict__:
             cls._abilities = set(cls._abilities)
+        if "_env" not in cls.__dict__:
+            cls._env = dict(cls._env)
 
         # Item 37: validate that Settings/EnvSchema, when declared, are BaseModel.
         for attr_name in ("Settings", "EnvSchema"):
