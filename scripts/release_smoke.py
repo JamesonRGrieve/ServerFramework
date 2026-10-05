@@ -14,16 +14,41 @@ clean environment and runs this before anything reaches PyPI, twice:
 Exits non-zero, naming what failed, otherwise. Run it outside the source
 tree so the installed package, not the checkout, is what gets imported.
 
+``--system-packages`` prints the system packages the installed extensions'
+manifests declare (what ``zephyrex[all]`` needs before pip can build it),
+read from the installed package, so it also fails if a manifest was not
+shipped.
+
 Usage:
-    python scripts/release_smoke.py [--core]
+    python scripts/release_smoke.py [--core | --system-packages]
 """
 
 import os
 import re
 import sys
 import tempfile
+import tomllib
 from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
 from typing import List
+
+
+def system_packages() -> List[str]:
+    import zephyrex
+
+    extensions = Path(zephyrex.__file__).resolve().parent / "extensions"
+    manifests = sorted(extensions.glob("*/manifest.toml"))
+    if not manifests:
+        raise SystemExit(f"no extension manifest under {extensions}")
+    return sorted(
+        {
+            package
+            for manifest in manifests
+            for package in tomllib.loads(manifest.read_text()).get(
+                "system_dependencies", []
+            )
+        }
+    )
 
 
 def missing_requirements() -> List[str]:
@@ -55,9 +80,12 @@ def boot_failures() -> List[str]:
 
 
 def main(argv: List[str]) -> int:
+    if argv == ["--system-packages"]:
+        print(" ".join(system_packages()))
+        return 0
     core_only = argv == ["--core"]
     if argv and not core_only:
-        print("usage: release_smoke.py [--core]")
+        print("usage: release_smoke.py [--core | --system-packages]")
         return 2
     import zephyrex
 

@@ -154,6 +154,15 @@ jobs:
         run: |
           /tmp/smoke/bin/zephyrex version
           /tmp/smoke/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py" --core
+      - name: Install the system packages the extensions declare
+        # Read from the installed manifests: some extras build from source
+        # (gssapi needs libkrb5-dev), and xmlsec1 and openscad are run.
+        working-directory: /tmp
+        run: |
+          packages=$(/tmp/smoke/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py" --system-packages)
+          echo "System packages: ${packages}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${packages}
       - name: Install zephyrex[all]
         run: |
           wheel=$(ls /tmp/wheel/zephyrex-*.whl)

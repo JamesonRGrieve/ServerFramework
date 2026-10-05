@@ -47,3 +47,21 @@ def test_the_checkout_is_not_an_install(monkeypatch, capsys):
     monkeypatch.setattr(zephyrex, "__file__", "/src/zephyrex/__init__.py")
     assert release_smoke.main(["--core"]) == 1
     assert "not an install" in capsys.readouterr().out
+
+
+def test_system_packages_are_what_the_manifests_declare(capsys):
+    """zephyrex[all] failed to build on the release runner: gssapi needs
+    libkrb5-dev, which nothing installed. The smoke job now installs what
+    the manifests declare first."""
+    assert release_smoke.main(["--system-packages"]) == 0
+    assert capsys.readouterr().out.split() == ["libkrb5-dev", "openscad", "xmlsec1"]
+
+
+def test_an_install_without_manifests_is_refused(monkeypatch, tmp_path):
+    """0.0.1a1's wheel shipped no manifest: listing its system packages
+    would have printed nothing and installed nothing."""
+    package = tmp_path / "zephyrex"
+    (package / "extensions").mkdir(parents=True)
+    monkeypatch.setattr(zephyrex, "__file__", str(package / "__init__.py"))
+    with pytest.raises(SystemExit, match="no extension manifest"):
+        release_smoke.system_packages()
