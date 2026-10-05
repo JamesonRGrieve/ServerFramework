@@ -128,7 +128,7 @@ class ConversationUserModel(
 
 
 class ParticipantRequest(RouteModel):
-    user_id: str = Field(..., description="The user to add")
+    user_id: str = Field(..., min_length=1, description="The user to add")
 
 
 class ParticipantRemoved(RouteModel):
@@ -349,8 +349,10 @@ class ConversationUserManager(AbstractBLLManager, RouterMixin):
         entities = kwargs.get("entities")
         named = entities if isinstance(entities, list) else [kwargs]
         for fields in named:
+            # Any id named is checked, an empty one included: it is no user,
+            # and must be a 404 rather than reach the foreign key.
             user_id = dict(fields).get("user_id")
-            if user_id:
+            if user_id is not None:
                 _visible_user(self.model_registry, self.requester.id, user_id)
         result = super().create(**kwargs)
         conversations = ConversationManager(

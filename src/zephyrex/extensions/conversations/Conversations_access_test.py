@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.conversations.BLL_Conversations import (
     MAX_THREAD_DEPTH,
+    ConversationUserManager,
     MessageManager,
 )
 from zephyrex.extensions.conversations.EXT_Conversations import EXT_Conversations
@@ -146,6 +147,21 @@ class TestConversationAccess(AcquaintedServer):
     def test_a_participant_sees_the_conversation(self, server, user_b, shared):
         response = server.get(f"/v1/conversation/{shared['id']}", headers=auth(user_b))
         assert response.status_code == 200, response.text
+
+    def test_a_participant_who_is_no_user_is_refused_not_a_500(
+        self, server, admin_a, shared
+    ):
+        """An empty user_id skipped the visibility check and reached the
+        foreign key: a 500 (found by the client's smoke test)."""
+        assert self._add(server, admin_a, shared["id"], "").status_code == 422
+        unknown = self._add(server, admin_a, shared["id"], str(uuid.uuid4()))
+        assert unknown.status_code == 404, unknown.text
+        memberships = ConversationUserManager(
+            requester_id=admin_a.id, model_registry=server.app.state.model_registry
+        )
+        with pytest.raises(HTTPException) as refused:
+            memberships.create(conversation_id=shared["id"], user_id="")
+        assert refused.value.status_code == 404
 
     def test_the_author_is_the_poster(self, server, admin_a, user_b, shared):
         response = self._post(server, user_b, shared["id"], user_id=admin_a.id)
