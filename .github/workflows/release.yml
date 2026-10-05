@@ -4,6 +4,8 @@ name: Release
 # A `v*` tag builds, signs and audits the wheel and sdist, publishes them to
 # TestPyPI, smoke-tests `zephyrex[all]` installed from there, and only then
 # publishes to PyPI, behind the `pypi` environment's required reviewer.
+# Pre-release versions (a/b/rc/dev) are internal and stop after the smoke
+# test; only a final version goes on to PyPI.
 # Publishing uses PyPI Trusted Publishing (OIDC): no token is stored. Each
 # index needs a trusted publisher for this repository, this workflow
 # (release.yml) and its environment (`testpypi`, `pypi`).
@@ -38,6 +40,7 @@ jobs:
       id-token: write # sigstore keyless signing
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +56,9 @@ jobs:
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          # a/b/rc/dev versions are internal: TestPyPI only.
+          prerelease=$(python -c "from packaging.version import Version; print(str(Version('${version}').is_prerelease).lower())")
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
             echo "Tag ${GITHUB_REF_NAME} does not match pyproject version ${version}"
             exit 1
@@ -175,6 +181,8 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: [build, smoke-testpypi]
+    # Pre-releases stop at TestPyPI; only a final version reaches PyPI.
+    if: needs.build.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:

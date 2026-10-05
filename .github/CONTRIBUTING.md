@@ -36,8 +36,8 @@ Releases go to PyPI as the single `zephyrex` distribution, with an extra per bun
 
 1. Build the wheel and sdist from the checkout; check the extras match the extensions' declarations, that the wheel ships no tests, and that its provenance manifest names the tagged commit built from a clean tree (`scripts/check_wheel.py`); write the SBOM, run the dependency audit (any known vulnerability in `requirements.lock` fails the release), and sign with sigstore. Tag only a clean, committed tree.
 2. Publish to TestPyPI (`testpypi` environment).
-3. Install `zephyrex[all]` from TestPyPI into a clean environment, resolving its dependencies from PyPI only, then run `zephyrex version` and `scripts/release_smoke.py`.
-4. Publish to PyPI (`pypi` environment). The run waits here for a required reviewer to approve.
+3. Install `zephyrex` from TestPyPI into a clean environment, resolving its dependencies from PyPI only, and smoke-test it; then install the system packages the extensions' manifests declare, install `zephyrex[all]`, and smoke-test that (`scripts/release_smoke.py`).
+4. Publish to PyPI (`pypi` environment). The run waits here for a required reviewer to approve. Pre-release versions (`a`, `b`, `rc`, `dev`, e.g. `0.0.1a2`) are internal: they stop after step 3, and only a final version such as `0.0.1` reaches this step.
 5. Attach the packages, signatures and SBOM to the GitHub release.
 
 Publishing uses PyPI Trusted Publishing, so no token is stored. Each index needs a trusted publisher for this repository, workflow `release.yml` and environment `testpypi` or `pypi`, and the `pypi` environment needs its required reviewers set. After changing an extension's pip dependencies, run `python -m zephyrex.extensions.sync_dependencies` to update its manifest and extra; the test suite fails until you do.
