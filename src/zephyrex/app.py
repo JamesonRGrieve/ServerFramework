@@ -387,11 +387,23 @@ def install_sighup_handler(app: FastAPI) -> None:
         # blue-green at the LB level instead.
         os._exit(SIGHUP_RESTART_EXIT_CODE)
 
-    def _handle_sigterm(signum, frame):  # pragma: no cover -- signal path
+    # Under ``zephyrex.run`` uvicorn builds the app inside ``serve``, after it
+    # installed its own SIGTERM handler; replacing that handler left SIGTERM
+    # only marking the app draining, so the server never shut down. Ours
+    # marks it draining and hands the signal on to the handler it replaced
+    # (uvicorn's graceful shutdown), or to the default action if none.
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(signum, frame):
         from zephyrex.lib.Logging import logger
 
         logger.info("SIGTERM received -- draining")
         app.state.draining = True
+        if callable(previous_sigterm):
+            previous_sigterm(signum, frame)
+        elif previous_sigterm != signal.SIG_IGN:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGTERM)
 
     try:
         signal.signal(signal.SIGHUP, _handle_sighup)
