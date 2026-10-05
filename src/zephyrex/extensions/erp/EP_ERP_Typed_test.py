@@ -62,6 +62,8 @@ class Booted:
     namespaces: Dict[str, str]
     operator_id: str
     warnings: List[str]
+    # The hosts the test sites listen on, for EGRESS_ALLOWED_HOSTS.
+    egress: str
 
     @property
     def operator(self) -> str:
@@ -81,9 +83,56 @@ def graphql_field(namespace: str, slug: str, operation: str) -> str:
     return first + "".join(part.capitalize() for part in rest)
 
 
+def _build(prefix: str, frappe: FrappeServer, unreachable: str, egress: str) -> Booted:
+    """Boot an app, make the instances, then boot again on the same database
+    so the typed models are read from them."""
+    from zephyrex.app import instance
+    from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
+
+    prepare_test_registry()
+    first_app = instance(db_prefix=prefix, extensions=EXTENSIONS)
+    first = TestClient(first_app)
+    registry = first_app.state.model_registry
+    admin, other = make_admin_a(first), make_admin_b(first)
+    made = {
+        "operator": erp_instance(registry, frappe.base_url),
+        "user": erp_instance(
+            registry, frappe.base_url, owner_id=admin.id, scope="user"
+        ),
+        "disabled": erp_instance(registry, frappe.base_url, scope="system"),
+        "unreachable": erp_instance(registry, unreachable),
+        "clerk": erp_instance(
+            registry, frappe.base_url, api_key=CLERK_KEY, api_secret=CLERK_SECRET
+        ),
+    }
+    ProviderInstanceManager(
+        model_registry=registry, requester_id=env("ROOT_ID")
+    ).update(str(made["disabled"].id), enabled=False)
+
+    prepare_test_registry()
+    warnings: List[str] = []
+    sink = logger.add(warnings.append, level="WARNING", format="{message}")
+    try:
+        restarted = TestClient(instance(db_prefix=prefix, extensions=EXTENSIONS))
+    finally:
+        logger.remove(sink)
+    return Booted(
+        server=restarted,
+        frappe=frappe,
+        admin=admin,
+        other=other,
+        namespaces={
+            role: instance_namespace(PROVIDER, str(row.id))
+            for role, row in made.items()
+        },
+        operator_id=str(made["operator"].id),
+        warnings=warnings,
+        egress=egress,
+    )
+
+
 @pytest.fixture(scope="module")
 def booted() -> Iterator[Booted]:
-    from zephyrex.app import instance
     from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
     worker = os.environ.get("PYTEST_XDIST_WORKER", "")
@@ -93,50 +142,22 @@ def booted() -> Iterator[Booted]:
     site = standard_site()
     site.add_doctype(doctype_of(ODD_DOCTYPE, [field_of("plan_code", reqd=1)], custom=1))
     site.accounts[OPERATOR_KEY].rights[ODD_DOCTYPE] = set(ALL_RIGHTS)
-    with FrappeServer(site) as frappe, pytest.MonkeyPatch.context() as patch:
-        patch.setenv(
-            "EGRESS_ALLOWED_HOSTS", f"{frappe.host},{unreachable[len('http://'):]}"
-        )
+    with FrappeServer(site) as frappe:
+        egress = f"{frappe.host},{unreachable[len('http://'):]}"
+        # The allowance is patched only while the apps are built (boot reads
+        # the catalogue); each test sets it again for itself (``allowed``),
+        # so no other module on this worker inherits it.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("EGRESS_ALLOWED_HOSTS", egress)
+            built = _build(prefix, frappe, unreachable, egress)
+        yield built
         prepare_test_registry()
-        first_app = instance(db_prefix=prefix, extensions=EXTENSIONS)
-        first = TestClient(first_app)
-        registry = first_app.state.model_registry
-        admin, other = make_admin_a(first), make_admin_b(first)
-        made = {
-            "operator": erp_instance(registry, frappe.base_url),
-            "user": erp_instance(
-                registry, frappe.base_url, owner_id=admin.id, scope="user"
-            ),
-            "disabled": erp_instance(registry, frappe.base_url, scope="system"),
-            "unreachable": erp_instance(registry, unreachable),
-            "clerk": erp_instance(
-                registry, frappe.base_url, api_key=CLERK_KEY, api_secret=CLERK_SECRET
-            ),
-        }
-        ProviderInstanceManager(
-            model_registry=registry, requester_id=env("ROOT_ID")
-        ).update(str(made["disabled"].id), enabled=False)
 
-        prepare_test_registry()
-        warnings: List[str] = []
-        sink = logger.add(warnings.append, level="WARNING", format="{message}")
-        try:
-            restarted = TestClient(instance(db_prefix=prefix, extensions=EXTENSIONS))
-        finally:
-            logger.remove(sink)
-        yield Booted(
-            server=restarted,
-            frappe=frappe,
-            admin=admin,
-            other=other,
-            namespaces={
-                role: instance_namespace(PROVIDER, str(row.id))
-                for role, row in made.items()
-            },
-            operator_id=str(made["operator"].id),
-            warnings=warnings,
-        )
-        prepare_test_registry()
+
+@pytest.fixture(autouse=True)
+def allowed(booted: Booted, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test sites, reachable through the SSRF guard for this test only."""
+    monkeypatch.setenv("EGRESS_ALLOWED_HOSTS", booted.egress)
 
 
 def create(booted: Booted, slug: str, data: Dict[str, Any]) -> Any:
