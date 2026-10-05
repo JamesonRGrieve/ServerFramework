@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zephyrex"
-version = "1.0.0a1"
+version = "0.0.1a1"
 description = "Extensible Python server framework with pluggable extensions, providers, and auto-generated SDK"
 readme = "docs/README.md"
 authors = [

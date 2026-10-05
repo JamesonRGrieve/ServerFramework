@@ -32,7 +32,7 @@ Uniform code style is key to a maintainable codebase. Please observe the followi
 - **Review Before Submission:** Double-check your code against the repository’s style expectations to ensure consistency and readability.
 ---
 ## Releasing
-Releases go to PyPI as the single `zephyrex` distribution, with an extra per bundled extension. `.github/workflows/release.yml` runs on a `v*` tag, which must equal the `version` in `pyproject.toml` (e.g. `v1.0.0a1`):
+Releases go to PyPI as the single `zephyrex` distribution, with an extra per bundled extension. `.github/workflows/release.yml` runs on a `v*` tag, which must equal the `version` in `pyproject.toml` (e.g. `v0.0.1a1`):
 
 1. Build the wheel and sdist from the checkout; check the extras match the extensions' declarations, that the wheel ships no tests, and that its provenance manifest names the tagged commit built from a clean tree (`scripts/check_wheel.py`); write the SBOM, run the dependency audit (any known vulnerability in `requirements.lock` fails the release), and sign with sigstore. Tag only a clean, committed tree.
 2. Publish to TestPyPI (`testpypi` environment).
