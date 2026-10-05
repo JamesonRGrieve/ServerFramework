@@ -207,6 +207,18 @@ class EXT_ERP(AbstractStaticExtension):
     }
 
     @classmethod
+    def on_initialize(cls) -> bool:
+        """Federate the operator's instances: their DocTypes become typed
+        models when the app boots (``BLL_ERP_Typed``)."""
+        from zephyrex.extensions.erp.BLL_ERP_Typed import erp_federated_sources
+        from zephyrex.extensions.federation.BLL_Federation_Typed import (
+            register_federated_sources,
+        )
+
+        register_federated_sources(cls.name, erp_federated_sources)
+        return True
+
+    @classmethod
     def _documents(cls, requester_id: str, provider_instance_id: str) -> Any:
         """The documents of the instance, for ``requester_id`` (404 when they
         may not use it)."""

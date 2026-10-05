@@ -70,6 +70,10 @@ from zephyrex.extensions.ExternalErrors import (
 from zephyrex.extensions.federation.BLL_Federation_REST import (
     openapi_to_pydantic_models,
 )
+from zephyrex.extensions.federation.BLL_Federation_Typed import (
+    SHADOW_WARNING,
+    holdable_field_name,
+)
 from zephyrex.lib.ContentNegotiation import skip_negotiation
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
@@ -78,9 +82,8 @@ from zephyrex.lib.Preconditions import (
     IF_MATCH_HEADER,
     IfMatch,
     PreconditionFailed,
-    PreconditionRequired,
     etag_headers,
-    if_match_required,
+    save_expectation,
 )
 from zephyrex.lib.ReplayCache import get_replay_cache
 from zephyrex.lib.RequestBody import capped_body
@@ -175,9 +178,6 @@ _ORDER = re.compile(
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _COMPONENT_UNSAFE = re.compile(r"[^0-9A-Za-z]")
-# Pydantic warns when a field shadows a BaseModel attribute (a DocType may
-# well have a ``json`` or ``copy`` field); the field still works.
-_SHADOW_WARNING = r'Field name ".*" in ".*" shadows an attribute in parent'
 
 
 def _refused(detail: Any, status_code: int = 422) -> HTTPException:
@@ -479,13 +479,6 @@ def _value_fields(meta: Mapping[str, Any]) -> List[Mapping[str, Any]]:
     ]
 
 
-def _liftable(fieldname: str) -> bool:
-    """Whether a Pydantic model can hold the field under its own name."""
-    return bool(_FIELDNAME.match(fieldname)) and not (
-        fieldname.startswith("model_") and hasattr(RouteModel, fieldname)
-    )
-
-
 def _component_names(doctypes: Sequence[str]) -> Dict[str, str]:
     """A distinct Python identifier for each DocType's component schema."""
     names: Dict[str, str] = {}
@@ -534,7 +527,7 @@ def doctype_openapi(bundle: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
             name: {"type": kind} for name, kind in standard.items()
         }
         for f in _value_fields(meta):
-            if _liftable(f["fieldname"]):
+            if holdable_field_name(f["fieldname"]):
                 properties[f["fieldname"]] = _property(
                     f.get("fieldtype"), f.get("options"), components
                 )
@@ -559,7 +552,7 @@ def lift_doctype(bundle: Sequence[Mapping[str, Any]]) -> DocTypeSchema:
     metas = {str(meta.get("name")): meta for meta in bundle}
     components = _component_names(list(metas))
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=_SHADOW_WARNING, category=UserWarning)
+        warnings.filterwarnings("ignore", message=SHADOW_WARNING, category=UserWarning)
         lifted = openapi_to_pydantic_models(doctype_openapi(bundle))
         for model in lifted.models.values():
             # The importer resolves forward references best-effort; a model
@@ -600,7 +593,7 @@ def lift_doctype(bundle: Sequence[Mapping[str, Any]]) -> DocTypeSchema:
             untyped=frozenset(
                 str(f["fieldname"])
                 for f in fields
-                if not _liftable(str(f["fieldname"]))
+                if not holdable_field_name(str(f["fieldname"]))
                 and f.get("fieldtype") not in TABLE_TYPES
             ),
         )
@@ -768,15 +761,6 @@ def refusal(
     return HTTPException(status_code=502, detail=f"{name} is unavailable")
 
 
-def expectation(if_match: Optional[str]) -> Optional[IfMatch]:
-    """The version a save names, or None when it names none and need not
-    (``IF_MATCH_REQUIRED``); 428 when it must."""
-    parsed = IfMatch.parse(if_match) if if_match and if_match.strip() else None
-    if parsed is None and if_match_required():
-        raise PreconditionRequired()
-    return parsed
-
-
 class ERPDocuments:
     """One instance's documents, for one request: what the ERP describes is
     kept for the request and no longer."""
@@ -905,7 +889,24 @@ class ERPDocuments:
         schema = await self._parent_schema(doctype)
         name = checked_name(name)
         payload = schema.checked_write(data)
-        expected = expectation(if_match)
+        return await self._save(schema, name, payload, save_expectation(if_match))
+
+    async def update_expecting(
+        self, doctype: Any, name: Any, data: Any, expected: Optional[IfMatch]
+    ) -> ERPDocument:
+        """:meth:`update`, for a caller that already read the version the
+        save names (None: it names none, and need not)."""
+        schema = await self._parent_schema(doctype)
+        name = checked_name(name)
+        return await self._save(schema, name, schema.checked_write(data), expected)
+
+    async def _save(
+        self,
+        schema: DocTypeSchema,
+        name: str,
+        payload: Dict[str, Any],
+        expected: Optional[IfMatch],
+    ) -> ERPDocument:
         version: Optional[str] = None
         if expected is not None and not expected.any_version:
             if len(expected.versions) == 1:
@@ -924,7 +925,14 @@ class ERPDocuments:
 
     async def delete(self, doctype: Any, name: Any, if_match: Optional[str]) -> None:
         doctype, name = checked_doctype(doctype), checked_name(name)
-        expected = expectation(if_match)
+        await self.delete_expecting(doctype, name, save_expectation(if_match))
+
+    async def delete_expecting(
+        self, doctype: Any, name: Any, expected: Optional[IfMatch]
+    ) -> None:
+        """:meth:`delete`, for a caller that already read the version the
+        delete names."""
+        doctype, name = checked_doctype(doctype), checked_name(name)
         if expected is not None:
             await self._current(doctype, name, expected)
         await self._upstream(self.provider.delete_document(self.account, doctype, name))
@@ -940,7 +948,7 @@ class ERPDocuments:
     ) -> ERPDocument:
         schema = await self._submittable(doctype)
         name = checked_name(name)
-        expected = expectation(if_match)
+        expected = save_expectation(if_match)
         current = await self._current(schema.doctype, name, expected)
         try:
             document = await self.provider.submit_document(self.account, current.data)
@@ -953,7 +961,7 @@ class ERPDocuments:
     ) -> ERPDocument:
         schema = await self._submittable(doctype)
         name = checked_name(name)
-        expected = expectation(if_match)
+        expected = save_expectation(if_match)
         await self._current(schema.doctype, name, expected)
         try:
             document = await self.provider.cancel_document(
