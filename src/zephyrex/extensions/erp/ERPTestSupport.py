@@ -114,9 +114,11 @@ def erp_instance(
     owner_id: Optional[str] = None,
     scope: str = "root",
     team_id: Optional[str] = None,
+    extra_settings: Optional[Dict[str, str]] = None,
 ) -> ProviderInstanceModel:
     """A new ERPNext instance: the operator's (made by ROOT) unless
-    ``owner_id`` names the user making it, for ``scope``."""
+    ``owner_id`` names the user making it, for ``scope``; ``extra_settings``
+    are further settings rows (``typed_doctypes``)."""
     maker = owner_id or env("ROOT_ID")
     provider = ProviderManager(
         model_registry=model_registry, requester_id=env("ROOT_ID")
@@ -140,6 +142,7 @@ def erp_instance(
     settings = {"base_url": base_url, "api_secret": api_secret}
     if webhook_secret is not None:
         settings["webhook_secret"] = webhook_secret
+    settings.update(extra_settings or {})
     rows = ProviderInstanceSettingManager(
         model_registry=model_registry, requester_id=maker
     )

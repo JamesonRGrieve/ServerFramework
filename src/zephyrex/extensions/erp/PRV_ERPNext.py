@@ -45,6 +45,7 @@ from urllib.parse import quote
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.erp.EXT_ERP import (
+    TYPED_DOCTYPES_SETTING,
     AbstractERPProvider,
     Document,
     ERPConfigurationError,
@@ -152,6 +153,12 @@ class PRV_ERPNext(AbstractERPProvider):
             f"The Webhook Secret the site signs this instance's webhooks with "
             f"(at least {MIN_WEBHOOK_SECRET_LENGTH} characters)",
             secret=True,
+        ),
+        InstanceSetting(
+            TYPED_DOCTYPES_SETTING,
+            "Comma-separated DocTypes served as typed models at boot (operator "
+            "instances); empty types every DocType. The generic document API "
+            "serves all of them either way.",
         ),
     )
 

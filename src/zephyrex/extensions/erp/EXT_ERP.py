@@ -36,6 +36,9 @@ from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 ERP_REQUEST_TIMEOUT_SECONDS = 30.0
+# An operator instance's setting naming the DocTypes typed at boot (comma-
+# separated; empty types them all). Every ERP provider declares it.
+TYPED_DOCTYPES_SETTING = "typed_doctypes"
 
 Document = Dict[str, Any]
 

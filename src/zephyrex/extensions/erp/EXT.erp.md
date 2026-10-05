@@ -18,6 +18,7 @@ A provider instance of `erpnext` is one account on one site. Its settings:
 | `api_key` | API key of the ERPNext user the instance acts as (secret; the instance's `api_key` column) |
 | `api_secret` | That user's API secret (secret) |
 | `webhook_secret` | The Webhook Secret the site signs this instance's webhooks with, at least 16 characters (secret) |
+| `typed_doctypes` | Comma-separated DocTypes an operator instance serves as typed models at boot; empty types every DocType. The generic document API serves all of them either way |
 
 Secrets are stored encrypted and never returned. There are no environment
 fallbacks, so an instance without its own key never acts with another's.
@@ -237,6 +238,11 @@ DocType), `slug`, `key_field` (`name`), `version_field` (`updated_at`),
 `graphql_write_input`, `graphql_fields`, `graphql_inputs`, and the record's
 and write payload's JSON Schema. The instance's DocTypes are its rows whose
 `source_reference` is its id.
+
+An operator instance whose `typed_doctypes` names DocTypes types only those
+(a full site has hundreds, each a few routes and GraphQL fields, read at
+boot); a name the site does not show is logged and skipped. Left empty, it
+types every parent DocType the account is shown.
 
 The catalogue is the boot's: a DocType added to the site later is reachable
 only through the generic API until the app restarts, as is a new operator

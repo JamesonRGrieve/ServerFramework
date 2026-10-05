@@ -30,7 +30,7 @@ renamed to, and distinct among instances.
 """
 
 import asyncio
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
 
 from zephyrex.extensions.erp.BLL_ERP import (
     SYSTEM_FIELDS,
@@ -42,6 +42,7 @@ from zephyrex.extensions.erp.BLL_ERP import (
     doctype_openapi,
     refusal,
 )
+from zephyrex.extensions.erp.EXT_ERP import TYPED_DOCTYPES_SETTING
 from zephyrex.extensions.ExternalErrors import BaseExternalError
 from zephyrex.extensions.federation.BLL_Federation_Typed import (
     AbstractFederatedSource,
@@ -241,15 +242,36 @@ class ERPFederatedSource(AbstractFederatedSource):
             description=f"{info.get('module') or 'ERP'} DocType {doctype}",
         )
 
+    def _typed_only(self) -> Optional[Set[str]]:
+        """The DocTypes the instance's ``typed_doctypes`` setting names, or
+        None when it names none (every DocType is typed)."""
+        raw = self.instance.provider.setting(
+            self.instance.model, TYPED_DOCTYPES_SETTING
+        )
+        names = {name.strip() for name in (raw or "").split(",") if name.strip()}
+        return names or None
+
     async def catalogue(self) -> Sequence[FederatedType]:
-        """Every parent DocType the instance's account is shown, read as
-        the instance's account (no requester: the app is booting)."""
+        """Every parent DocType the instance's account is shown, or those of
+        them its ``typed_doctypes`` setting names, read as the instance's
+        account (no requester: the app is booting)."""
         provider = self.instance.provider
         try:
             rows = await provider.doctypes(self.instance.model)
         except BaseExternalError as exc:
             raise refusal(provider, exc) from exc
         parents = [row for row in rows if not row.get("istable")]
+        wanted = self._typed_only()
+        if wanted is not None:
+            shown = {str(row.get("name")) for row in parents}
+            missing = sorted(wanted - shown)
+            if missing:
+                logger.warning(
+                    "%s: typed_doctypes names DocTypes the site does not show: %s",
+                    self.title,
+                    ", ".join(missing),
+                )
+            parents = [row for row in parents if str(row.get("name")) in wanted]
         gate = asyncio.Semaphore(BUNDLE_CONCURRENCY)
 
         async def described(info: Mapping[str, Any]) -> Optional[FederatedType]:

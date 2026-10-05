@@ -21,6 +21,7 @@ from sqlalchemy import inspect as sql_inspect
 
 from conftest import CORE_COMPANION_EXTENSIONS
 from zephyrex.extensions.erp.BLL_ERP_Typed import instance_namespace
+from zephyrex.extensions.erp.EXT_ERP import TYPED_DOCTYPES_SETTING
 from zephyrex.extensions.erp.ERPTestSupport import (
     ALL_RIGHTS,
     CLERK_KEY,
@@ -41,6 +42,8 @@ from zephyrex.testing.factories import make_admin_a, make_admin_b
 PROVIDER = "erpnext"
 # A custom DocType whose name holds spaces, brackets and a dash.
 ODD_DOCTYPE = "Route Plan (EU) - 2026"
+# Named in an instance's typed_doctypes, and on no site.
+ABSENT_DOCTYPE = "Nonexistent Ledger"
 EXTENSIONS = ",".join(
     ["erp", "federation", "webhooks"]
     + [
@@ -60,6 +63,8 @@ class Booted:
     admin: Any
     other: Any
     namespaces: Dict[str, str]
+    # Each instance's provider_instance_id, by its role in the fixture.
+    instance_ids: Dict[str, str]
     operator_id: str
     warnings: List[str]
     # The hosts the test sites listen on, for EGRESS_ALLOWED_HOSTS.
@@ -104,6 +109,11 @@ def _build(prefix: str, frappe: FrappeServer, unreachable: str, egress: str) -> 
         "clerk": erp_instance(
             registry, frappe.base_url, api_key=CLERK_KEY, api_secret=CLERK_SECRET
         ),
+        "allowlisted": erp_instance(
+            registry,
+            frappe.base_url,
+            extra_settings={TYPED_DOCTYPES_SETTING: f"Customer, {ABSENT_DOCTYPE}"},
+        ),
     }
     ProviderInstanceManager(
         model_registry=registry, requester_id=env("ROOT_ID")
@@ -125,6 +135,7 @@ def _build(prefix: str, frappe: FrappeServer, unreachable: str, egress: str) -> 
             role: instance_namespace(PROVIDER, str(row.id))
             for role, row in made.items()
         },
+        instance_ids={role: str(row.id) for role, row in made.items()},
         operator_id=str(made["operator"].id),
         warnings=warnings,
         egress=egress,
@@ -178,6 +189,27 @@ class TestCatalogue:
         assert not [p for p in paths if "sales_invoice_item" in p]
         # The generic document API is as it was.
         assert "/v1/erp/document/get" in paths
+
+    def test_typed_doctypes_limits_which_doctypes_are_typed(self, booted):
+        """An operator instance's typed_doctypes setting types only the
+        DocTypes it names (operator decision: boot cost on a full site);
+        a name the site lacks is logged, and the generic API still serves
+        every DocType."""
+        namespace = booted.namespaces["allowlisted"]
+        paths = set(booted.server.app.openapi()["paths"])
+        assert f"/v1/federated/{namespace}/customer/get" in paths
+        typed = [p for p in paths if p.startswith(f"/v1/federated/{namespace}/")]
+        assert typed and all("/customer/" in p for p in typed)
+        assert any(ABSENT_DOCTYPE in warning for warning in booted.warnings)
+        listed = booted.server.post(
+            "/v1/erp/document/list",
+            json={
+                "provider_instance_id": booted.instance_ids["allowlisted"],
+                "doctype": "Sales Invoice",
+            },
+            headers=bearer(booted.admin),
+        )
+        assert listed.status_code == 200, listed.text
 
     def test_only_the_operators_enabled_instances_are_in_the_shared_schema(
         self, booted
