@@ -1,77 +1,359 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Outbound webhook delivery for the webhooks extension (Item — issue #203).
+"""Outbound webhook delivery (issue #203): events sent to endpoints users
+subscribe.
 
-Inbound webhooks (``BLL_Webhooks``) handle events *from* providers; this adds
-delivery *to* consumer-registered endpoints:
+A **subscription** is a user's: a target URL, the event types it wants
+(``*`` for all) and an HMAC secret. The secret is stored encrypted and never
+returned; it signs every delivery (``X-Webhook-Signature: sha256=<hex>`` over
+the exact body sent), mirroring the inbound ``verify_signature`` convention.
+Subscriptions are managed over ``/v1/webhook-subscription`` (owner-scoped,
+held to If-Match like every save).
 
-* a **subscription registry** — target URL + event-type filter + HMAC secret;
-* a **delivery queue** with per-delivery exponential backoff and a dead-letter
-  tier after ``max_attempts``;
-* **HMAC-SHA256-signed** POSTs (``X-Webhook-Signature: sha256=...``) so receivers
-  can authenticate the payload, mirroring the inbound ``verify_signature``
-  convention.
-
-The queue is in-process (thread-safe registry, async delivery). A durable /
-cross-process store is a follow-on; this delivers the subscription + signed
-delivery + backoff/dead-letter + delivery-log surface #203 asks for.
+An event reaches a subscription only when its owner can see the record the
+event is about (:func:`dispatch_webhook_event` names it), so no one learns
+of records they could not read. Each match is queued as a **delivery** row,
+readable by the subscription's owner at ``/v1/webhook-delivery`` and written
+only by the server. :func:`deliver_due` (run by ``SVC_WebhookDelivery``)
+claims due deliveries with a compare-and-set, so of two workers one sends
+each, and POSTs them through the shared client (SSRF guard, TLS policy). A
+failure waits twice as long each time, up to :data:`MAX_DELAY_SECONDS`;
+after :data:`MAX_ATTEMPTS` the delivery is dead-lettered.
 """
-
-from __future__ import annotations
 
 import hashlib
 import hmac
 import json
-import threading
-import uuid
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, ClassVar, Dict, List, Optional, Type
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from fastapi import HTTPException
+from pydantic import Field
+from sqlalchemy import update
 
+from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.SecretEncryption import decrypt_secret, encrypt_secret
+from zephyrex.logic.AbstractLogicManager import (
+    AbstractBLLManager,
+    ApplicationModel,
+    ModelMeta,
+    StringSearchModel,
+    UpdateMixinModel,
+)
+from zephyrex.logic.AbstractLogicManager.ownership import (
+    OWNERSHIP_FIELDS,
+    each_created,
+    owned_by,
+    server_side,
+    without,
+)
+from zephyrex.logic.BLL_Auth import UserModel
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
+from zephyrex.pydantic2.registry import BaseModel
 
 SIGNATURE_HEADER = "X-Webhook-Signature"
 EVENT_HEADER = "X-Webhook-Event"
 DELIVERY_ID_HEADER = "X-Webhook-Delivery"
 
+ALL_EVENTS = "*"
+PENDING, DELIVERED, DEAD = "pending", "delivered", "dead"
+MAX_ATTEMPTS = 5
+BASE_DELAY_SECONDS = 2.0
+MAX_DELAY_SECONDS = 3600.0
+# A claimed delivery is not due again until this lease ends, so a worker
+# that dies mid-send leaves it to be retried rather than lost.
+CLAIM_LEASE_SECONDS = 120.0
+DELIVERY_TIMEOUT_SECONDS = 15.0
+DELIVERIES_PER_RUN = 50
+MAX_RECORDED_ERROR_CHARACTERS = 500
+MIN_SECRET_CHARACTERS = 16
+MAX_EVENT_TYPES = 50
+_EVENT_TYPE = re.compile(r"^(\*|[A-Za-z0-9][A-Za-z0-9_.:-]{0,99})$")
+_TARGET_SCHEMES = ("https", "http")
+
 HttpPost = Callable[..., Awaitable[Any]]
 
 
-def _utcnow() -> datetime:
+def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def sign_payload(secret: str, body: bytes) -> str:
-    """``sha256=<hex>`` HMAC-SHA256 of ``body`` keyed by ``secret`` — the
+    """``sha256=<hex>`` HMAC-SHA256 of ``body`` keyed by ``secret``: the
     signature receivers verify (mirrors the inbound convention)."""
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
 
 
-class WebhookSubscription(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    target_url: str
-    event_types: List[str] = Field(default_factory=lambda: ["*"])  # "*" = all events
-    secret: str
-    active: bool = True
+def _text(value: Any, name: str) -> str:
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{name} must be a string")
+    return value
+
+
+def checked_target_url(url: Any) -> str:
+    """An absolute http(s) URL with a host and no credentials, or 422.
+    Where it may point is the SSRF guard's call, at every delivery."""
+    parts = urlsplit(_text(url, "target_url").strip())
+    if parts.scheme not in _TARGET_SCHEMES or not parts.hostname:
+        raise HTTPException(
+            status_code=422, detail="target_url must be an absolute http(s) URL"
+        )
+    if parts.username or parts.password:
+        raise HTTPException(
+            status_code=422, detail="target_url must not carry credentials"
+        )
+    return parts.geturl()
+
+
+def checked_event_types(value: Any) -> str:
+    """Space- or comma-separated event types (``*`` for all), normalised."""
+    names = [
+        name
+        for name in re.split(r"[\s,]+", _text(value, "event_types").strip())
+        if name
+    ]
+    if not names or len(names) > MAX_EVENT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"event_types names 1 to {MAX_EVENT_TYPES} event types",
+        )
+    for name in names:
+        if not _EVENT_TYPE.fullmatch(name):
+            raise HTTPException(
+                status_code=422, detail=f"{name!r} is not an event type"
+            )
+    return " ".join(dict.fromkeys(names))
+
+
+def checked_secret(secret: Any) -> str:
+    text = _text(secret, "secret")
+    if len(text) < MIN_SECRET_CHARACTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"secret must be at least {MIN_SECRET_CHARACTERS} characters",
+        )
+    return text
+
+
+class WebhookSubscriptionModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference,
+    metaclass=ModelMeta,
+):
+    """An endpoint a user has events delivered to. The secret is
+    encrypted, and never serialized."""
+
+    target_url: str = Field(..., description="Where deliveries are POSTed")
+    event_types: str = Field(
+        ALL_EVENTS, description="Space-separated event types delivered; * for all"
+    )
+    # Optional here only because a response never carries it; Create
+    # requires one.
+    secret: Optional[str] = Field(
+        None,
+        exclude=True,
+        description="The HMAC key deliveries are signed with (encrypted)",
+    )
+    active: bool = Field(True, description="Whether events are delivered")
+
+    table_comment: ClassVar[str] = (
+        "An endpoint a user has outbound webhook events delivered to"
+    )
+    is_system_entity: ClassVar[bool] = False
 
     def matches(self, event_type: str) -> bool:
-        return self.active and (
-            "*" in self.event_types or event_type in self.event_types
+        wanted = self.event_types.split()
+        return bool(self.active) and (ALL_EVENTS in wanted or event_type in wanted)
+
+    class Create(BaseModel, UserModel.Reference.ID.Optional):
+        target_url: str
+        event_types: str = ALL_EVENTS
+        secret: str = Field(..., description="The HMAC key; never returned")
+        active: bool = True
+
+    class Update(BaseModel):
+        target_url: Optional[str] = None
+        event_types: Optional[str] = None
+        secret: Optional[str] = Field(None, description="A new HMAC key")
+        active: Optional[bool] = None
+
+    class Search(
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        UserModel.Reference.ID.Search,
+    ):
+        target_url: Optional[StringSearchModel] = None
+        event_types: Optional[StringSearchModel] = None
+        active: Optional[bool] = None
+
+
+def _checked_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """A subscription's fields validated, the secret encrypted."""
+    if fields.get("target_url") is not None:
+        fields["target_url"] = checked_target_url(fields["target_url"])
+    if fields.get("event_types") is not None:
+        fields["event_types"] = checked_event_types(fields["event_types"])
+    if fields.get("secret") is not None:
+        fields["secret"] = encrypt_secret(checked_secret(fields["secret"]))
+    return fields
+
+
+class WebhookSubscriptionManager(AbstractBLLManager, RouterMixin):
+    _model = WebhookSubscriptionModel
+    prefix: ClassVar[Optional[str]] = "/v1/webhook-subscription"
+    tags: ClassVar[Optional[List[str]]] = ["Webhook Delivery"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+
+    def create(self, **kwargs: Any) -> Any:
+        """Subscriptions are the requester's (ROOT and SYSTEM may name the
+        owner)."""
+        owned = owned_by(self.requester.id)
+        return super().create(
+            **each_created(kwargs, lambda fields: _checked_fields(owned(fields)))
         )
 
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """An update never moves a subscription to another owner."""
+        return super().update(id, **_checked_fields(without(kwargs, OWNERSHIP_FIELDS)))
 
-class WebhookDelivery(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    subscription_id: str
-    target_url: str
-    event_type: str
-    body: Dict[str, Any]
-    status: str = "pending"  # pending | delivered | dead
-    attempts: int = 0
-    next_attempt_at: datetime = Field(default_factory=_utcnow)
-    last_error: Optional[str] = None
-    created_at: datetime = Field(default_factory=_utcnow)
+
+class WebhookDeliveryModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    WebhookSubscriptionModel.Reference.ID,
+    metaclass=ModelMeta,
+):
+    """One event queued for, or sent to, a subscription. Readable as its
+    subscription is; written only by the server."""
+
+    event_type: str = Field(..., description="The event delivered")
+    payload: str = Field(..., description="The JSON body POSTed, exactly as signed")
+    status: str = Field(PENDING, description="pending, delivered or dead")
+    attempts: int = Field(0, description="Sends tried so far")
+    next_attempt_at: datetime = Field(..., description="When it is next due")
+    last_error: Optional[str] = Field(None, description="Why the last send failed")
+    delivered_at: Optional[datetime] = Field(None, description="When it was accepted")
+
+    table_comment: ClassVar[str] = (
+        "Outbound webhook deliveries: queued, sent, or dead-lettered"
+    )
+    is_system_entity: ClassVar[bool] = False
+    permission_references: ClassVar[List[str]] = ["webhook_subscription"]
+
+    class Create(BaseModel, WebhookSubscriptionModel.Reference.ID):
+        event_type: str
+        payload: str
+        status: str = PENDING
+        attempts: int = 0
+        next_attempt_at: datetime
+
+    class Update(BaseModel):
+        status: Optional[str] = None
+        attempts: Optional[int] = None
+        next_attempt_at: Optional[datetime] = None
+        last_error: Optional[str] = None
+        delivered_at: Optional[datetime] = None
+
+    class Search(
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        WebhookSubscriptionModel.Reference.ID.Search,
+    ):
+        event_type: Optional[StringSearchModel] = None
+        status: Optional[StringSearchModel] = None
+
+
+class WebhookDeliveryManager(AbstractBLLManager, RouterMixin):
+    _model = WebhookDeliveryModel
+    prefix: ClassVar[Optional[str]] = "/v1/webhook-delivery"
+    tags: ClassVar[Optional[List[str]]] = ["Webhook Delivery"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.LIST,
+        RouteType.SEARCH,
+    ]
+
+    def create(self, **kwargs: Any) -> Any:
+        """Only the server queues deliveries."""
+        if not server_side(self.requester.id):
+            raise HTTPException(status_code=403, detail="Deliveries are the server's")
+        return super().create(**kwargs)
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """Only the server records a delivery's progress."""
+        if not server_side(self.requester.id):
+            raise HTTPException(status_code=403, detail="Deliveries are the server's")
+        return super().update(id, **kwargs)
+
+
+def _may_see(
+    model_registry: Any, user_id: str, about_model: Type[Any], about_id: str
+) -> bool:
+    """Whether ``user_id`` can read the record ``about_id`` of ``about_model``."""
+    record_db = about_model.DB(model_registry.DB.manager.Base)
+    try:
+        found = record_db.get(
+            requester_id=user_id, model_registry=model_registry, id=about_id
+        )
+    except HTTPException as exc:
+        if exc.status_code in (403, 404):
+            return False
+        raise
+    return found is not None
+
+
+def _live_subscriptions(model_registry: Any, **criteria: Any) -> List[Any]:
+    """Subscriptions not deleted, as ROOT (whose reads include deleted
+    rows unless told otherwise)."""
+    SubscriptionDB = WebhookSubscriptionModel.DB(model_registry.DB.manager.Base)
+    return WebhookSubscriptionManager(
+        requester_id=env("ROOT_ID"), model_registry=model_registry
+    ).list(filters=[SubscriptionDB.deleted_at.is_(None)], **criteria)
+
+
+def dispatch_webhook_event(
+    model_registry: Any,
+    event_type: str,
+    body: Dict[str, Any],
+    *,
+    about_model: Type[Any],
+    about_id: str,
+) -> List[str]:
+    """Queue ``body`` for every active subscription that wants
+    ``event_type`` and whose owner can read the record it is about (a
+    record of ``about_model`` with id ``about_id``). The delivery ids."""
+    if not _EVENT_TYPE.fullmatch(event_type) or event_type == ALL_EVENTS:
+        raise ValueError(f"{event_type!r} is not an event type")
+    subscriptions = _live_subscriptions(model_registry, active=True)
+    payload = json.dumps(body, separators=(",", ":"), sort_keys=True)
+    # SYSTEM writes deliveries throughout: a row ROOT made only ROOT may change.
+    deliveries = WebhookDeliveryManager(
+        requester_id=env("SYSTEM_ID"), model_registry=model_registry
+    )
+    queued: List[str] = []
+    for subscription in subscriptions:
+        if not subscription.matches(event_type) or not _may_see(
+            model_registry, subscription.user_id, about_model, about_id
+        ):
+            continue
+        delivery = deliveries.create(
+            webhook_subscription_id=subscription.id,
+            event_type=event_type,
+            payload=payload,
+            next_attempt_at=_now(),
+        )
+        queued.append(str(delivery.id))
+    return queued
+
+
+def backoff_seconds(attempts: int) -> float:
+    """How long a delivery waits after its ``attempts``-th failed send."""
+    return min(MAX_DELAY_SECONDS, BASE_DELAY_SECONDS * 2.0 ** max(0, attempts - 1))
 
 
 async def _default_http_post(
@@ -80,158 +362,122 @@ async def _default_http_post(
     """POST via the shared client (SSRF guard, TLS policy, trace, redaction)."""
     from zephyrex.lib.ProviderHTTPClient import ClientPolicy, get_async_client
 
-    client = get_async_client(ClientPolicy(timeout=15.0))
+    client = get_async_client(ClientPolicy(timeout=DELIVERY_TIMEOUT_SECONDS))
     return await client.post(url, content=content, headers=headers)
 
 
-class WebhookDeliveryService:
-    """Subscription registry + delivery queue with exponential backoff and a
-    dead-letter tier. The registry is thread-safe; delivery is async and
-    injectable (``http_post``) for testing."""
-
-    def __init__(
-        self,
-        *,
-        max_attempts: int = 5,
-        base_delay_seconds: float = 2.0,
-        max_delay_seconds: float = 3600.0,
-        now: Optional[Callable[[], datetime]] = None,
-    ) -> None:
-        self._lock = threading.Lock()
-        self._subscriptions: Dict[str, WebhookSubscription] = {}
-        self._deliveries: Dict[str, WebhookDelivery] = {}
-        self.max_attempts = max_attempts
-        self.base_delay = base_delay_seconds
-        self.max_delay = max_delay_seconds
-        self._now = now or _utcnow
-
-    # --------------------------------------------------------- subscriptions
-    def register(self, subscription: WebhookSubscription) -> WebhookSubscription:
-        with self._lock:
-            self._subscriptions[subscription.id] = subscription
-        return subscription
-
-    def unregister(self, subscription_id: str) -> bool:
-        with self._lock:
-            return self._subscriptions.pop(subscription_id, None) is not None
-
-    def list_subscriptions(self) -> List[WebhookSubscription]:
-        with self._lock:
-            return list(self._subscriptions.values())
-
-    def get_subscription(self, subscription_id: str) -> Optional[WebhookSubscription]:
-        with self._lock:
-            return self._subscriptions.get(subscription_id)
-
-    # --------------------------------------------------------------- dispatch
-    def dispatch(self, event_type: str, body: Dict[str, Any]) -> List[str]:
-        """Enqueue a delivery for every active subscription matching
-        ``event_type``. Returns the created delivery ids."""
-        with self._lock:
-            subs = [s for s in self._subscriptions.values() if s.matches(event_type)]
-        ids: List[str] = []
-        for sub in subs:
-            delivery = WebhookDelivery(
-                subscription_id=sub.id,
-                target_url=sub.target_url,
-                event_type=event_type,
-                body=body,
-                next_attempt_at=self._now(),
+def _claim(model_registry: Any, delivery: Any, now: datetime) -> bool:
+    """Take ``delivery`` for one send: count the attempt and lease it, if no
+    other worker has since. False when another worker holds it."""
+    DeliveryDB = WebhookDeliveryModel.DB(model_registry.DB.manager.Base)
+    session = model_registry.DB.session()
+    try:
+        claimed = session.execute(
+            update(DeliveryDB)
+            .where(
+                DeliveryDB.id == delivery.id,
+                DeliveryDB.status == PENDING,
+                DeliveryDB.attempts == delivery.attempts,
             )
-            with self._lock:
-                self._deliveries[delivery.id] = delivery
-            ids.append(delivery.id)
-        return ids
-
-    # --------------------------------------------------------------- delivery
-    def _due(self) -> List[WebhookDelivery]:
-        now = self._now()
-        with self._lock:
-            return [
-                d
-                for d in self._deliveries.values()
-                if d.status == "pending" and d.next_attempt_at <= now
-            ]
-
-    def _backoff_seconds(self, attempts: int) -> float:
-        return min(self.max_delay, self.base_delay * (2.0 ** max(0, attempts - 1)))
-
-    def _mark_delivered(self, delivery_id: str) -> None:
-        with self._lock:
-            d = self._deliveries.get(delivery_id)
-            if d is not None:
-                d.attempts += 1
-                d.status = "delivered"
-                d.last_error = None
-
-    def _mark_failed(self, delivery_id: str, error: str) -> None:
-        with self._lock:
-            d = self._deliveries.get(delivery_id)
-            if d is None:
-                return
-            d.attempts += 1
-            d.last_error = error
-            if d.attempts >= self.max_attempts:
-                d.status = "dead"  # dead-letter — no further attempts
-            else:
-                delay = self._backoff_seconds(d.attempts)
-                d.next_attempt_at = self._now() + timedelta(seconds=delay)
-
-    async def deliver_one(
-        self, delivery: WebhookDelivery, http_post: Optional[HttpPost] = None
-    ) -> None:
-        post = http_post or _default_http_post
-        sub = self.get_subscription(delivery.subscription_id)
-        secret = sub.secret if sub is not None else ""
-        payload = json.dumps(
-            delivery.body, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            SIGNATURE_HEADER: sign_payload(secret, payload),
-            EVENT_HEADER: delivery.event_type,
-            DELIVERY_ID_HEADER: delivery.id,
-        }
-        try:
-            response = await post(delivery.target_url, content=payload, headers=headers)
-            status = int(getattr(response, "status_code", 0))
-            if 200 <= status < 300:
-                self._mark_delivered(delivery.id)
-                return
-            raise RuntimeError(f"non-2xx response: {status}")
-        except Exception as exc:  # noqa: BLE001 — record + backoff/dead-letter
-            self._mark_failed(delivery.id, str(exc))
-
-    async def run_once(self, http_post: Optional[HttpPost] = None) -> int:
-        """Attempt delivery of every currently-due delivery once. Returns the
-        number attempted. A background service calls this on an interval."""
-        due = self._due()
-        for delivery in due:
-            await self.deliver_one(delivery, http_post)
-        if due:
-            logger.debug(f"webhook delivery: attempted {len(due)} delivery(ies)")
-        return len(due)
-
-    def list_deliveries(self, status: Optional[str] = None) -> List[WebhookDelivery]:
-        with self._lock:
-            items = list(self._deliveries.values())
-        if status is not None:
-            items = [d for d in items if d.status == status]
-        return sorted(items, key=lambda d: d.created_at, reverse=True)
+            .values(
+                attempts=delivery.attempts + 1,
+                next_attempt_at=now + timedelta(seconds=CLAIM_LEASE_SECONDS),
+                updated_at=now,
+                updated_by_user_id=env("SYSTEM_ID"),
+            )
+        )
+        session.commit()
+        return bool(claimed.rowcount == 1)
+    finally:
+        session.close()
 
 
-_SERVICE: Optional[WebhookDeliveryService] = None
+def _record(model_registry: Any, delivery_id: str, **fields: Any) -> None:
+    WebhookDeliveryManager(
+        requester_id=env("SYSTEM_ID"), model_registry=model_registry
+    ).update(delivery_id, **fields)
 
 
-def get_delivery_service() -> WebhookDeliveryService:
-    """Process-wide outbound delivery service (lazy singleton)."""
-    global _SERVICE
-    if _SERVICE is None:
-        _SERVICE = WebhookDeliveryService()
-    return _SERVICE
+def _failed(model_registry: Any, delivery_id: str, attempts: int, error: str) -> None:
+    reason = error[:MAX_RECORDED_ERROR_CHARACTERS]
+    if attempts >= MAX_ATTEMPTS:
+        _record(model_registry, delivery_id, status=DEAD, last_error=reason)
+        return
+    _record(
+        model_registry,
+        delivery_id,
+        last_error=reason,
+        next_attempt_at=_now() + timedelta(seconds=backoff_seconds(attempts)),
+    )
 
 
-def reset_delivery_service_for_test() -> None:
-    """Drop the singleton so a test starts from an empty registry/queue."""
-    global _SERVICE
-    _SERVICE = None
+async def deliver(
+    model_registry: Any, delivery: Any, http_post: Optional[HttpPost] = None
+) -> None:
+    """Send one claimed delivery and record how it went."""
+    attempts = delivery.attempts + 1
+    found = _live_subscriptions(model_registry, id=delivery.webhook_subscription_id)
+    subscription = found[0] if found else None
+    if subscription is None or not subscription.active or not subscription.secret:
+        _record(
+            model_registry,
+            delivery.id,
+            status=DEAD,
+            last_error="The subscription is gone, inactive or has no secret",
+        )
+        return
+    body = delivery.payload.encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        SIGNATURE_HEADER: sign_payload(decrypt_secret(subscription.secret), body),
+        EVENT_HEADER: delivery.event_type,
+        DELIVERY_ID_HEADER: str(delivery.id),
+    }
+    try:
+        response = await (http_post or _default_http_post)(
+            subscription.target_url, content=body, headers=headers
+        )
+    except Exception as exc:  # the network, TLS, or the SSRF guard: retried
+        _failed(model_registry, delivery.id, attempts, f"{type(exc).__name__}: {exc}")
+        return
+    status = int(getattr(response, "status_code", 0))
+    if 200 <= status < 300:
+        _record(
+            model_registry,
+            delivery.id,
+            status=DELIVERED,
+            delivered_at=_now(),
+            last_error=None,
+        )
+        return
+    _failed(model_registry, delivery.id, attempts, f"The endpoint answered {status}")
+
+
+async def deliver_due(model_registry: Any, http_post: Optional[HttpPost] = None) -> int:
+    """Send every delivery that is due (at most :data:`DELIVERIES_PER_RUN`),
+    each by the one worker that claims it. The number this run sent."""
+    now = _now()
+    DeliveryDB = WebhookDeliveryModel.DB(model_registry.DB.manager.Base)
+    due = WebhookDeliveryManager(
+        requester_id=env("ROOT_ID"), model_registry=model_registry
+    ).list(
+        filters=[
+            DeliveryDB.status == PENDING,
+            DeliveryDB.next_attempt_at <= now,
+            DeliveryDB.deleted_at.is_(None),
+        ],
+        limit=DELIVERIES_PER_RUN,
+    )
+    sent = 0
+    for delivery in due:
+        if not _claim(model_registry, delivery, now):
+            continue
+        await deliver(model_registry, delivery, http_post)
+        sent += 1
+    if sent:
+        logger.debug("webhook delivery: sent %s delivery(ies)", sent)
+    return sent
+
+
+WebhookSubscriptionModel.Manager = WebhookSubscriptionManager
+WebhookDeliveryModel.Manager = WebhookDeliveryManager

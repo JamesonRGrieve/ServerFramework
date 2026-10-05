@@ -6,7 +6,7 @@
 
 name = "webhooks"
 version = "1.0.0"
-description = "Inbound webhook handler registry and router with mandatory signature verification and optional replay protection"
+description = "Inbound webhooks with mandatory signature verification, and signed outbound delivery to endpoints users subscribe"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Webhooks"
 minimum_framework_version = "0.0.0"
