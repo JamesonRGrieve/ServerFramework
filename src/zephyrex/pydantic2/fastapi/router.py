@@ -433,6 +433,13 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
         routers[action_manager.__name__] = action_manager.Router(model_registry)
         logger.info(f"Generated router for {action_manager.__name__}")
 
+    # Table-less models (an upstream's records) are served by their own
+    # managers' routes, which reach the upstream live.
+    external_manager: Type[RouterMixin]
+    for external_manager in getattr(model_registry, "external_managers", list)():
+        routers[external_manager.__name__] = external_manager.Router(model_registry)
+        logger.info(f"Generated router for {external_manager.__name__}")
+
     # Sort routers by prefix length (longest first) to ensure more specific routes
     # are registered before less specific ones in FastAPI.
     # This prevents route conflicts like /v1/provider/instance/{id} matching

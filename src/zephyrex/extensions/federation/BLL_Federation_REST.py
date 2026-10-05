@@ -86,10 +86,14 @@ class OpenAPIToPydanticResult:
 
 
 def openapi_to_pydantic_models(
-    spec: Mapping[str, Any], *, prefix: Optional[str] = None
+    spec: Mapping[str, Any],
+    *,
+    prefix: Optional[str] = None,
+    config: Optional[ConfigDict] = None,
 ) -> OpenAPIToPydanticResult:
     """Generate Pydantic models and an :class:`OperationSpec` table from a
-    parsed OpenAPI 3.x document.
+    parsed OpenAPI 3.x document. ``config`` is merged into every model's
+    configuration (``extra="forbid"`` to refuse fields the schema lacks).
 
     The importer handles:
 
@@ -147,6 +151,8 @@ def openapi_to_pydantic_models(
             specs.append((prop_name, ann, prop_name in required))
         forward_specs[full] = specs
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config.update(config or {})
     for full, specs in forward_specs.items():
         from typing import Optional as _Optional
 
@@ -158,7 +164,7 @@ def openapi_to_pydantic_models(
                 defaults[fname] = None
         cls_dict: Dict[str, Any] = {
             "__annotations__": annotations,
-            "model_config": ConfigDict(arbitrary_types_allowed=True),
+            "model_config": model_config,
             **defaults,
         }
         models[full] = type(full, (BaseModel,), cls_dict)

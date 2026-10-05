@@ -107,6 +107,37 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
     )
 
 
+def _input_values(
+    model: Type[BaseModel], given: Any, *, nested: bool
+) -> Dict[str, Any]:
+    """A Strawberry input as ``model``'s fields: each GraphQL name
+    (``apiKey``) back to the model's own (``api_key``), a nested input as its
+    own model's fields. A field left out (None) is not given when it may be
+    left out (it has a default, or it is nested), so its default applies
+    and a partial write names only what the client sent."""
+    values: Dict[str, Any] = {}
+    for name, field in model.model_fields.items():
+        value = getattr(given, convert_field_name(name), None)
+        if value is None and (nested or not field.is_required()):
+            continue
+        values[name] = _input_value(field.annotation, value)
+    return values
+
+
+def _input_value(annotation: Any, value: Any) -> Any:
+    declared = unwrap_optional(annotation)
+    if isinstance(value, list):
+        args = get_args(declared) if get_origin(declared) is list else ()
+        return [_input_value(args[0] if args else Any, item) for item in value]
+    if (
+        _is_plain_pydantic_model(declared)
+        and value is not None
+        and hasattr(value, "__strawberry_definition__")
+    ):
+        return _input_values(declared, value, nested=True)
+    return value
+
+
 class SchemaModelSource(Protocol):
     """What schema generation reads from a model registry."""
 
@@ -189,6 +220,9 @@ class GraphQLManager(ErrorHandlerMixin):
         self._input_type_registry: Dict[Tuple[Type[BaseModel], str], Type] = (
             {}
         )  # (model_class, suffix) -> GraphQL input type
+        # Models whose nested input type is being built (a model nested in
+        # itself is taken as a JSON object rather than recursing forever).
+        self._input_types_being_created: Set[Type[BaseModel]] = set()
 
         # Add relationship tracking
         self._forward_relationships: Dict[
@@ -363,21 +397,10 @@ class GraphQLManager(ErrorHandlerMixin):
         )
         annotations["return"] = return_type
 
-        # The generated input type names its fields as GraphQL does
-        # (``apiKey``); map them back to the model's own (``api_key``).
-        model_field_for = (
-            {convert_field_name(name): name for name in input_model.model_fields}
-            if input_model is not None
-            else {}
-        )
-
         async def typed_resolver(info: Info, **kwargs: Any) -> Any:
             if input_model is not None and kwargs.get("input") is not None:
                 kwargs["input"] = input_model.model_validate(
-                    {
-                        model_field_for.get(name, name): value
-                        for name, value in strawberry.asdict(kwargs["input"]).items()
-                    }
+                    _input_values(input_model, kwargs["input"], nested=False)
                 )
             result = resolver(info=info, **kwargs)
             if inspect.isawaitable(result):
@@ -460,6 +483,11 @@ class GraphQLManager(ErrorHandlerMixin):
 
     def _generate_all_components(self) -> None:
         """Generate all GraphQL components from models"""
+        # Table-less models (an upstream's records) are served by their
+        # managers' typed routes, which reach the upstream live.
+        for manager_class in getattr(self.model_registry, "external_managers", list)():
+            self._register_custom_routes_for_manager(manager_class)
+
         # Use model_relationships from the registry
         if (
             not hasattr(self.model_registry, "model_relationships")
@@ -1016,7 +1044,7 @@ class GraphQLManager(ErrorHandlerMixin):
             # Convert snake_case field names to camelCase for GraphQL input types
             gql_field_name = convert_field_name(field_name)
 
-            gql_field_type = self._convert_python_type_to_gql(field_type)
+            gql_field_type = self._convert_python_type_to_gql_input(field_type)
             annotations[gql_field_name] = gql_field_type
 
         # Always add at least one field to avoid empty input type error
@@ -1075,6 +1103,31 @@ class GraphQLManager(ErrorHandlerMixin):
 
         filter_class = type(filter_name, (), {"__annotations__": annotations})
         return strawberry.input(filter_class)
+
+    def _convert_python_type_to_gql_input(self, python_type: Any) -> Any:
+        """The GraphQL annotation of an input field: as
+        :meth:`_convert_python_type_to_gql`, except that a nested Pydantic
+        model is an input type of its own (an object type is never an
+        input). A model nested in itself is taken as a JSON object."""
+        inner_type = unwrap_optional(python_type)
+        if inner_type is not python_type:
+            return Optional[self._convert_python_type_to_gql_input(inner_type)]
+        if get_origin(python_type) is list and get_args(python_type):
+            item = self._convert_python_type_to_gql_input(get_args(python_type)[0])
+            return List[item]  # type: ignore[valid-type]
+        if (
+            isinstance(python_type, type)
+            and issubclass(python_type, BaseModel)
+            and not getattr(python_type, "_is_extension_model", False)
+        ):
+            if python_type in self._input_types_being_created:
+                return DICT_SCALAR
+            self._input_types_being_created.add(python_type)
+            try:
+                return self._create_input_type_from_model(python_type, "")
+            finally:
+                self._input_types_being_created.discard(python_type)
+        return self._convert_python_type_to_gql(python_type)
 
     # ``Any``: annotations such as ``Optional[str]`` are not ``type`` instances.
     def _is_already_optional(self, python_type: Any) -> bool:

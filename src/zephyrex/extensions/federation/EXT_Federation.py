@@ -1,14 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Federation extension — GraphQL and REST upstream federation."""
 
 from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from zephyrex.lib.Hooks import register_registry_hooks
 from zephyrex.lib.Logging import logger
 
 
 class EXT_Federation(AbstractStaticExtension):
     """GraphQL/REST upstream federation: schema introspection, model lift,
-    surface integration.
+    surface integration, and typed table-less models of federated sources'
+    record types.
 
     Federation is an advanced provider pattern, not a framework primitive.
     Most deployments don't federate upstream services. The core ships a
@@ -33,5 +36,13 @@ class EXT_Federation(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
+        """Hook the federation into the registry's commit: an app that loads
+        this extension lifts its upstreams' types (the hook does nothing
+        for an app that does not)."""
+        from zephyrex.extensions.federation.BLL_Federation_Bootstrap import (
+            bootstrap_federation,
+        )
+
         logger.debug("Initializing federation extension")
+        register_registry_hooks(bootstrap_federation=bootstrap_federation)
         return True

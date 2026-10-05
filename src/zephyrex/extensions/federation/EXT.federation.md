@@ -112,17 +112,52 @@ Failures are logged and skipped — federation MUST NOT prevent the rest of the 
 
 ## Commit-time integration with ModelRegistry
 
-The federation pipeline runs synchronously inside `ModelRegistry.commit()` (Phase 1.6 — between extension processing and Network class generation). This is the canonical entry point for production startup; it ensures lifted Pydantic models flow through the existing `Pydantic2Strawberry` and `Pydantic2FastAPI` pipelines instead of being attached after the fact. The lifespan-event path (`install_external_federation`) remains for environments that need an out-of-band refresh.
+`EXT_Federation.on_initialize` registers `BLL_Federation_Bootstrap.bootstrap_federation` as the registry's federation hook (it does nothing for an app that does not load this extension; `GQL_FEDERATION=false` turns it off). `ModelRegistry.commit()` calls it at Phase 3.5: after migrations and SQLAlchemy model generation (a source may read its configuration, such as provider instances, from the database), before routers and the GraphQL schema are generated. The registry is not locked yet, so binding is allowed, and the table generation has already run. The lifespan-event path (`install_external_federation`) remains for environments that need an out-of-band refresh.
 
-`Federation_Bootstrap.install_external_federation_sync(model_registry=...)`:
+`install_external_federation_sync(model_registry=...)`, over the app's own extensions:
 
-1. Discovers concrete `AbstractGraphQLProvider` subclasses via the extension registry.
-2. For each: introspect (sync HTTP via `ProviderHTTPClientSync`) → transform → register with `MergedSchemaRegistry` → lift to Pydantic → synthesize `AbstractExternalManager` per type → bind both with `ModelRegistry`.
-3. Discovers REST upstream descriptors (extensions with `openapi_spec_provider` + `federation_rest_transport_factory` classvars). For each: import OpenAPI → derive external models → synthesize managers → bind.
-4. Mounts GQL→REST projection routers on a `FederationCommitReport` that `build_app` reads to mount on the FastAPI app at `/federated/{provider}/...`.
-5. Returns the report so production code can introspect what landed.
+1. Concrete `AbstractGraphQLProvider` subclasses with an `upstream_url`: introspect (sync HTTP) → transform → register with `MergedSchemaRegistry` → lift to Pydantic → wrap each type as an `AbstractExternalModel` → bind it table-less with a typed manager (read only: list and get).
+2. REST upstream descriptors (extensions' `openapi_spec_provider`): import OpenAPI → derive external models → bind them likewise (the operations the spec has; no save, as the spec names no version).
+3. Federated sources (below): read each catalogue, lift each type, bind it likewise.
+4. GQL→REST projection routers on the `FederationCommitReport`, which `build_app` mounts at `/federated/{provider}/...`.
 
-Errors are isolated per provider — an unreachable upstream MUST NOT prevent the registry from committing or the rest of the framework from starting.
+The report (`app.state.federation_report`) carries the bound models, their managers and, per source or type, why anything is missing. Errors are isolated per upstream and per type, and logged with the reason — an unreachable upstream never prevents the registry from committing or the app from starting.
+
+### Table-less models in the registry
+
+A lifted model declares `is_external_model = True` (every `AbstractExternalModel` does) and is bound with `ModelRegistry.bind_external(model, manager)`, never `bind()` (each refuses the other's models). It is kept in `external_models`, apart from `bound_models`, which the SQLAlchemy generation, migrations, seeding and database permission filters read, so no table, migration, seed or row filter is ever made for it. `apply()` resolves it; the router generation and the GraphQL schema serve its manager's typed routes. Its name may not be a local model's (the registry refuses either binding second). The manager is a `RouterMixin` manager serving the model.
+
+## Typed federated models (`BLL_Federation_Typed.py`)
+
+The provider-neutral contract by which an upstream's record types become typed models, live, with nothing stored here. ERPNext is its first source (`erp/EXT.erp.md`, which has the client contract); a WordPress source (posts, custom post types, taxonomies, meta, from the WP REST API's JSON Schemas) fits it unchanged, proved by `WordPressShapedSource.py` and `BLL_Federation_Typed_test.py`.
+
+A source (`AbstractFederatedSource`) is one upstream as one account sees it. It supplies:
+
+| | |
+|---|---|
+| `namespace` | stable, distinct among the app's sources, `[a-z][a-z0-9_]*` (a second source with one already served is left out) |
+| `title`, `reference` | what it is called; what it is known by elsewhere (an ERP instance's id), for discovery |
+| `catalogue()` | read once at boot (at most 300 s): a `FederatedType` per record type — its `name`, its record's JSON Schema (`properties`; nested types under `$defs`/`definitions` by `$ref`, inline objects allowed; `["x", "null"]` an optional x; `readOnly`/`readonly` what only the upstream sets), `key_field`, `version_field`, `operations` |
+| `session(call)` | for one requester (`FederatedCall`: registry, requester id), 404 when they may not use the source: `list(type, FederatedQuery)`, `get(type, key)`, `create(type, data)`, `update(type, key, data, expected)`, `delete(type, key, expected)`; a stale save raises `StaleRecord(current)` |
+
+An extension registers its sources' factory with `register_federated_sources(<extension>, factory)` at `on_initialize`; only the factories of the extensions an app loads are asked.
+
+The framework lifts each type through `openapi_to_pydantic_models` into a record model (every field optional, unknown fields ignored) and a write payload (read-only fields left out, unknown fields refused; an object with nothing writable left out), each nested object a model of its own; a property no model field can hold (`_links`) is left out. A type without a `version_field` is served without update and delete (a save held to no version would overwrite blindly). Each type gets a synthesized `FederatedTypeEndpoints` manager whose typed `@custom_route`s serve it on REST and GraphQL, JWT-authenticated, through the source's session for the requester. A row the upstream answers outside the schema is 502.
+
+Names (`NS`, `Slug`: the namespace's and slug's words, each first letter capitalized):
+
+| | |
+|---|---|
+| slug | the type name's ASCII letter/digit runs, lower case, `_`-joined (`t_` before a leading digit; `_2`… for a shared slug, in catalogue order) |
+| REST | `POST /v1/federated/<namespace>/<slug>/{list,get,create,update,delete}` |
+| GraphQL fields | `<namespace>_<slug>_<operation>`, camelCased (`wordpressAb12cd34PostGet`) |
+| types | record `<NS><Slug>Type`, nested `<NS><Slug><Nested>Type`, write input `<NS><Slug>WriteInput`, operation input `<NS><Slug><Op>ArgsInputInput`, page `<NS><Slug>PageType` |
+
+No model name has an underscore: GraphQL type names are re-cased at each one.
+
+Versions: a record's ETag is its `version_field`. `update` and `delete` name the version in `If-Match` (REST) or `if_match` (the input); none is 428 (`IF_MATCH_REQUIRED`), a stale one 412 with `{detail, current}` and the current ETag.
+
+Discovery: `GET /v1/federated/catalogue` (GraphQL `federatedCatalogue`) lists the typed models the requester may use (a source whose `session` refuses them is left out): REST paths, GraphQL names, JSON Schemas. It is the boot's snapshot: a type the upstream gains later is served typed only after a restart.
 
 ## Matrix homologation testing
 
@@ -149,7 +184,9 @@ Payment ships `payment/federation_fixtures_test.py`: fixtures for every resource
 |------|---------|
 | `lib/Federation_GQL.py` | GraphQL upstream federation: introspection, transformer, registry, batched resolver, response cache, SDL→Pydantic, GQL→REST projection. |
 | `lib/Federation_REST.py` | REST upstream federation: OpenAPI→Pydantic, transport, REST→GQL projection. |
-| `lib/Federation_Bootstrap.py` | Sync entry point used by `ModelRegistry.commit()` (and async for lifespan). Discovers providers + REST descriptors, runs the introspect→transform→register→lift→bind pipeline, returns a `FederationCommitReport` carrying lifted models, synthesized managers, GQL→REST routers, and per-provider error isolation. |
+| `lib/Federation_Bootstrap.py` | Sync entry point used by `ModelRegistry.commit()` (and async for lifespan). Discovers providers, REST descriptors and federated sources, runs the introspect→transform→register→lift→bind pipeline, returns a `FederationCommitReport` carrying lifted models, synthesized managers, GQL→REST routers, and per-provider error isolation. |
+| `BLL_Federation_Typed.py` | The federated-source contract, the JSON Schema lift, typed managers, the catalogue route, boot-time binding. |
+| `WordPressShapedSource.py` | A WordPress-shaped source in process, for the tests. |
 | `extensions/AbstractGraphQLProvider.py` | Provider abstract: declares `upstream_url`, `federation_style`, `type_namespace`, transformer overrides; offers both async (`introspect`/`register_with_registry`) and sync (`introspect_sync`/`register_with_registry_sync`) orchestration. |
 | `extensions/AbstractFederationMatrixTest.py` | 4-quadrant × 5-CRUD matrix test base class. Subclasses supply a `FederationFixture`. |
 | `extensions/Federation_Matrix_Generator.py` | Programmatic test generator. Walks loaded extensions, gathers fixtures or synthesizes them from OpenAPI/SDL providers, emits one `Test_Federation_*_Matrix` class per fixture into a target namespace. |

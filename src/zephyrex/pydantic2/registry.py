@@ -14,7 +14,10 @@ from typing import (
     Type,
 )
 
-from zephyrex.pydantic2.fastapi import generate_routers_from_model_registry
+from zephyrex.pydantic2.fastapi import (
+    RouterMixin,
+    generate_routers_from_model_registry,
+)
 
 from ordered_set import OrderedSet
 from pydantic import BaseModel, ConfigDict
@@ -22,7 +25,7 @@ from sqlalchemy.orm import configure_mappers
 
 from zephyrex.database.migrations.Migration import MigrationManager
 from zephyrex.lib.AbstractPydantic2 import CacheManager
-from zephyrex.lib.Environment import AbstractRegistry, env
+from zephyrex.lib.Environment import AbstractRegistry, env, env_bool
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.util import wire_resource_name
@@ -43,6 +46,13 @@ if TYPE_CHECKING:
 # apart, before the registry gives up on it.
 DB_CONNECT_ATTEMPTS = 5
 DB_CONNECT_RETRY_SECONDS = 5.0
+
+
+def is_external_model(model: type) -> bool:
+    """Whether ``model`` is table-less: its records are an upstream's, read
+    and written live (it declares ``is_external_model = True``, as every
+    ``AbstractExternalModel`` and federated typed model does)."""
+    return getattr(model, "is_external_model", False) is True
 
 
 def wait_for_database(
@@ -116,6 +126,12 @@ class ModelRegistry(AbstractRegistry):
         # Mutated only where ``bound_models`` is: the add in
         # ``_add_model_with_dependencies`` and the reset in ``clear``.
         self._bound_model_names: Dict[str, Type[BaseModel]] = {}
+        # Table-less models (``bind_external``): records an upstream holds,
+        # served live through their manager. Kept apart from
+        # ``bound_models`` so no database layer (SQLAlchemy generation,
+        # migrations, seeding, permission filters) ever sees them. Name ->
+        # (model, manager), in binding order.
+        self.external_models: Dict[str, Tuple[Type[BaseModel], Type]] = {}
         self.extension_models: Dict[Type[BaseModel], List[Type]] = (
             {}
         )  # target -> [extensions]
@@ -159,6 +175,8 @@ class ModelRegistry(AbstractRegistry):
             ),
             None,
         )
+        if not new_type and type.__name__ in self.external_models:
+            new_type = self.external_models[type.__name__][0]
         if not new_type:
             raise TypeError(f"No matching type found in registry for {type.__name__}!")
         return new_type
@@ -603,6 +621,12 @@ class ModelRegistry(AbstractRegistry):
         if not (inspect.isclass(model) and issubclass(model, BaseModel)):
             raise ValueError(f"Model must be a Pydantic BaseModel subclass: {model}")
 
+        if is_external_model(model):
+            raise ValueError(
+                f"{model.__name__} is table-less (an upstream's records): bind "
+                f"it with bind_external, so no table is made for it"
+            )
+
         # Skip binding extension models directly - they only extend existing models
         if hasattr(model, "_is_extension_model"):
             return
@@ -748,6 +772,46 @@ class ModelRegistry(AbstractRegistry):
         # Mark registry as needing commit
         self._locked = False
 
+    def bind_external(self, model: Type[BaseModel], manager: Type) -> None:
+        """Bind a table-less model: an upstream's records, served live by
+        ``manager`` (a ``RouterMixin`` manager whose routes reach the
+        upstream). It is routed on REST and GraphQL like any model and
+        resolved by :meth:`apply`, but never enters ``bound_models``, so no
+        table, migration, seed or database permission filter is made for
+        it. Allowed until the registry is committed (the federation binds
+        during ``commit``, before the routers are generated). Its name may
+        not be any other model's."""
+        if self._locked:
+            raise RuntimeError("Cannot bind models after registry has been committed")
+        if not (inspect.isclass(model) and issubclass(model, BaseModel)):
+            raise ValueError(f"Model must be a Pydantic BaseModel subclass: {model}")
+        if not is_external_model(model):
+            raise ValueError(
+                f"{model.__name__} does not declare is_external_model = True; a "
+                f"model with a table is bound with bind()"
+            )
+        if not (inspect.isclass(manager) and issubclass(manager, RouterMixin)):
+            raise ValueError(
+                f"{model.__name__}'s manager must be a RouterMixin manager: {manager}"
+            )
+        if getattr(manager, "_model", None) is not model:
+            raise ValueError(f"{manager.__name__} does not serve {model.__name__}")
+        existing = self._bound_model_names.get(model.__name__)
+        if existing is not None and existing is not model:
+            raise RuntimeError(
+                f"Duplicate model name: {model.__name__} from {model.__module__} "
+                f"is already bound from {existing.__module__}"
+            )
+        if existing is model:
+            return
+        self._bound_model_names[model.__name__] = model
+        self.external_models[model.__name__] = (model, manager)
+        logger.debug(f"Bound table-less model {model.__name__} to registry")
+
+    def external_managers(self) -> List[Type]:
+        """The managers of the table-less models, in binding order."""
+        return [manager for _, manager in self.external_models.values()]
+
     def commit(self, extensions=None, database_manager=None) -> None:
         """Process all bound models and generate schemas.
 
@@ -793,42 +857,6 @@ class ModelRegistry(AbstractRegistry):
         # are imported now, so each registers its hooks for this build.
         if self.extension_registry is not None:
             self.extension_registry.initialize_extensions()
-
-        # Phase 1.6 — external federation (Item 16). Lifts external GraphQL
-        # and REST upstreams into Pydantic models, synthesizes managers, and
-        # binds them with this registry so the existing Pydantic2{Strawberry,
-        # FastAPI} pipelines project them onto BOTH inbound surfaces. Errors
-        # surface via provider health checks; an unreachable upstream MUST
-        # NOT prevent the registry from committing.
-        from zephyrex.lib.Environment import env as _env
-
-        federation_enabled = (
-            _env("GQL_FEDERATION", default="true") or "true"
-        ).lower() == "true"
-        # Federation is owned by the ``federation`` extension. Core never
-        # imports from it; the extension registers a callable on
-        # ``_registry_hooks["bootstrap_federation"]`` at on_initialize and
-        # we dispatch through that. Without the extension, the registry
-        # commits as a single-app deployment.
-        from zephyrex.lib.Hooks import _registry_hooks
-
-        bootstrap = _registry_hooks["bootstrap_federation"]
-        if federation_enabled and bootstrap is not None:
-            try:
-                self._federation_report = bootstrap(model_registry=self)
-                if self._federation_report is not None and getattr(
-                    self._federation_report, "models", None
-                ):
-                    logger.info(
-                        "Federation lifted %d external types: %s",
-                        len(self._federation_report.models),
-                        ", ".join(sorted(self._federation_report.models.keys())),
-                    )
-            except Exception as exc:
-                logger.warning("Federation bootstrap failed during commit: %s", exc)
-                self._federation_report = None
-        else:
-            self._federation_report = None
 
         # Phase 1.5: Generate Network classes for all bound models
         logger.debug(
@@ -916,6 +944,9 @@ class ModelRegistry(AbstractRegistry):
         if migration_manager is not None:
             migration_manager.create_unmigrated_extension_tables()
 
+        # Phase 3.5: external federation (Item 16).
+        self._bootstrap_federation()
+
         # Phase 4: Generate routers
         self._generate_routers()
 
@@ -989,6 +1020,43 @@ class ModelRegistry(AbstractRegistry):
 
         logger.debug("Registry committed successfully")
         return self  # type: ignore[return-value]
+
+    def _bootstrap_federation(self) -> None:
+        """Lift upstream types (GraphQL and REST upstreams, and federated
+        sources' typed records) into table-less models bound with
+        :meth:`bind_external`, so the router and schema generation that
+        follow serve them on REST and GraphQL.
+
+        It runs once the database is migrated and its models built (a
+        source may read its configuration from the database, such as the
+        provider instances it federates) and before the routers are made;
+        the registry is not yet locked, so binding is allowed, and nothing
+        bound here reaches the table generation that already ran. An
+        unreachable upstream never stops the commit: the bootstrap logs why
+        its types are missing and the app boots without them.
+
+        Federation is owned by the ``federation`` extension: core never
+        imports it. The extension registers a callable on
+        ``_registry_hooks["bootstrap_federation"]`` at on_initialize;
+        ``GQL_FEDERATION=false`` turns it off."""
+        from zephyrex.lib.Hooks import _registry_hooks
+
+        self._federation_report = None
+        bootstrap = _registry_hooks["bootstrap_federation"]
+        if bootstrap is None or not env_bool("GQL_FEDERATION", default=True):
+            return
+        try:
+            self._federation_report = bootstrap(model_registry=self)
+        except Exception as exc:
+            logger.warning("Federation bootstrap failed during commit: %s", exc)
+            return
+        models = getattr(self._federation_report, "models", None)
+        if models:
+            logger.info(
+                "Federation lifted %d external types: %s",
+                len(models),
+                ", ".join(sorted(models)),
+            )
 
     def _process_extensions(self) -> None:
         """Process all registered model extensions."""
@@ -1539,6 +1607,7 @@ class ModelRegistry(AbstractRegistry):
         """Clear the registry (for testing purposes)."""
         self.bound_models.clear()
         self._bound_model_names.clear()
+        self.external_models.clear()
         self.extension_models.clear()
         self.model_metadata.clear()
         self.db_models.clear()

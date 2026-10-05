@@ -1044,6 +1044,11 @@ class AbstractExternalModel(BaseModel, ABC):
     external APIs through the Provider Rotation System.
     """
 
+    # Table-less: the records are the upstream's. The model registry binds
+    # such a model only through ``bind_external`` and never makes a table,
+    # migration or seed for it.
+    is_external_model: ClassVar[bool] = True
+
     # External API resource identifier (e.g., "products", "customers")
     external_resource: ClassVar[str] = ""
 

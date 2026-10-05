@@ -1,29 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Boot-time federation wiring (Item 16).
 
-Iterates over the loaded extensions, finds every concrete
-:class:`AbstractGraphQLProvider` subclass with a configured upstream, runs
-the introspect → transform → register → lift → bind pipeline, and integrates
-the result with the framework's ``ModelRegistry`` so the lifted Pydantic
-models flow through the existing ``Pydantic2{Strawberry,FastAPI}`` pipelines
-and appear on BOTH inbound surfaces — REST and GraphQL — regardless of
-whether the upstream is GraphQL or REST.
+Iterates over the app's loaded extensions, finds every concrete
+:class:`AbstractGraphQLProvider` subclass with a configured upstream, every
+REST upstream descriptor and every federated source
+(``BLL_Federation_Typed``), runs the introspect → transform → register →
+lift → bind pipeline, and integrates the result with the framework's
+``ModelRegistry``: each lifted model is bound table-less
+(``ModelRegistry.bind_external``) with a typed manager, so it appears on
+BOTH inbound surfaces — REST and GraphQL — regardless of whether the
+upstream is GraphQL or REST, and no table is ever made for it.
 
 Two integration points:
 
-* :func:`install_external_federation` (async) — runs the full federation
-  pipeline. Use from FastAPI's lifespan event when extensions register
-  their providers lazily.
-* :func:`install_external_federation_sync` — runs the same pipeline
-  synchronously. Used inside ``ModelRegistry.commit()`` so lifted models
-  participate in the same Phase 1.5 → Phase 4 commit flow as hand-written
-  ones. This is the canonical entry point for production startup.
+* :func:`install_external_federation` (async) — runs the GraphQL lift. Use
+  from FastAPI's lifespan event when extensions register their providers
+  lazily.
+* :func:`bootstrap_federation` — the registry's federation hook, which the
+  extension registers at on_initialize: :func:`install_external_federation_sync`
+  inside ``ModelRegistry.commit()``, once the database is migrated and
+  before the routers are generated. This is the canonical entry point for
+  production startup.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+import asyncio
+from typing import (
+    Any,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from urllib.parse import urlparse
 
+from fastapi import HTTPException
+
+from zephyrex.extensions.AbstractExternalModel import _unwrap_provider_call
 from zephyrex.extensions.federation.BLL_Federation_GQL import (
     FederatedSubgraph,
     GQLUpstreamTransport,
@@ -33,8 +51,26 @@ from zephyrex.extensions.federation.BLL_Federation_GQL import (
     project_gql_as_rest,
     reset_global_registry,
 )
+from zephyrex.extensions.federation.BLL_Federation_Typed import (
+    AbstractFederatedSource,
+    FederatedBinding,
+    FederatedCall,
+    FederatedQuery,
+    FederatedSession,
+    FederatedType,
+    LiftedType,
+    Operation,
+    bind_federated_sources,
+    bind_lifted,
+    federated_sources,
+    type_slugs,
+)
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+
+FEDERATION_EXTENSION = "federation"
+# The field a GraphQL- or OpenAPI-lifted record is named by.
+PROVIDER_KEY_FIELD = "id"
 
 # ---------------------------------------------------------------------------
 # Upstream URL validation (SSRF guard)
@@ -117,22 +153,20 @@ def validate_upstream_url(url: str, *, allow_private: Optional[bool] = None) -> 
 # ---------------------------------------------------------------------------
 
 
-def _discover_gql_providers() -> List[type]:
-    """Walk the extension registry to find configured GraphQL providers."""
+def _loaded_extensions(model_registry: Any) -> List[type]:
+    """The extension classes the app loads (none for a registry without an
+    extension registry)."""
+    extension_registry = getattr(model_registry, "extension_registry", None)
+    return list(getattr(extension_registry, "extensions", None) or [])
 
-    try:
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            ExtensionRegistry,
-        )
-        from zephyrex.extensions.AbstractGraphQLProvider import (
-            AbstractGraphQLProvider,
-        )
-    except ImportError:
-        return []
+
+def _discover_gql_providers(model_registry: Any) -> List[type]:
+    """The GraphQL providers of the app's extensions."""
+
+    from zephyrex.extensions.AbstractGraphQLProvider import AbstractGraphQLProvider
 
     found: List[type] = []
-    extensions = getattr(ExtensionRegistry, "extensions", None) or []
-    for ext in extensions:
+    for ext in _loaded_extensions(model_registry):
         for prov in getattr(ext, "_providers", []) or []:
             if (
                 isinstance(prov, type)
@@ -143,8 +177,8 @@ def _discover_gql_providers() -> List[type]:
     return found
 
 
-def _discover_rest_specs() -> List[Mapping[str, Any]]:
-    """Walk the extension registry to find OpenAPI specs for REST upstreams.
+def _discover_rest_specs(model_registry: Any) -> List[Mapping[str, Any]]:
+    """The OpenAPI specs the app's extensions give for REST upstreams.
 
     Each extension whose providers declare ``openapi_url`` (or carry a
     ``contracts/<provider>.openapi.json`` snapshot) yields one entry of the
@@ -154,15 +188,8 @@ def _discover_rest_specs() -> List[Mapping[str, Any]]:
     to do for them.
     """
 
-    try:
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            ExtensionRegistry,
-        )
-    except ImportError:
-        return []
     out: List[Mapping[str, Any]] = []
-    extensions = getattr(ExtensionRegistry, "extensions", None) or []
-    for ext in extensions:
+    for ext in _loaded_extensions(model_registry):
         spec_provider = getattr(ext, "openapi_spec_provider", None)
         if spec_provider is None:
             continue
@@ -187,8 +214,10 @@ async def install_external_federation(
     providers: Optional[Iterable[Any]] = None,
     registry: Optional[MergedSchemaRegistry] = None,
     skip_unconfigured: bool = True,
+    model_registry: Any = None,
 ) -> Dict[str, Any]:
-    """Run the federation pipeline for every concrete GraphQL provider.
+    """Run the federation pipeline for every concrete GraphQL provider
+    (``providers``, else those of ``model_registry``'s extensions).
 
     Returns ``{provider_name: lift_result}`` so callers can route the lifted
     Pydantic models into the model registry. Failures are logged and
@@ -201,7 +230,7 @@ async def install_external_federation(
     )
 
     target_registry = registry or global_registry()
-    discovered: List[type] = list(providers or _discover_gql_providers())
+    discovered: List[type] = list(providers or _discover_gql_providers(model_registry))
 
     lifted: Dict[str, Any] = {}
     for provider_cls in discovered:
@@ -269,19 +298,23 @@ def install_external_federation_sync(
     providers: Optional[Iterable[Any]] = None,
     rest_descriptors: Optional[Iterable[Mapping[str, Any]]] = None,
     schema_registry: Optional[MergedSchemaRegistry] = None,
+    sources: Optional[Iterable[AbstractFederatedSource]] = None,
 ) -> FederationCommitReport:
     """Synchronous federation pipeline that integrates with ModelRegistry.
 
-    Three jobs:
+    Four jobs, each over what is given or, when nothing is, what the app's
+    extensions declare:
 
     1. For every configured ``AbstractGraphQLProvider``: introspect the GQL
        upstream, transform, register with ``MergedSchemaRegistry``, lift to
-       Pydantic, synthesize an ``AbstractExternalManager`` per lifted model,
-       and bind both with the framework's ``ModelRegistry``.
+       Pydantic, synthesize a typed manager per lifted model, and bind the
+       model, table-less, with ``ModelRegistry.bind_external``.
     2. For every configured REST upstream descriptor: import the OpenAPI
        spec, derive ``AbstractExternalModel`` subclasses bound to the
-       transport, synthesize managers, and bind with ``ModelRegistry``.
-    3. Mount GQL→REST projection routers onto the FastAPI app via the
+       transport, synthesize managers, and bind them likewise.
+    3. For every federated source (``BLL_Federation_Typed``): read its type
+       catalogue, lift each type's JSON Schema and bind it likewise.
+    4. Mount GQL→REST projection routers onto the FastAPI app via the
        returned :class:`FederationCommitReport`.
 
     The returned report is consumed by :func:`build_app` which mounts the
@@ -296,7 +329,7 @@ def install_external_federation_sync(
     report = FederationCommitReport()
 
     # --- GraphQL upstream pipeline ---
-    for provider_cls in providers or _discover_gql_providers():
+    for provider_cls in providers or _discover_gql_providers(model_registry):
         if not issubclass(provider_cls, AbstractGraphQLProvider):
             continue
         upstream = getattr(provider_cls, "upstream_url", "")
@@ -353,7 +386,7 @@ def install_external_federation_sync(
                 )
 
     # --- REST upstream pipeline ---
-    for descriptor in rest_descriptors or _discover_rest_specs():
+    for descriptor in rest_descriptors or _discover_rest_specs(model_registry):
         try:
             _bind_lifted_models_for_rest(
                 descriptor=descriptor,
@@ -365,8 +398,26 @@ def install_external_federation_sync(
             logger.warning("REST federation failed for %s: %s", name, exc)
             report.errors[str(name)] = str(exc)
 
+    # --- Federated sources: typed record types ---
+    binding = bind_federated_sources(
+        model_registry,
+        federated_sources(model_registry) if sources is None else sources,
+    )
+    report.models.update(binding.models)
+    report.managers.update(binding.managers)
+    report.errors.update(binding.errors)
+
     target.build()
     return report
+
+
+def bootstrap_federation(*, model_registry: Any) -> Optional[FederationCommitReport]:
+    """The registry's federation hook (``ModelRegistry._bootstrap_federation``):
+    the pipeline, for an app that loads this extension; None for one that
+    does not (the hook table is process-wide)."""
+    if FEDERATION_EXTENSION not in model_registry.loaded_extension_names():
+        return None
+    return install_external_federation_sync(model_registry=model_registry)
 
 
 def _bind_lifted_models_for_gql(
@@ -377,27 +428,33 @@ def _bind_lifted_models_for_gql(
     model_registry: Any,
     report: FederationCommitReport,
 ) -> None:
-    """Synthesize managers for GQL-lifted models and bind both with the registry.
+    """Bind each GQL-lifted model, table-less, with a typed manager.
 
-    The lift produces raw Pydantic models. To flow through the framework's
-    existing REST + GQL pipelines we wrap each in an ``AbstractExternalManager``
-    subclass whose ``Model`` points at the lifted model and whose
-    ``*_via_provider`` static methods dispatch through the GQL transport.
+    The lift produces raw Pydantic models. Each is wrapped as an
+    ``AbstractExternalModel`` whose ``*_via_provider`` static methods
+    dispatch through the GQL transport, and served (read only: the upstream
+    names no version a save could be held to) by the typed manager
+    ``BLL_Federation_Typed.synthesize_manager`` makes, under the namespace
+    of the provider's name.
     """
 
     transport = provider_cls.upstream_transport()  # type: ignore[attr-defined]
-    for type_name, model_cls in (lift.models or {}).items():
-        external_model_cls = _synthesize_gql_external_model(
-            type_name=type_name,
-            model_cls=model_cls,
-            transport=transport,
-        )
-        manager_cls = _synthesize_external_manager(
-            type_name=type_name, external_model_cls=external_model_cls
-        )
-        report.models[type_name] = external_model_cls
-        report.managers[type_name] = manager_cls
-        _safe_bind(model_registry, external_model_cls, type_name)
+    _bind_upstream_models(
+        model_registry=model_registry,
+        source=_ProviderMethodsSource(provider_cls.__name__),
+        upstream_models=[
+            (
+                type_name,
+                _synthesize_gql_external_model(
+                    type_name=type_name, model_cls=model_cls, transport=transport
+                ),
+                None,
+                frozenset({Operation.LIST, Operation.GET}),
+            )
+            for type_name, model_cls in (lift.models or {}).items()
+        ],
+        report=report,
+    )
 
 
 def _bind_lifted_models_for_rest(
@@ -416,6 +473,7 @@ def _bind_lifted_models_for_rest(
     """
 
     from zephyrex.extensions.federation.BLL_Federation_REST import (
+        _guess_crud_actions,
         derive_external_models,
         openapi_to_pydantic_models,
     )
@@ -424,7 +482,7 @@ def _bind_lifted_models_for_rest(
     spec = descriptor["spec"]
     transport = descriptor["transport"]
     prefix = descriptor.get("prefix")
-    crud_map = descriptor.get("crud_map")
+    crud_map = dict(descriptor.get("crud_map") or {})
 
     pydantic_result = openapi_to_pydantic_models(spec, prefix=prefix)
     derived = derive_external_models(
@@ -432,13 +490,31 @@ def _bind_lifted_models_for_rest(
         transport=transport,
         crud_map=crud_map,
     )
-    for type_name, external_model_cls in derived.items():
-        manager_cls = _synthesize_external_manager(
-            type_name=type_name, external_model_cls=external_model_cls
+
+    def served(type_name: str) -> FrozenSet[Operation]:
+        """The operations the spec has an operation for (a save is never
+        served: the spec names no version to hold it to)."""
+        actions = crud_map.get(type_name) or _guess_crud_actions(type_name)
+        return frozenset(
+            Operation(action)
+            for action, operation in actions.items()
+            if operation in pydantic_result.operations
         )
-        report.models[type_name] = external_model_cls
-        report.managers[type_name] = manager_cls
-        _safe_bind(model_registry, external_model_cls, type_name)
+
+    _bind_upstream_models(
+        model_registry=model_registry,
+        source=_ProviderMethodsSource(str(name)),
+        upstream_models=[
+            (
+                type_name,
+                external_model_cls,
+                pydantic_result.models[type_name],
+                served(type_name),
+            )
+            for type_name, external_model_cls in derived.items()
+        ],
+        report=report,
+    )
 
 
 def _synthesize_gql_external_model(
@@ -504,46 +580,112 @@ def _synthesize_gql_external_model(
     return bound
 
 
-def _synthesize_external_manager(*, type_name: str, external_model_cls: type) -> type:
-    """Build an :class:`AbstractExternalManager` subclass for a derived model."""
+class _ProviderMethodsSession(FederatedSession):
+    """Calls a lifted model's ``*_via_provider`` methods (the upstream's
+    transport, synchronous) off the event loop. The upstream's credentials
+    are the operator's: any signed-in requester is served."""
 
-    from zephyrex.extensions.AbstractExternalModel import (
-        AbstractExternalManager,
-    )
+    def __init__(self, models: Mapping[str, Any]) -> None:
+        self._models = models
 
-    return type(
-        f"{type_name}Manager",
-        (AbstractExternalManager,),
-        {
-            "Model": external_model_cls,
-            "ReferenceModel": external_model_cls,
-            "NetworkModel": external_model_cls,
-        },
-    )
-
-
-def _safe_bind(model_registry: Any, model_cls: type, name: str) -> None:
-    """Bind a model to the registry, swallowing duplicates."""
-
-    bind = getattr(model_registry, "bind_model", None) or getattr(
-        model_registry, "register_model", None
-    )
-    if bind is None:
-        logger.warning(
-            "Model registry has no bind_model/register_model; %s won't appear on either surface",
-            name,
+    @staticmethod
+    async def _call(model: Any, method: str, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(
+            _unwrap_provider_call,
+            model,
+            method,
+            getattr(model, f"{method}_via_provider"),
+            *args,
+            **kwargs,
         )
-        return
-    try:
-        bind(model_cls)
-    except TypeError:
-        # Some implementations expect (model, name).
+
+    async def list(
+        self, type_name: str, query: FederatedQuery
+    ) -> Sequence[Mapping[str, Any]]:
+        model = self._models[type_name]
+        params = model.to_external_query_format(
+            dict(query.filters or {}), limit=query.page_length, offset=query.start
+        )
+        rows = await self._call(model, "list", None, **params)
+        return [model.from_external_format(row) for row in rows or []]
+
+    async def get(self, type_name: str, key: Any) -> Mapping[str, Any]:
+        model = self._models[type_name]
+        row = await self._call(model, "get", None, key)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"No such {type_name}")
+        found: Mapping[str, Any] = model.from_external_format(row)
+        return found
+
+    async def create(
+        self, type_name: str, data: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        model = self._models[type_name]
+        row = await self._call(
+            model, "create", None, **model.to_external_format(dict(data))
+        )
+        made: Mapping[str, Any] = model.from_external_format(row or {})
+        return made
+
+
+class _ProviderMethodsSource(AbstractFederatedSource):
+    """A GraphQL or REST upstream whose types the federation lifted itself
+    (from its SDL or OpenAPI document), served under the namespace of its
+    provider's or descriptor's name."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._namespace = type_slugs([name])[0]
+        self.models: Dict[str, Any] = {}
+
+    @property
+    def namespace(self) -> str:
+        return self._namespace
+
+    @property
+    def title(self) -> str:
+        return self._name
+
+    async def catalogue(self) -> Sequence[FederatedType]:
+        return [
+            FederatedType(name=type_name, json_schema={}, key_field=PROVIDER_KEY_FIELD)
+            for type_name in self.models
+        ]
+
+    def session(self, call: FederatedCall) -> FederatedSession:
+        return _ProviderMethodsSession(self.models)
+
+
+def _bind_upstream_models(
+    *,
+    model_registry: Any,
+    source: _ProviderMethodsSource,
+    upstream_models: Sequence[Tuple[str, Any, Optional[Any], FrozenSet[Operation]]],
+    report: FederationCommitReport,
+) -> None:
+    """Bind each ``(type name, external model, write payload, operations)``,
+    table-less, served by ``source``. One that cannot be bound (a name
+    already taken, no ``id`` to name a record by) is left out and logged."""
+    for (type_name, model, write, operations), slug in zip(
+        upstream_models, type_slugs([entry[0] for entry in upstream_models])
+    ):
+        source.models[type_name] = model
+        federated = FederatedType(
+            name=type_name,
+            json_schema={},
+            key_field=PROVIDER_KEY_FIELD,
+            operations=operations,
+        )
+        binding = FederatedBinding()
         try:
-            bind(model_cls, name)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Bind failed for %s: %s", name, exc)
-    except Exception as exc:
-        logger.debug("Bind failed for %s: %s", name, exc)
+            lifted = LiftedType.of_models(federated, slug, model, write)
+            bind_lifted(model_registry, source, lifted, binding)
+        except Exception as exc:
+            logger.warning("%s: %s is not served: %s", source.title, type_name, exc)
+            report.errors[f"{source.namespace}.{type_name}"] = str(exc)
+            continue
+        report.models.update(binding.models)
+        report.managers.update(binding.managers)
 
 
 def _pluralize(s: str) -> str:
@@ -568,6 +710,7 @@ def reset_federation_state() -> None:
 
 
 __all__ = [
+    "bootstrap_federation",
     "install_external_federation",
     "install_external_federation_sync",
     "FederationCommitReport",

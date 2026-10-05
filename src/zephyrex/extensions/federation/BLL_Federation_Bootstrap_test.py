@@ -1,9 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for ``lib.Federation_Bootstrap`` (Item 16 — registry integration).
 
 Covers:
 
 * Sync introspection + register pipeline against an in-process upstream.
-* Lifted-model binding to a fake ``ModelRegistry``.
+* Lifted-model binding, table-less, to the real ``ModelRegistry`` (and to a
+  recording shell where only the binding is in question).
 * GQL→REST router accumulation on the :class:`FederationCommitReport`.
 * REST upstream descriptor handling (OpenAPI → Pydantic → bind).
 * Failure isolation: an unreachable upstream MUST NOT raise.
@@ -39,13 +41,18 @@ pytestmark = [pytest.mark.gql]
 
 
 class _RecordingRegistry:
-    """Minimal ModelRegistry shell that captures bound classes."""
+    """Minimal ModelRegistry shell that captures table-less bindings."""
 
     def __init__(self) -> None:
         self.bound: List[type] = []
+        self.managers: List[type] = []
 
-    def bind_model(self, model_cls: type, name: str = "") -> None:
+    def bind_external(self, model_cls: type, manager: type) -> None:
         self.bound.append(model_cls)
+        self.managers.append(manager)
+
+    def loaded_extension_names(self) -> frozenset:
+        return frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +242,8 @@ def test_sync_pipeline_isolates_failed_provider():
 # ---------------------------------------------------------------------------
 
 
-def test_sync_pipeline_handles_rest_descriptors():
+def _order_descriptor() -> Dict[str, Any]:
+    """A REST upstream whose OpenAPI document has one ``Order`` read."""
     from zephyrex.extensions.federation.BLL_Federation_REST import RESTUpstreamTransport
 
     spec = {
@@ -290,17 +298,44 @@ def test_sync_pipeline_handles_rest_descriptors():
     transport = RESTUpstreamTransport(
         http, base_url="http://upstream", operations=operations
     )
-    descriptor = {
+    return {
         "name": "test_rest",
         "spec": spec,
         "transport": transport,
         "prefix": None,
     }
+
+
+def test_sync_pipeline_handles_rest_descriptors():
     registry = _RecordingRegistry()
     report = install_external_federation_sync(
         model_registry=registry,
         providers=[],
-        rest_descriptors=[descriptor],
+        rest_descriptors=[_order_descriptor()],
     )
     assert any("Order" in name for name in report.models.keys())
     assert any("Order" in m.__name__ for m in registry.bound)
+
+
+def test_a_lifted_model_is_bound_table_less_and_routed_by_its_manager():
+    """The bootstrap used to look for ``bind_model``/``register_model``,
+    which the registry does not have: every lifted model was dropped with
+    a warning. It is now bound with ``bind_external``, kept out of the
+    models the database layers read, and served by its typed manager."""
+    from zephyrex.pydantic2.registry import ModelRegistry
+
+    registry = ModelRegistry()
+    report = install_external_federation_sync(
+        model_registry=registry, providers=[], rest_descriptors=[_order_descriptor()]
+    )
+
+    model, manager = registry.external_models["OrderFederated"]
+    assert report.models["OrderFederated"] is model
+    assert model not in registry.bound_models
+    app = FastAPI()
+    app.include_router(manager.Router(registry))
+    paths = set(app.openapi()["paths"])
+    # The spec has a read of one order; no save is served (it names no
+    # version to hold a save to) and nothing it has no operation for.
+    assert "/v1/federated/test_rest/order/get" in paths
+    assert not [p for p in paths if p.endswith(("/create", "/update", "/delete"))]

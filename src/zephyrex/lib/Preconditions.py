@@ -221,6 +221,17 @@ def _parse(header: Optional[str]) -> Optional[IfMatch]:
     return IfMatch.parse(header) if header and header.strip() else None
 
 
+def save_expectation(if_match: Optional[str]) -> Optional[IfMatch]:
+    """The version a save of a record held elsewhere (an upstream's) names,
+    or None when it names none and need not (``IF_MATCH_REQUIRED``); 428
+    when it must. For writes no table of this server's holds, so no row
+    lock claims the expectation: the caller compares or forwards it."""
+    parsed = _parse(if_match)
+    if parsed is None and if_match_required():
+        raise PreconditionRequired()
+    return parsed
+
+
 @contextmanager
 def expect_versions(
     manager: Any,
