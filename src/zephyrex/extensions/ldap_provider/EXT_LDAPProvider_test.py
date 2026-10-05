@@ -864,6 +864,37 @@ class TestLDAPDirectory(ExtensionServerMixin):
         )
         assert response.status_code in (401, 403), response.text
 
+    def test_service_accounts_are_read_by_the_server_only(
+        self, registry: Any, server: Any, directory: Directory
+    ) -> None:
+        """An account's name and description say which application binds as
+        it. Any user could list the SYSTEM-written ones; reads are now the
+        operator's alone (operator decision)."""
+        system = LdapServiceAccountManager(
+            model_registry=registry, requester_id=env("SYSTEM_ID")
+        )
+        written = system.create(
+            name=f"billing-{suffix()}", description="The billing app", secret=SECRET
+        )
+        as_user = LdapServiceAccountManager(
+            model_registry=registry, requester_id=directory.alice.id
+        )
+        for read in (
+            lambda: as_user.get(id=written.id),
+            lambda: as_user.list(),
+            lambda: as_user.search(),
+        ):
+            with pytest.raises(HTTPException) as refused:
+                read()
+            assert refused.value.status_code == 403
+        listed = server.get(
+            "/v1/ldap/service-account",
+            headers={"Authorization": f"Bearer {directory.alice.jwt}"},
+        )
+        assert listed.status_code == 403, listed.text
+        assert "billing" not in listed.text
+        assert as_root(registry).get(id=written.id).name == written.name
+
     def test_secrets_are_checked_and_never_returned(
         self, registry: Any, directory: Directory
     ) -> None:

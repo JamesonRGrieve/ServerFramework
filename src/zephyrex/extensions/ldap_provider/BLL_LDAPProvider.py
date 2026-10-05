@@ -171,3 +171,18 @@ class LdapServiceAccountManager(AbstractBLLManager, RouterMixin):
     def delete(self, id: str) -> None:
         self._require_server_side()
         super().delete(id)
+
+    # Reads are the operator's too: an account's name and description say
+    # which application binds as it, which no ordinary user may learn
+    # (any user could list the SYSTEM-written ones before).
+    def get(self, *args: Any, **kwargs: Any) -> Any:
+        self._require_server_side()
+        return super().get(*args, **kwargs)
+
+    def list(self, *args: Any, **kwargs: Any) -> Any:
+        self._require_server_side()
+        return super().list(*args, **kwargs)
+
+    def search(self, *args: Any, **kwargs: Any) -> Any:
+        self._require_server_side()
+        return super().search(*args, **kwargs)
