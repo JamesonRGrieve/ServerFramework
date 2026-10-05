@@ -843,3 +843,15 @@ class TestAsyncOperations:
                     {"value": "rolled_back"},
                 )
                 assert result.fetchone() is None
+
+
+def test_a_test_run_keeps_its_databases_to_itself():
+    """Test database names are fixed per extension and worker, so in the
+    shared temp dir a run reopened an earlier run's file and inherited its
+    rows (an OAuth identity a previous run linked to ROOT failed a check
+    that none exists). Each run's files live in a directory of its own."""
+    run_dir = Path(os.environ["ZEPHYREX_TEST_RUN_DIR"])
+    assert run_dir.is_dir()
+    assert run_dir != Path(tempfile.gettempdir())
+    file_path = Path(get_database_info("test.run_dir_probe")["file_path"])
+    assert file_path.parent == run_dir

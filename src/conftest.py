@@ -1,6 +1,8 @@
 import base64
 import os
+import shutil
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +34,16 @@ os.environ.setdefault("ROOT_API_KEY", "test-root-api-key")
 os.environ.setdefault("SEED_DATA", "true")
 os.environ.setdefault("ALLOWED_DOMAINS", "*")
 os.environ.setdefault("DATABASE_SSL", "disable")
+
+# Every run keeps its SQLite files in a directory of its own. Database names
+# are fixed per extension and worker, so in a shared temp dir a run reopened
+# whatever an earlier (or a concurrent) run left there and inherited its rows.
+# The controller makes the directory; xdist workers inherit it through the
+# environment; pytest_sessionfinish removes it.
+_RUN_DIR_ENV = "ZEPHYREX_TEST_RUN_DIR"
+if os.environ.get("PYTEST_XDIST_WORKER") is None:
+    os.environ[_RUN_DIR_ENV] = tempfile.mkdtemp(prefix="zephyrex-tests.")
+os.environ["DATABASE_PATH"] = os.environ[_RUN_DIR_ENV]
 
 # Set APP_EXTENSIONS so the global settings singleton includes the
 # extensions the test suite exercises. Without this, the empty default
@@ -434,6 +446,8 @@ def pytest_sessionfinish(session, exitstatus):
                     f.unlink()
                 except OSError:
                     pass
+
+        shutil.rmtree(os.environ[_RUN_DIR_ENV], ignore_errors=True)
 
 
 # Add project root and src directories to path
