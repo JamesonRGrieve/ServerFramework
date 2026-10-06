@@ -69,6 +69,7 @@ from zephyrex.extensions.scim_provider.PRV_SCIM import (
 )
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Providers import (
     InstanceOwner,
     ProviderInstanceManager,
@@ -284,7 +285,7 @@ class SCIMSync:
         self.scope_team_id = (Client.setting(instance, "team_id") or "").strip()
         self.push_groups = Client.flag(instance, "push_groups")
         self.owner_id = str(owner.requester_id)
-        self.unrestricted = self.owner_id in (env("ROOT_ID"), env("SYSTEM_ID"))
+        self.unrestricted = server_side(self.owner_id)
         acting = {"model_registry": registry, "requester_id": owner.requester_id}
         self.links = ScimLinkManager(**acting)
         self.log = ScimSyncLogManager(**acting)
