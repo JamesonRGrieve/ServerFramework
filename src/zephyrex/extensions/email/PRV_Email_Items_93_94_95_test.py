@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for IMPROVEMENTS Items 93 (federation translators), 94 (inbound
 webhooks), and 95 (capability ladder) on the SendGrid provider.

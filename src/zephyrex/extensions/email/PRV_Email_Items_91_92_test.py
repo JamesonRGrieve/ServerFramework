@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for Items 91 + 92 surface on email providers.
 
 Item 91: each provider's ``send_via_provider`` carries the ``@idempotent``

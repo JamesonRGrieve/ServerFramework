@@ -11,26 +11,25 @@ from __future__ import annotations
 import base64
 from decimal import Decimal
 from email.mime.text import MIMEText
-from typing import Any, ClassVar, Dict, List, Optional, Set
-
-from pydantic import EmailStr, SecretStr
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
-    _DeprecatedEnvDict,
+    from_email_setting,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.RateLimit import RateLimit
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -89,20 +88,16 @@ class GoogleProvider(AbstractEmailProvider):
         ]
     )
 
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        access_token: SecretStr
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "GOOGLE_EMAIL_FROM_EMAIL",
-            "access_token": "GOOGLE_EMAIL_ACCESS_TOKEN",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "GOOGLE_EMAIL_ACCESS_TOKEN": "",
-            "GOOGLE_EMAIL_FROM_EMAIL": "",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        InstanceSetting(
+            "access_token",
+            "An OAuth access token for the Gmail account",
+            env="GOOGLE_EMAIL_ACCESS_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+        from_email_setting("GOOGLE_EMAIL_FROM_EMAIL"),
     )
 
     @classmethod
@@ -115,10 +110,7 @@ class GoogleProvider(AbstractEmailProvider):
 
     @classmethod
     def _access_token(cls, instance: Optional[ProviderInstanceModel] = None) -> str:
-        token: str = env("GOOGLE_EMAIL_ACCESS_TOKEN") or ""
-        if instance is not None:
-            token = instance.api_key or token
-        return token
+        return cls.setting(instance, "access_token") or ""
 
     @classmethod
     def validate_config(cls, instance: Optional[ProviderInstanceModel] = None) -> bool:
@@ -151,7 +143,7 @@ class GoogleProvider(AbstractEmailProvider):
 
     @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
         if not _google_available:
             logger.error("google client not available")
@@ -163,7 +155,7 @@ class GoogleProvider(AbstractEmailProvider):
         return AbstractProviderInstance_SDK(
             {
                 "access_token": token,
-                "from_email": env("GOOGLE_EMAIL_FROM_EMAIL"),
+                "from_email": cls.setting(instance, FROM_EMAIL_SETTING),
             }
         )
 
@@ -191,11 +183,7 @@ class GoogleProvider(AbstractEmailProvider):
         if not bonded or not bonded.sdk:
             return "Failed to send email: could not bond Google instance"
         cfg = bonded.sdk
-        from_email = (
-            (provider_instance.get_setting("from_email") if provider_instance else None)
-            or cfg.get("from_email")
-            or env("GOOGLE_EMAIL_FROM_EMAIL")
-        )
+        from_email = cfg.get("from_email")
         try:
             message = MIMEText(body, "html" if "<html" in body.lower() else "plain")
             message["to"] = recipient

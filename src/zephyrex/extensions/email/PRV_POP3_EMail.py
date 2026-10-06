@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import email as _email
 import poplib
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
-
-from pydantic import EmailStr, SecretStr
+from typing import Any, ClassVar, Dict, List, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     HealthReport,
@@ -24,14 +22,12 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
-    _DeprecatedEnvDict,
 )
 from zephyrex.extensions.email.PRV_IMAP_EMail import (
     IMAPProvider,
     _decode_header_value,
+    mailbox_settings,
 )
-from zephyrex.extensions.RateLimit import RateLimit
-from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -49,47 +45,14 @@ class POP3Provider(IMAPProvider):
         {Capability.SEND, Capability.LIST, Capability.READ}
     )
 
-    _env_prefix: ClassVar[str] = "POP3"
+    receive_protocol: ClassVar[str] = "pop3"
 
     # A POP3 mailbox is not read over IMAP: none of IMAPProvider's inbound
     # poller settings apply.
     polls_imap: ClassVar[bool] = False
     instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
-        AbstractEmailProvider.instance_settings
-    )
-
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        pop3_host: str
-        pop3_port: int = 995
-        smtp_host: str
-        smtp_port: int = 587
-        username: str
-        password: SecretStr
-        use_ssl: bool = True
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "POP3_FROM_EMAIL",
-            "pop3_host": "POP3_HOST",
-            "pop3_port": "POP3_PORT",
-            "smtp_host": "POP3_SMTP_HOST",
-            "smtp_port": "POP3_SMTP_PORT",
-            "username": "POP3_USERNAME",
-            "password": "POP3_PASSWORD",
-            "use_ssl": "POP3_USE_SSL",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "POP3_HOST": "",
-            "POP3_PORT": "995",
-            "POP3_SMTP_HOST": "",
-            "POP3_SMTP_PORT": "587",
-            "POP3_USERNAME": "",
-            "POP3_PASSWORD": "",
-            "POP3_FROM_EMAIL": "",
-            "POP3_USE_SSL": "true",
-        }
+        *AbstractEmailProvider.instance_settings,
+        *mailbox_settings("POP3", "pop3", port="995"),
     )
 
     @classmethod
@@ -101,22 +64,8 @@ class POP3Provider(IMAPProvider):
         return "POP3"
 
     @classmethod
-    def _config(cls) -> Dict[str, Any]:
-        """POP3 config (the ``imap_host`` slot carries the POP3 host)."""
-        return {
-            "imap_host": env("POP3_HOST"),
-            "imap_port": int(env("POP3_PORT") or "995"),
-            "smtp_host": env("POP3_SMTP_HOST"),
-            "smtp_port": int(env("POP3_SMTP_PORT") or "587"),
-            "username": env("POP3_USERNAME"),
-            "password": env("POP3_PASSWORD"),
-            "from_email": env("POP3_FROM_EMAIL") or env("POP3_USERNAME"),
-            "use_ssl": (env("POP3_USE_SSL") or "true").lower() != "false",
-        }
-
-    @classmethod
     def health_check(cls) -> HealthReport:
-        cfg = cls._config()
+        cfg = cls._config(None)
         if not cfg["imap_host"]:
             return HealthReport(HealthStatus.DOWN, detail="POP3 host not configured")
         try:

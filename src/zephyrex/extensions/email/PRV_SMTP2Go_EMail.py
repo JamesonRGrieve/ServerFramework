@@ -9,24 +9,24 @@ import mimetypes
 import os
 from decimal import Decimal
 from email.utils import formataddr, parseaddr
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Type
-
-from pydantic import EmailStr, HttpUrl, SecretStr
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
     EmailDeliveryEvent,
     Importance,
     dispatch_email_delivery_event,
-    _DeprecatedEnvDict,
+    from_email_setting,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.FieldMappings import (
@@ -127,23 +127,22 @@ class Smtp2goProvider(AbstractEmailProvider):
         ]
     )
 
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        api_key: SecretStr
-        api_url: HttpUrl = "https://api.smtp2go.com/v3"  # type: ignore[assignment]
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "SMTP2GO_FROM_EMAIL",
-            "api_key": "SMTP2GO_API_KEY",
-            "api_url": "SMTP2GO_API_URL",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "SMTP2GO_API_KEY": "",
-            "SMTP2GO_FROM_EMAIL": "",
-            "SMTP2GO_API_URL": "https://api.smtp2go.com/v3",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        InstanceSetting(
+            "api_key",
+            "SMTP2go API key",
+            env="SMTP2GO_API_KEY",
+            secret=True,
+            field="api_key",
+        ),
+        from_email_setting("SMTP2GO_FROM_EMAIL"),
+        InstanceSetting(
+            "api_url",
+            "API address (a regional endpoint)",
+            env="SMTP2GO_API_URL",
+            default="https://api.smtp2go.com/v3",
+        ),
     )
 
     @classmethod
@@ -159,18 +158,15 @@ class Smtp2goProvider(AbstractEmailProvider):
         if not _httpx_available:
             logger.error("httpx package not available")
             return False
-        api_key = env("SMTP2GO_API_KEY")
-        if instance is not None:
-            api_key = instance.api_key or api_key
-        if not api_key:
+        if not cls.setting(instance, "api_key"):
             logger.error("SMTP2go API key not configured")
             return False
         return True
 
     @classmethod
     def health_check(cls) -> HealthReport:
-        api_key = env("SMTP2GO_API_KEY")
-        api_url = env("SMTP2GO_API_URL") or "https://api.smtp2go.com/v3"
+        api_key = cls.setting(None, "api_key")
+        api_url = cls.setting(None, "api_url") or ""
         if not api_key:
             return HealthReport(
                 HealthStatus.DOWN, detail="SMTP2go API key not configured"
@@ -200,15 +196,15 @@ class Smtp2goProvider(AbstractEmailProvider):
 
     @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
         if not _httpx_available:
             logger.error("httpx package not available")
             return None
         try:
-            api_key = (instance.api_key if instance else None) or env("SMTP2GO_API_KEY")
-            api_url = env("SMTP2GO_API_URL") or "https://api.smtp2go.com/v3"
-            from_email = env("SMTP2GO_FROM_EMAIL")
+            api_key = cls.setting(instance, "api_key")
+            api_url = cls.setting(instance, "api_url") or ""
+            from_email = cls.setting(instance, FROM_EMAIL_SETTING)
             if not api_key:
                 logger.error("SMTP2go API key missing")
                 return None
@@ -283,11 +279,7 @@ class Smtp2goProvider(AbstractEmailProvider):
             return "Failed to send email: could not bond SMTP2go instance"
 
         config = bonded.sdk
-        from_email = (
-            (provider_instance.get_setting("from_email") if provider_instance else None)
-            or config.get("from_email")
-            or env("SMTP2GO_FROM_EMAIL")
-        )
+        from_email = config.get("from_email")
         if not from_email:
             return "Failed to send email: SMTP2go from_email not configured"
 
@@ -330,9 +322,10 @@ class Smtp2goProvider(AbstractEmailProvider):
             # SSRF guard, TLS/timeout policy, pooling, trace, log redaction,
             # Retry-After retry, and a persistent TokenBucket from the declared
             # rate_limit so a 429 is throttled across calls. SMTP2go carries its
-            # api_key in the JSON body, so no auth header is needed.
+            # api_key in the JSON body, so no auth header is needed. A non-2xx
+            # answer raises a typed error naming its status.
             response = await cls._send_http_client().post(
-                f"{config['api_url'].rstrip('/')}/email/send", json=payload
+                f"{config['api_url'].rstrip('/')}/email/send", json=payload, raw=True
             )
             if 200 <= response.status_code < 300:
                 logger.debug(f"SMTP2go: email sent successfully to {recipient}")

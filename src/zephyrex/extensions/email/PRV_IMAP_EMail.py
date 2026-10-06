@@ -19,8 +19,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
-from pydantic import EmailStr, SecretStr
-
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
@@ -30,17 +28,77 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
-    _DeprecatedEnvDict,
+    from_email_setting,
 )
 from zephyrex.extensions.email.InboundIMAP import IMAP_INBOUND_SETTINGS
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.RateLimit import RateLimit
 from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+SMTP_SUBMISSION_PORT = "587"
+
+
+def mailbox_settings(
+    env_prefix: str,
+    protocol: str,
+    *,
+    port: str,
+    host: Optional[str] = None,
+    smtp_host: Optional[str] = None,
+) -> Tuple[InstanceSetting, ...]:
+    """The settings a mailbox is read (over ``protocol``, ``imap`` or
+    ``pop3``) and sent from (over SMTP) with. The operator's instances
+    default to the ``{env_prefix}_*`` environment variables."""
+    server = protocol.upper()
+    return (
+        InstanceSetting(
+            f"{protocol}_host",
+            f"The {server} server",
+            env=f"{env_prefix}_HOST",
+            default=host,
+        ),
+        InstanceSetting(
+            f"{protocol}_port",
+            f"The {server} port",
+            env=f"{env_prefix}_PORT",
+            default=port,
+        ),
+        InstanceSetting(
+            "smtp_host",
+            "The SMTP submission server",
+            env=f"{env_prefix}_SMTP_HOST",
+            default=smtp_host,
+        ),
+        InstanceSetting(
+            "smtp_port",
+            "The SMTP submission port",
+            env=f"{env_prefix}_SMTP_PORT",
+            default=SMTP_SUBMISSION_PORT,
+        ),
+        InstanceSetting(
+            "username", "The account's user name", env=f"{env_prefix}_USERNAME"
+        ),
+        InstanceSetting(
+            "password",
+            "The account's password (an app password where the service asks "
+            "for one)",
+            env=f"{env_prefix}_PASSWORD",
+            secret=True,
+            field="api_key",
+        ),
+        from_email_setting(f"{env_prefix}_FROM_EMAIL"),
+        InstanceSetting(
+            "use_ssl",
+            f"Implicit TLS to the {server} server; false for a plain connection",
+            env=f"{env_prefix}_USE_SSL",
+            default="true",
+        ),
+    )
 
 
 def _decode_header_value(value: Optional[str]) -> str:
@@ -86,51 +144,20 @@ class IMAPProvider(AbstractEmailProvider):
 
     dependencies: ClassVar[Dependencies] = Dependencies([])
 
+    # The protocol the mailbox is read over: names its host and port settings.
+    receive_protocol: ClassVar[str] = "imap"
+    # Hosted mail services (Yahoo) name their servers; the inbound poller
+    # defaults its host to ``default_imap_host``.
+    default_imap_host: ClassVar[str] = ""
+    default_smtp_host: ClassVar[str] = ""
+
     # An instance can also be a mailbox the inbound poller reads (see
     # InboundIMAP and SVC_InboundIMAP).
     polls_imap: ClassVar[bool] = True
     instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
         *AbstractEmailProvider.instance_settings,
+        *mailbox_settings("IMAP", "imap", port="993"),
         *IMAP_INBOUND_SETTINGS,
-    )
-
-    # Subclasses (Yahoo, etc.) override these host defaults.
-    default_imap_host: ClassVar[str] = ""
-    default_smtp_host: ClassVar[str] = ""
-    _env_prefix: ClassVar[str] = "IMAP"
-
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        imap_host: str
-        imap_port: int = 993
-        smtp_host: str
-        smtp_port: int = 587
-        username: str
-        password: SecretStr
-        use_ssl: bool = True
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "IMAP_FROM_EMAIL",
-            "imap_host": "IMAP_HOST",
-            "imap_port": "IMAP_PORT",
-            "smtp_host": "IMAP_SMTP_HOST",
-            "smtp_port": "IMAP_SMTP_PORT",
-            "username": "IMAP_USERNAME",
-            "password": "IMAP_PASSWORD",
-            "use_ssl": "IMAP_USE_SSL",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "IMAP_HOST": "",
-            "IMAP_PORT": "993",
-            "IMAP_SMTP_HOST": "",
-            "IMAP_SMTP_PORT": "587",
-            "IMAP_USERNAME": "",
-            "IMAP_PASSWORD": "",
-            "IMAP_FROM_EMAIL": "",
-            "IMAP_USE_SSL": "true",
-        }
     )
 
     @classmethod
@@ -142,34 +169,33 @@ class IMAPProvider(AbstractEmailProvider):
         return "IMAP"
 
     @classmethod
-    def _config(cls) -> Dict[str, Any]:
-        """Resolve connection config from env, with subclass host defaults."""
-        p = cls._env_prefix
+    def _config(cls, instance: Optional[ProviderInstanceModel]) -> Dict[str, Any]:
+        """The instance's connection settings (the ``imap_*`` slots carry
+        whichever protocol the mailbox is read over)."""
+        protocol = cls.receive_protocol
+        username = cls.setting(instance, "username")
         return {
-            "imap_host": env(f"{p}_HOST") or cls.default_imap_host,
-            "imap_port": int(env(f"{p}_PORT") or "993"),
-            "smtp_host": env(f"{p}_SMTP_HOST") or cls.default_smtp_host,
-            "smtp_port": int(env(f"{p}_SMTP_PORT") or "587"),
-            "username": env(f"{p}_USERNAME"),
-            "password": env(f"{p}_PASSWORD"),
-            "from_email": env(f"{p}_FROM_EMAIL") or env(f"{p}_USERNAME"),
-            "use_ssl": (env(f"{p}_USE_SSL") or "true").lower() != "false",
+            "imap_host": cls.setting(instance, f"{protocol}_host"),
+            "imap_port": cls.setting_port(instance, f"{protocol}_port"),
+            "smtp_host": cls.setting(instance, "smtp_host"),
+            "smtp_port": cls.setting_port(instance, "smtp_port"),
+            "username": username,
+            "password": cls.setting(instance, "password"),
+            "from_email": cls.setting(instance, FROM_EMAIL_SETTING) or username,
+            "use_ssl": cls.setting_flag(instance, "use_ssl"),
         }
 
     @classmethod
     def validate_config(cls, instance: Optional[ProviderInstanceModel] = None) -> bool:
-        cfg = cls._config()
-        password = cfg["password"]
-        if instance is not None:
-            password = instance.api_key or password
-        if not cfg["imap_host"] or not cfg["username"] or not password:
+        cfg = cls._config(instance)
+        if not cfg["imap_host"] or not cfg["username"] or not cfg["password"]:
             logger.error(f"{cls.get_platform_name()} host/username/password missing")
             return False
         return True
 
     @classmethod
     def health_check(cls) -> HealthReport:
-        cfg = cls._config()
+        cfg = cls._config(None)
         if not cfg["imap_host"]:
             return HealthReport(HealthStatus.DOWN, detail="IMAP host not configured")
         try:
@@ -188,13 +214,18 @@ class IMAPProvider(AbstractEmailProvider):
 
     @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
-        cfg = cls._config()
-        if instance is not None and instance.api_key:
-            cfg["password"] = instance.api_key
+        cfg = cls._config(instance)
         if not cfg["imap_host"] or not cfg["username"] or not cfg["password"]:
             logger.error(f"{cls.get_platform_name()} connection parameters missing")
+            return None
+        try:
+            cls.mail_server(instance, cfg["imap_host"], cfg["imap_port"])
+            if cfg["smtp_host"]:
+                cls.mail_server(instance, cfg["smtp_host"], cfg["smtp_port"])
+        except ValueError as refused:
+            logger.error(f"{cls.get_platform_name()} server refused: {refused}")
             return None
         return AbstractProviderInstance_SDK(cfg)
 
@@ -231,11 +262,7 @@ class IMAPProvider(AbstractEmailProvider):
         if not bonded or not bonded.sdk:
             return f"Failed to send email: could not bond {cls.get_platform_name()}"
         cfg = bonded.sdk
-        from_email = (
-            (provider_instance.get_setting("from_email") if provider_instance else None)
-            or cfg.get("from_email")
-            or cfg.get("username")
-        )
+        from_email = cfg.get("from_email")
         if not from_email:
             return "Failed to send email: from_email not configured"
         if not cfg.get("smtp_host"):

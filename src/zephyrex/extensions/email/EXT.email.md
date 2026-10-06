@@ -4,33 +4,35 @@ This document describes the Email extension implementation.
 
 > **Extension Architecture**: For general extension patterns, architecture, and concepts, see [EXT.Patterns.md](../EXT.Patterns.md).
 
-The Email extension provides email-sending capabilities through the Provider Rotation System with three concrete providers.
+The Email extension sends (and reads) mail through the Provider Rotation System, over configured provider instances.
 
 ## Overview
 
-The `email` extension exposes a single primary ability — `email_send` — backed by one of three providers selected at runtime. All providers run their inputs through a shared validation helper so the same denial guarantees apply regardless of which provider is active.
+The `email` extension's primary ability is `email_send`, served by whichever provider instance the rotation reaches first that can send. All providers run their inputs through a shared validation helper so the same denial guarantees apply regardless of which provider is active.
 
 ## Providers
 
-The extension ships with three concrete providers, all subclasses of `AbstractEmailProvider`:
+Each provider is a subclass of `AbstractEmailProvider` in its own `PRV_*_EMail.py`:
 
-| Provider | Transport | Use case | Key env vars |
-|----------|-----------|----------|--------------|
-| `SendGrid` (`SendgridProvider`) | HTTP API (`sendgrid` SDK) | Hosted, batteries-included, marketing & transactional | `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL` |
-| `Stalwart` (`StalwartProvider`) | SMTP submission via `aiosmtplib` (port 587 + STARTTLS by default) | Self-hosted Stalwart mail server, full control over deliverability | `STALWART_HOST`, `STALWART_PORT`, `STALWART_USERNAME`, `STALWART_PASSWORD`, `STALWART_FROM_EMAIL`, `STALWART_USE_TLS` |
-| `SMTP2go` (`Smtp2goProvider`) | HTTP API (`POST /v3/email/send` via `httpx`) | Hosted SMTP relay with REST front door | `SMTP2GO_API_KEY`, `SMTP2GO_FROM_EMAIL`, `SMTP2GO_API_URL` |
+| Provider (`name`) | Transport | Use case |
+|-------------------|-----------|----------|
+| `sendgrid` | HTTP API (`/v3/mail/send`) | Hosted, marketing & transactional |
+| `smtp2go` | HTTP API (`/v3/email/send`) | Hosted SMTP relay with a REST front door |
+| `mailgun` | HTTP API (`/<domain>/messages`) | Hosted, send-only |
+| `stalwart` | SMTP submission (`aiosmtplib`, 587 + STARTTLS) | Self-hosted Stalwart server |
+| `proxmox_mail_gateway` | SMTP relay + PMG REST API (stats, tracking, quarantine) | Self-hosted mail gateway |
+| `imap`, `yahoo`, `pop3` | IMAP or POP3 read, SMTP send | Any mailbox; Yahoo with its hosts as defaults |
+| `google`, `microsoft` | Gmail / Microsoft Graph over an OAuth access token | Hosted mailboxes |
 
-All three live in `extensions/email/PRV_SendGrid_EMail.py` so they share the validation helper and external-model machinery; the file name is historical.
+Send-only providers answer the receive-side methods with a warning and an empty result, so the abstract contract holds without advertising support; callers branch on `capabilities`.
 
-### Provider matrix
+## Configuration: instance settings
 
-`AbstractEmailProvider` declares 16 abstract methods covering the full email lifecycle (read, search, draft, flag, threads, etc.). In practice the three shipped providers are send-only relays; receive-side methods are stubbed with `logger.warning` returns so the abstract contract is satisfied without falsely advertising support:
+A provider's configuration is its instances' settings (`instance_settings`, the catalogue a client renders): the instance's own `api_key` column or a `ProviderInstanceSetting` row per key, read with `cls.setting(instance, key)`. Every provider declares `from_email` and its credential (`api_key`, `password`, `api_token` or `access_token`), plus what its transport needs (`api_url`, `domain`, `host`/`port`, `smtp_*`, `imap_*`/`pop3_*`, `use_tls`/`use_ssl`). Credentials are declared `secret`: stored encrypted and never returned once written.
 
-| Method | SendGrid | Stalwart | SMTP2go |
-|--------|----------|----------|---------|
-| `send_email` | ✅ implemented | ✅ implemented | ✅ implemented |
-| `get_emails` / `search_emails` / `reply_to_email` / `delete_email` / `create_draft_email` / `process_attachments` | ⚠️ stub (warns + empty return) | ⚠️ stub | ⚠️ stub |
-| `move_email` / `mark_email_as_read` / `mark_email_as_unread` / `flag_email` / `unflag_email` / `get_email_threads` / `get_thread_messages` / `get_latest_email` / `download_attachment` | inherited abstract (no implementation) | inherited abstract | inherited abstract |
+Each setting names the environment variable it read before instances carried settings (`SENDGRID_API_KEY`, `STALWART_HOST`, `PMG_API_URL`, …). That variable is a default **for the operator's instances only** — those in the root or system scope, or owned by ROOT or SYSTEM and no team (the `Root_<Provider>` instances the framework seeds from the environment carry the default scope but no owner; `speaks_for_operator`). A user's or team's instance never sends with the operator's credentials, from the operator's address, or through the operator's servers. A provider's `_env` is derived from these declarations; the framework seeds the operator's root instance and its place in the root rotation from it. The extension itself declares no variables.
+
+A user's or team's instance names its own mail servers and API addresses, so they are held to the SSRF guard (`destination`, `mail_server`): an address on the server's own network is refused unless `EGRESS_ALLOWED_HOSTS` lets it through. The operator's are not (a self-hosted mail server is often on the private network). Webhook verification secrets (`SENDGRID_WEBHOOK_PUBLIC_KEY`/`_SECRET`, `SMTP2GO_WEBHOOK_SECRET`, `STALWART_WEBHOOK_SECRET`, `PMG_WEBHOOK_SECRET`) are the operator's, read from the environment: a provider's webhook endpoint is one per provider, not per instance.
 
 Inbound mail (mail received into the app, not listed on request) comes in through the signed endpoint and the IMAP poller described under [Inbound mail](#inbound-mail).
 
@@ -180,89 +182,31 @@ A failed poll (unreachable, refused sign-in, a server missing what
 cursor's `last_error`, and retried after twice the interval each time, up to
 an hour. Other mailboxes and the service carry on.
 
-### Hook-based integration
+### Invitation email
 
-The extension auto-sends invitation emails via `BLL_Auth.InviteeManager.create` (`AFTER` hook, priority 5):
-
-```python
-hook_bll(InviteeManager.create, timing=HookTiming.AFTER, priority=5)(send_invitation_email_hook)
-```
-
-The hook resolves the rotation manager `Root_Email`, which iterates configured providers in order and stops at the first success.
+When `InvitationManager` adds an invitee it calls `BLL_EMail.send_invitation_email_hook`, which queues the invitation through `EXT_EMail.send_invitation_email`: the root rotation sends it, through whichever providers the operator configured there, failing over attempt by attempt in the background.
 
 ## Dependencies
 
-### PIP dependencies
-
-| Package | Floor | Used by |
-|---------|-------|---------|
-| `sendgrid` | `>=6.10.0` | `SendgridProvider` |
-| `aiosmtplib` | `>=3.0.0` | `StalwartProvider` |
-| `httpx` | `>=0.27.0` | `Smtp2goProvider` |
-
-### Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMAIL_PROVIDER` | `"sendgrid"` | Default provider name (case-insensitive); used by the rotation system to pick the first provider to try. |
-| `SENDGRID_API_KEY` | `""` | SendGrid API key. |
-| `SENDGRID_FROM_EMAIL` | `""` | SendGrid verified sender address. |
-| `STALWART_HOST` | `""` | Stalwart submission hostname. |
-| `STALWART_PORT` | `"587"` | Stalwart submission port (587 for STARTTLS). |
-| `STALWART_USERNAME` | `""` | Stalwart SMTP AUTH username. |
-| `STALWART_PASSWORD` | `""` | Stalwart SMTP AUTH password (also accepted via `ProviderInstance.api_key`). |
-| `STALWART_FROM_EMAIL` | `""` | Default sender for Stalwart-routed mail. |
-| `STALWART_USE_TLS` | `"true"` | If `"false"`, disables STARTTLS (only suitable for trusted networks). |
-| `SMTP2GO_API_KEY` | `""` | SMTP2go API key. |
-| `SMTP2GO_FROM_EMAIL` | `""` | Default sender for SMTP2go-routed mail. |
-| `SMTP2GO_API_URL` | `"https://api.smtp2go.com/v3"` | API base URL (override for region pinning). |
-| `SMTP_SERVER` / `SMTP_PORT` / `IMAP_SERVER` / `IMAP_PORT` | various | Reserved for future generic SMTP/IMAP providers; not consumed by the shipped providers. |
-
-## Provider Registration
-
-`BLL_EMail.py` walks `_EMAIL_PROVIDER_REGISTRY` once and registers every provider whose credential pair is set:
-
-```python
-_EMAIL_PROVIDER_REGISTRY = (
-    ("SendGrid", "SendGrid Email Service", "SENDGRID_API_KEY", "SENDGRID_FROM_EMAIL"),
-    ("Stalwart", "Stalwart Mail Server",   "STALWART_PASSWORD", "STALWART_FROM_EMAIL"),
-    ("SMTP2go", "SMTP2go Email Service",   "SMTP2GO_API_KEY",   "SMTP2GO_FROM_EMAIL"),
-)
-```
-
-This produces:
-- A row in the `Provider` table for each configured provider (`register_email_providers_hook`).
-- A `Root_<Name>` row in the `ProviderInstance` table per configured provider, with the API key in `api_key` and the from-address in `model_name` (`register_email_provider_instances_hook`).
-
-To add a fourth provider you only need: a new `PRV_*Provider` class inside `PRV_SendGrid_EMail.py` and one new tuple in the registry.
+Each provider declares its own pip dependencies (`sendgrid`, `aiosmtplib`, `httpx`, `requests`, the Google client libraries); the extension's `zephyrex[email]` extra and `manifest.toml` list their union (`pip_requirements`).
 
 ## Usage
 
 ### Sending email via the rotation system
 
 ```python
-if EXT_EMail.root:
-    result = await EXT_EMail.root.rotate(
-        AbstractEmailProvider.send_email,
-        recipient="user@example.com",
-        subject="Welcome!",
-        body="Welcome to our platform!",
-    )
+sent = await EXT_EMail.send_email(recipient="user@example.com", subject="Welcome!", body="...")
+# or, without waiting on the provider:
+EXT_EMail.queue_email("user@example.com", "Welcome!", "...")
 ```
 
-The rotation manager tries each `Root_<Provider>` instance in order until one returns a success string.
+`send_email` rotates `send_via_provider` over the root rotation's instances; a provider that cannot send raises a typed error and the rotation moves on to the next.
 
 ### Checking extension status
 
 ```python
-status = EXT_EMail.get_extension_status()
-# {
-#     "extension": "email",
-#     "version": "1.0.0",
-#     "providers_available": 3,
-#     "configured": True,
-#     "default_provider": "sendgrid",
-# }
+EXT_EMail.get_extension_status()
+# {"extension": "email", "version": "1.1.0", "providers": ["google", "imap", ...]}
 ```
 
 ## Security Features
@@ -290,35 +234,20 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
     provider_class = SendgridProvider
 ```
 
-### API-key handling
+### Credential handling
 
-- API keys are read from environment or from `ProviderInstance.api_key`; they never appear in log messages (see `lib/Logging.py` redaction patches).
+- Credentials are the instance's own (its `api_key` column or a secret setting row), else, for the operator's instances only, the environment; they never appear in log messages (see `lib/Logging.py` redaction patches).
 - `bond_instance` returns an `AbstractProviderInstance_SDK` wrapping the SDK or connection config, never the raw key.
 
 ## Testing
 
-### Provider tests
-
-```python
-class TestStalwartProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
-    provider_class = StalwartProvider
-    expected_services = ["email", "smtp"]
-```
-
-Three test classes (one per provider) live in `PRV_SendGrid_EMail_test.py` and inherit the same security mixin. The shipped expectations:
-
-- `pytest src/extensions/email/` → 0 failures, 0 xfails.
-- The 9-row `EMAIL_SECURITY_DENY_MATRIX` runs once per provider for 27 deny tests total.
-
-### Extension tests
-
-`EXT_EMail_test.py` covers extension-level surfaces (status / config metadata, env-var registration, hook wiring).
+Providers are tested against real protocol servers in process, configured on real provider instances: `IMAPTestServer` (IMAP4rev1), and `MailAPITestServers` (SendGrid's and SMTP2go's send APIs and PMG's REST API, each recording what it was sent). `EmailTestSupport.email_instance` makes an instance of any scope and owner with settings. `PRV_EMail_InstanceSettings_test.py` holds each provider's declared settings to the variables it reads, its credentials to `secret`, and every user's and team's instance to its own settings (and to the SSRF guard). Each provider's test class in `PRV_SendGrid_EMail_test.py` also inherits `AbstractEmailProviderSecurityTests`, the input-denial matrix.
 
 ## Troubleshooting
 
-- **No providers registered**: at least one `(*_API_KEY, *_FROM_EMAIL)` pair must be set; check `BLL_EMail.register_email_providers_hook`.
-- **Stalwart connection refused**: confirm `STALWART_HOST` is reachable on `STALWART_PORT`; submission ports are typically 465 (TLS), 587 (STARTTLS), or 25 (cleartext, deprecated).
-- **SMTP2go 401**: rotate `SMTP2GO_API_KEY`; the API key must include the v3 prefix.
+- **Nothing sends**: the root rotation needs an instance that can send; an operator instance with no settings of its own reads the provider's variables (`SMTP2GO_API_KEY`, …).
+- **Stalwart connection refused**: confirm the instance's `host` is reachable on its `port`; submission ports are typically 465 (TLS), 587 (STARTTLS), or 25 (cleartext, deprecated).
+- **A user's instance cannot reach its server**: an address on the server's own network is refused for a user's or team's instance; add it to `EGRESS_ALLOWED_HOSTS` if it is meant to be reached.
 - **CRLF / NUL / oversized rejection**: surfaces as a typed `EmailHeaderInjectionError` / `EmailMalformedAddressError` / `EmailPayloadTooLargeError` (subclasses of `InvalidInputExternalError`); strip those characters from upstream input.
 
 ## Typed Errors
@@ -328,18 +257,6 @@ Every email-provider entry point raises typed exceptions on failure and returns 
 ## Bonded Provider Instance
 
 `AbstractEmailProviderInstance(AbstractProviderInstance)` declares the typed abilities (`send`, `send_bulk`, `list_emails`, `get_email`, `update_email`, `reply`, `download_attachment`, `list_threads`) plus a typed `capabilities: ClassVar[FrozenSet[Capability]]`. `bond_instance` returns the typed instance; `_instance` is declared as a typed `ClassVar` and a mypy gate enforces the contract. Call sites use `bonded.send(message)` rather than `Provider.send(provider_instance, message)`.
-
-## Typed Settings and Credentials
-
-Each abstract provider declares `Settings` as an inner Pydantic model with typed fields, defaults, validators, and `Secret` markers. `_env` is replaced by an `EnvSchema` with typed names, defaults, required flags. Concrete providers extend the abstract:
-
-- `SendgridProvider.Settings(from_email: EmailStr, api_key: Secret[str])`
-- `StalwartProvider.Settings(host: str, port: int = 587, username: str, password: Secret[str], use_tls: bool = True, from_email: EmailStr)`
-- `Smtp2goProvider.Settings(api_key: Secret[str], from_email: EmailStr, api_url: HttpUrl = "https://api.smtp2go.com/v3")`
-
-The startup check refuses to boot if a required value is missing for any registered provider. `Secret`-marked fields never appear in log output.
-
-Credentials resolve through the `CredentialRef` tier order: OpenBao → environment variable → encrypted database column. The env-var fallback honors the `_TEST` / `_LIVE` discriminator selected by `APP_ENV`. A SendGrid 401 cache-busts the credential and forces a re-resolve; a re-resolved-identical credential transitions the provider to `DOWN` and halts retry until an operator intervenes.
 
 ## Idempotent Send and Bulk Send
 

@@ -1,4 +1,5 @@
-from typing import List
+# SPDX-License-Identifier: AGPL-3.0-or-later
+from typing import Iterator, List
 
 import pytest
 
@@ -7,11 +8,20 @@ from zephyrex.extensions.AbstractPRVTest import (
     AbstractEmailProviderSecurityTests,
     AbstractPRVTest,
 )
+from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
+    EmailAddress,
+    EmailMessage,
+)
+from zephyrex.extensions.email.MailAPITestServers import SendGridTestServer
 from zephyrex.extensions.email.PRV_SendGrid_EMail import SendgridProvider
+from zephyrex.extensions.ExternalErrors import AuthExternalError
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 from zephyrex.lib.Dependencies import check_pip_dependencies, install_pip_dependencies
 from zephyrex.lib.Environment import env
+
+ROUTING_KEY = "SG.routing-test-key"
 
 # Provide lightweight placeholders for extension-level fixtures that are not available
 # in this focused test run; the provider tests will skip the heavy integration tests
@@ -144,18 +154,22 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
         return from_email
 
     @pytest.fixture
-    def provider_instance(self, real_sendgrid_api_key, real_sendgrid_from_email):
-        """Create a real provider instance for testing."""
+    def live_instance(
+        self, provider_instance, real_sendgrid_api_key, real_sendgrid_from_email
+    ):
+        """A real instance with the sandbox account's key and sender."""
+        return provider_instance(
+            SendgridProvider,
+            api_key=real_sendgrid_api_key,
+            settings={FROM_EMAIL_SETTING: real_sendgrid_from_email},
+        )
 
-        # Create a mock ProviderInstanceModel
-        class MockProviderInstance:
-            def __init__(self, api_key):
-                self.id = "test_instance_id"
-                self.api_key = api_key
-                self.provider_id = "sendgrid"
-                self.name = "Test SendGrid Instance"
-
-        return MockProviderInstance(real_sendgrid_api_key)
+    @pytest.fixture
+    def keyless_instance(self, provider_instance, set_env):
+        """A real operator instance, with no key of its own or the
+        environment's."""
+        set_env("SENDGRID_API_KEY", "")
+        return provider_instance(SendgridProvider)
 
     def test_provider_structure(self):
         """Test that provider has correct structure."""
@@ -200,20 +214,13 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
         assert "SENDGRID_API_KEY" in env_vars
         assert "SENDGRID_FROM_EMAIL" in env_vars
 
-    def test_bond_instance_without_api_key(self):
+    def test_bond_instance_without_api_key(self, keyless_instance):
         """Test bonding instance without API key."""
+        assert SendgridProvider.bond_instance(keyless_instance) is None
 
-        class MockInstanceWithoutKey:
-            id = "test_id"
-            api_key = None
-
-        instance = MockInstanceWithoutKey()
-        bonded = SendgridProvider.bond_instance(instance)
-        assert bonded is None
-
-    def test_bond_instance_with_api_key(self, provider_instance):
+    def test_bond_instance_with_api_key(self, live_instance):
         """Test bonding instance with API key."""
-        bonded = SendgridProvider.bond_instance(provider_instance)
+        bonded = SendgridProvider.bond_instance(live_instance)
 
         # Check if sendgrid library is available
         try:
@@ -227,28 +234,15 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
             assert bonded is None
 
     @pytest.mark.asyncio
-    async def test_send_email_without_bonded_instance(self):
-        """Test sending email without bonded instance."""
-
-        class MockInstanceWithoutKey:
-            id = "test_id"
-            api_key = None
-
-        instance = MockInstanceWithoutKey()
-
-        # Should fail gracefully without real API key
-        try:
-            result = await SendgridProvider.send_email(
-                instance, "test@example.com", "Test Subject", "Test Body"
-            )
-            # If it doesn't raise an exception, it should return an error message
-            assert "Failed to bond" in result or "error" in result.lower()
-        except Exception as e:
-            # Should handle the error gracefully
-            assert "bond" in str(e).lower() or "api" in str(e).lower()
+    async def test_send_email_without_bonded_instance(self, keyless_instance):
+        """Without a key the send fails, as a string, before any call."""
+        result = await SendgridProvider.send_email(
+            keyless_instance, "test@example.com", "Test Subject", "Test Body"
+        )
+        assert result == "Failed to bond SendGrid instance"
 
     @pytest.mark.asyncio
-    async def test_send_email_with_bonded_instance(self, provider_instance):
+    async def test_send_email_with_bonded_instance(self, live_instance):
         """Test sending email with bonded instance."""
         # This will only work if SENDGRID_API_KEY is set and valid
         if not env("SENDGRID_API_KEY"):
@@ -257,7 +251,7 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
         # Try to send an email - this is a real API call
         try:
             result = await SendgridProvider.send_email(
-                provider_instance,
+                live_instance,
                 "test@example.com",  # This email won't actually be sent in test mode
                 "Test Subject",
                 "Test Body",
@@ -274,49 +268,73 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
                 err in error_msg for err in expected_errors
             ), f"Unexpected error: {e}"
 
+    @pytest.fixture
+    def account(self, monkeypatch) -> Iterator[SendGridTestServer]:
+        """A SendGrid account served in process, its host let through the
+        SSRF guard."""
+        with SendGridTestServer(ROUTING_KEY) as server:
+            monkeypatch.setenv("EGRESS_ALLOWED_HOSTS", server.host)
+            yield server
+
+    def _routed(self, provider_instance, account, api_key: str = ROUTING_KEY):
+        return provider_instance(
+            SendgridProvider,
+            api_key=api_key,
+            settings={
+                "api_url": account.api_url,
+                FROM_EMAIL_SETTING: "from@example.com",
+            },
+        )
+
     @pytest.mark.asyncio
-    async def test_send_email_routes_through_shared_http_client(self, monkeypatch):
-        """#220 (Item 97): send POSTs to ``/v3/mail/send`` via the shared async
-        ``ProviderHTTPClient`` — the same path SMTP2go uses — not the SDK's
-        direct urllib ``.send()``. Verifies the URL, bearer auth, and that
-        ``Mail.get()`` supplies the v3 body, with no real network call."""
-        if SendgridProvider.bond_instance(_MockProviderInstance()) is None:
-            pytest.skip("sendgrid package not available to bond a client")
-
-        monkeypatch.setenv("SENDGRID_API_KEY", "SG.routing-test-key")
-        monkeypatch.setenv("SENDGRID_FROM_EMAIL", "from@example.com")
-
-        captured: dict = {}
-
-        class _Resp:
-            status_code = 202
-            text = ""
-
-        class _FakeClient:
-            async def post(self, url, **kwargs):
-                captured["url"] = url
-                captured["headers"] = kwargs.get("headers")
-                captured["json"] = kwargs.get("json")
-                return _Resp()
-
-        monkeypatch.setattr(
-            SendgridProvider, "_send_http_client", lambda: _FakeClient()
-        )
-
-        instance = _MockProviderInstance(
-            api_key="SG.routing-test-key", from_email="from@example.com"
-        )
+    async def test_send_email_routes_through_shared_http_client(
+        self, provider_instance, account
+    ):
+        """#220 (Item 97): send POSTs ``Mail.get()``'s v3 body to
+        ``/v3/mail/send`` on the instance's API address, bearer-authenticated,
+        through the shared ``ProviderHTTPClient``. A send SendGrid accepted
+        (202, no body) used to be reported failed: the client answers the
+        parsed body, which has no status code."""
         result = await SendgridProvider.send_email(
-            instance, "to@example.com", "Subject", "Body text"
+            self._routed(provider_instance, account),
+            "to@example.com",
+            "Subject",
+            "Body text",
         )
 
         assert result == "Email sent successfully to to@example.com"
-        assert captured["url"] == "https://api.sendgrid.com/v3/mail/send"
-        assert captured["headers"]["Authorization"] == "Bearer SG.routing-test-key"
-        assert captured["headers"]["Content-Type"] == "application/json"
+        (request,) = account.requests
+        assert (request.method, request.path) == ("POST", "/v3/mail/send")
+        assert request.headers["authorization"] == f"Bearer {ROUTING_KEY}"
+        assert request.headers["content-type"] == "application/json"
         # Mail.get() carries the sender + recipient in the v3 shape.
-        assert captured["json"]["from"]["email"] == "from@example.com"
-        assert "to@example.com" in str(captured["json"])
+        body = request.json()
+        assert body["from"]["email"] == "from@example.com"
+        assert body["personalizations"][0]["to"] == [{"email": "to@example.com"}]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_key_is_an_auth_failure(self, provider_instance, account):
+        instance = self._routed(provider_instance, account, api_key="SG.revoked")
+        message = EmailMessage(
+            to=[EmailAddress(address="to@example.com")], subject="S", body_text="B"
+        )
+        with pytest.raises(AuthExternalError):
+            await SendgridProvider.send_via_provider(instance, message)
+        assert account.sent == []
+
+    @pytest.mark.asyncio
+    async def test_the_api_address_is_held_to_the_ssrf_guard(
+        self, provider_instance, account, monkeypatch
+    ):
+        monkeypatch.delenv("EGRESS_ALLOWED_HOSTS")
+        result = await SendgridProvider.send_email(
+            self._routed(provider_instance, account),
+            "to@example.com",
+            "Subject",
+            "Body text",
+        )
+        assert result.startswith("Failed to send email: Outbound URL refused")
+        assert account.requests == []
 
     def test_send_http_client_is_persistent_and_throttled(self):
         """#220: the send transport is a PERSISTENT ProviderHTTPClient carrying a
@@ -341,10 +359,10 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
         assert Smtp2goProvider._send_rate_bucket() is not sg  # per-provider
 
     @pytest.mark.asyncio
-    async def test_get_emails_not_supported(self, provider_instance):
+    async def test_get_emails_not_supported(self):
         """Test that get_emails is not supported by SendGrid."""
         # SendGrid doesn't support receiving emails
-        result = await SendgridProvider.get_emails(provider_instance)
+        result = await SendgridProvider.get_emails(None)
         assert isinstance(result, list)
         assert len(result) == 0  # Should return empty list
 

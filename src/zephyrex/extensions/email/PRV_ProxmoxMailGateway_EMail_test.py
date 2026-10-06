@@ -3,14 +3,20 @@
 
 import hashlib
 import hmac
+from typing import Any, Dict, Iterator
 
+import httpx
 import pytest
 
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.email.EmailTestSupport import email_instance
 from zephyrex.extensions.email.EXT_EMail import (
+    EXT_EMail,
     Importance,
     subscribe_email_delivery,
     unsubscribe_email_delivery,
 )
+from zephyrex.extensions.email.MailAPITestServers import PMGTestServer
 from zephyrex.extensions.email.PRV_ProxmoxMailGateway_EMail import (
     ProxmoxMailGatewayProvider as PMG,
 )
@@ -19,41 +25,13 @@ from zephyrex.extensions.email.PRV_ProxmoxMailGateway_EMail import (
 )
 from zephyrex.extensions.FieldMappings import apply_from_external, apply_to_external
 
-
-class _FakeResp:
-    def __init__(self, data):
-        self._data = {"data": data}
-        self.status_code = 200
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._data
-
-
-class _FakeClient:
-    """Records requests; returns whatever ``data`` the test seeds."""
-
-    def __init__(self, calls, data):
-        self.calls = calls
-        self.data = data
-
-    async def get(self, url, headers=None, params=None):
-        self.calls.append(("GET", url, headers, params))
-        return _FakeResp(self.data)
-
-    async def post(self, url, headers=None, data=None):
-        self.calls.append(("POST", url, headers, data))
-        return _FakeResp(self.data)
-
-
-def _wire(monkeypatch, calls, data):
-    monkeypatch.setenv("PMG_API_URL", "https://pmg.example:8006/api2/json")
-    monkeypatch.setenv("PMG_API_TOKEN", "root@pam!tok=secret")
-    monkeypatch.setattr(
-        PMG, "_api_client", classmethod(lambda cls: _FakeClient(calls, data))
-    )
+TOKEN = "root@pam!tok=secret"
+GATEWAY_DATA: Dict[str, Any] = {
+    "version": {"version": "8.1"},
+    "statistics/mail": {"count_in": 10, "count_out": 5},
+    "quarantine/virus": [{"id": "C1"}, {"id": "C2"}],
+    "nodes/mail01/tracker": [{"id": "T1"}],
+}
 
 
 def _run(coro):
@@ -92,46 +70,86 @@ class TestFieldMappings:
         assert inv["importance"] == Importance.HIGH.value
 
 
-class TestRestApi:
-    def test_get_stats_hits_statistics_mail_with_token(self, monkeypatch):
-        calls: list = []
-        _wire(monkeypatch, calls, {"count_in": 10, "count_out": 5})
-        result = _run(PMG.get_stats(starttime=1, endtime=2))
-        assert result == {"count_in": 10, "count_out": 5}
-        method, url, headers, params = calls[0]
-        assert method == "GET" and url.endswith("/statistics/mail")
-        assert headers["Authorization"] == "PMGAPIToken=root@pam!tok=secret"
-        assert params == {"starttime": 1, "endtime": 2}
+class TestRestApi(ExtensionServerMixin):
+    """The management API against a gateway served in process, configured
+    on a real instance (or, for the operator, the environment)."""
 
-    def test_list_quarantine_kind_path(self, monkeypatch):
-        calls: list = []
-        _wire(monkeypatch, calls, [{"id": "C1"}, {"id": "C2"}])
-        rows = _run(PMG.list_quarantine("virus"))
+    extension_class = EXT_EMail
+
+    @pytest.fixture
+    def gateway(self, monkeypatch) -> Iterator[PMGTestServer]:
+        with PMGTestServer(TOKEN, GATEWAY_DATA) as server:
+            monkeypatch.setenv("EGRESS_ALLOWED_HOSTS", server.host)
+            yield server
+
+    def _instance(self, model_registry: Any, gateway: PMGTestServer, **options: Any):
+        settings = {"api_url": gateway.api_url, "api_node": "mail01"}
+        return email_instance(
+            model_registry, PMG.name, settings, api_key=TOKEN, **options
+        )
+
+    def test_get_stats_hits_statistics_mail_with_token(self, model_registry, gateway):
+        instance = self._instance(model_registry, gateway)
+        result = _run(PMG.get_stats(instance, starttime=1, endtime=2))
+        assert result == {"count_in": 10, "count_out": 5}
+        (request,) = gateway.requests
+        assert (request.method, request.path) == ("GET", "/api2/json/statistics/mail")
+        assert request.headers["authorization"] == f"PMGAPIToken={TOKEN}"
+        assert request.query == {"starttime": "1", "endtime": "2"}
+
+    def test_list_quarantine_kind_path(self, model_registry, gateway):
+        instance = self._instance(model_registry, gateway)
+        rows = _run(PMG.list_quarantine("virus", provider_instance=instance))
         assert [r["id"] for r in rows] == ["C1", "C2"]
-        assert calls[0][1].endswith("/quarantine/virus")
+        assert gateway.requests[0].path == "/api2/json/quarantine/virus"
 
     def test_list_quarantine_rejects_unknown_kind(self):
         with pytest.raises(ValueError):
             _run(PMG.list_quarantine("nope"))
 
-    def test_release_and_delete_post_content_action(self, monkeypatch):
-        calls: list = []
-        _wire(monkeypatch, calls, "ok")
-        _run(PMG.release_quarantine("C1"))
-        _run(PMG.delete_quarantine("C2"))
-        m1, u1, _, d1 = calls[0]
-        m2, u2, _, d2 = calls[1]
-        assert m1 == "POST" and u1.endswith("/quarantine/content")
-        assert d1 == {"id": "C1", "action": "deliver"}
-        assert d2 == {"id": "C2", "action": "delete"}
+    def test_release_and_delete_post_content_action(self, model_registry, gateway):
+        instance = self._instance(model_registry, gateway)
+        _run(PMG.release_quarantine("C1", provider_instance=instance))
+        _run(PMG.delete_quarantine("C2", provider_instance=instance))
+        released, deleted = gateway.requests
+        assert (released.method, released.path) == (
+            "POST",
+            "/api2/json/quarantine/content",
+        )
+        assert released.form() == {"id": "C1", "action": "deliver"}
+        assert deleted.form() == {"id": "C2", "action": "delete"}
 
-    def test_list_messages_hits_node_tracker(self, monkeypatch):
-        calls: list = []
-        monkeypatch.setenv("PMG_API_NODE", "mail01")
-        _wire(monkeypatch, calls, [{"id": "T1"}])
-        rows = _run(PMG.list_messages())
+    def test_list_messages_hits_node_tracker(self, model_registry, gateway):
+        instance = self._instance(model_registry, gateway)
+        rows = _run(PMG.list_messages(instance))
         assert rows == [{"id": "T1"}]
-        assert calls[0][1].endswith("/nodes/mail01/tracker")
+        assert gateway.requests[0].path == "/api2/json/nodes/mail01/tracker"
+
+    def test_the_operator_defaults_to_the_environment(self, gateway, set_env):
+        set_env("PMG_API_URL", gateway.api_url)
+        set_env("PMG_API_TOKEN", TOKEN)
+        set_env("PMG_API_NODE", "mail01")
+        assert _run(PMG.list_messages()) == [{"id": "T1"}]
+        assert gateway.requests[0].headers["authorization"] == f"PMGAPIToken={TOKEN}"
+
+    def test_a_users_instance_never_presents_the_operators_token(
+        self, model_registry, gateway, set_env, admin_a
+    ):
+        """A user's instance without a token of its own used to present the
+        operator's PMG_API_TOKEN to whatever api_url it named."""
+        set_env("PMG_API_TOKEN", TOKEN)
+        instance = email_instance(
+            model_registry,
+            PMG.name,
+            {"api_url": gateway.api_url},
+            requester_id=admin_a.id,
+            scope="user",
+        )
+        with pytest.raises(httpx.HTTPStatusError) as refused:
+            _run(PMG.get_stats(instance))
+        assert refused.value.response.status_code == 401
+        (request,) = gateway.requests
+        assert "authorization" not in request.headers
 
 
 class TestWebhookDispatch:

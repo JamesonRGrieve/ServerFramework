@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the SMTP2Go email provider.
 
-No mocks. Tests exercise real code paths that don't require a live
-SMTP2Go account: metadata, settings, config validation, bond lifecycle,
-input validation, unsupported ability stubs, and security. Send tests
+No mocks. Metadata, settings, config validation, bonding and input
+validation run on real code; sending runs against an SMTP2go account served
+in process (MailAPITestServers), from real provider instances. Send tests
 that hit the real API are gated on SMTP2GO_API_KEY.
 """
 
@@ -11,28 +11,38 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
+from typing import Any, Iterator
 
 import pytest
 
 from zephyrex.extensions.AbstractExtensionProvider import HealthStatus
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
+    EmailAddress,
+    EmailMessage,
+    EXT_EMail,
+)
+from zephyrex.extensions.email.EmailTestSupport import email_instance
+from zephyrex.extensions.email.MailAPITestServers import SMTP2goTestServer
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
+from zephyrex.extensions.ExternalErrors import (
+    AuthExternalError,
+    TransientExternalError,
+)
+
+ACCOUNT_KEY = "smtp2go-account-key"
+SENDER = "desk@example.org"
 
 
 def _smtp2go_available() -> bool:
     return bool(os.environ.get("SMTP2GO_API_KEY"))
 
 
-class _FakeInstance:
-    def __init__(self, api_key=None, from_email=None):
-        self.id = "test-instance"
-        self.api_key = api_key
-        self.settings = {}
-        self._from_email = from_email
-
-    def get_setting(self, key):
-        if key == "from_email":
-            return self._from_email
-        return self.settings.get(key)
+def _message(to: str = "to@example.com") -> EmailMessage:
+    return EmailMessage(
+        to=[EmailAddress(address=to)], subject="Hello", body_text="The body."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -87,143 +97,82 @@ class TestSmtp2goProviderMetadata:
 
 
 # ---------------------------------------------------------------------------
-# Settings model
+# Settings
 # ---------------------------------------------------------------------------
 
 
 class TestSmtp2goSettings:
-    def test_env_field_map_keys(self):
-        expected = {"from_email", "api_key", "api_url"}
-        assert set(Smtp2goProvider.Settings._env_field_map.keys()) == expected
+    def test_declared_settings(self):
+        keys = {d.key for d in Smtp2goProvider.instance_settings}
+        assert {"api_key", FROM_EMAIL_SETTING, "api_url"} <= keys
+        assert Smtp2goProvider.instance_setting("api_key").secret
 
     def test_default_api_url(self):
-        assert "smtp2go.com" in str(
-            Smtp2goProvider.Settings.model_fields["api_url"].default
+        assert Smtp2goProvider.instance_setting("api_url").default == (
+            "https://api.smtp2go.com/v3"
         )
 
-    def test_env_dict_keys(self):
-        assert "SMTP2GO_API_KEY" in Smtp2goProvider._env
-        assert "SMTP2GO_FROM_EMAIL" in Smtp2goProvider._env
-        assert "SMTP2GO_API_URL" in Smtp2goProvider._env
-
-    def test_env_dict_defaults_empty_key(self):
+    def test_the_operators_variables(self):
         assert Smtp2goProvider._env["SMTP2GO_API_KEY"] == ""
+        assert Smtp2goProvider._env["SMTP2GO_API_URL"] == "https://api.smtp2go.com/v3"
+        assert "SMTP2GO_FROM_EMAIL" in Smtp2goProvider._env
 
 
 # ---------------------------------------------------------------------------
-# Config validation
+# The operator's environment (no instance)
 # ---------------------------------------------------------------------------
 
 
-class TestSmtp2goConfigValidation:
-    def test_validate_config_no_key(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "")
-        from zephyrex.lib.Environment import refresh_settings
+class TestSmtp2goOperatorEnvironment:
+    @pytest.fixture(autouse=True)
+    def unset(self, set_env) -> None:
+        set_env("SMTP2GO_API_KEY", "")
+        set_env("SMTP2GO_FROM_EMAIL", "")
 
-        refresh_settings()
+    def test_validate_config_no_key(self):
         assert Smtp2goProvider.validate_config() is False
 
-    def test_validate_config_with_key(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
+    def test_validate_config_with_key(self, set_env):
+        set_env("SMTP2GO_API_KEY", "test-key")
         assert Smtp2goProvider.validate_config() is True
 
-    def test_validate_config_from_instance(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-        inst = _FakeInstance(api_key="instance-key")
-        assert Smtp2goProvider.validate_config(instance=inst) is True
-
-
-# ---------------------------------------------------------------------------
-# Health check (no-key path — no network call)
-# ---------------------------------------------------------------------------
-
-
-class TestSmtp2goHealthCheck:
-    def test_health_no_api_key(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
+    def test_health_no_api_key(self):
         report = Smtp2goProvider.health_check()
         assert report.status == HealthStatus.DOWN
         assert "not configured" in report.detail
 
+    def test_api_key_not_in_health_report(self, set_env):
+        set_env("SMTP2GO_API_KEY", "secret-key-12345")
+        report = Smtp2goProvider.health_check()
+        assert "secret-key-12345" not in report.detail
 
-# ---------------------------------------------------------------------------
-# Bond instance
-# ---------------------------------------------------------------------------
-
-
-class TestSmtp2goBondInstance:
-    def test_bond_with_key_returns_sdk(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "bond-test-key")
-        monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "test@example.com")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-        inst = _FakeInstance(api_key="bond-test-key")
-        bonded = Smtp2goProvider.bond_instance(inst)
+    def test_bond_with_key_returns_sdk(self, set_env):
+        set_env("SMTP2GO_API_KEY", "bond-test-key")
+        set_env("SMTP2GO_FROM_EMAIL", "test@example.com")
+        bonded = Smtp2goProvider.bond_instance(None)
         assert bonded is not None
         assert bonded.sdk["api_key"] == "bond-test-key"
         assert bonded.sdk["from_email"] == "test@example.com"
         assert "api.smtp2go.com" in bonded.sdk["api_url"]
-
-    def test_bond_no_key_returns_none(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-        inst = _FakeInstance(api_key=None)
-        bonded = Smtp2goProvider.bond_instance(inst)
-        assert bonded is None
-
-    def test_bond_sdk_has_client(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "key")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-        inst = _FakeInstance(api_key="key")
-        bonded = Smtp2goProvider.bond_instance(inst)
-        assert bonded is not None
         assert "client" in bonded.sdk
 
-
-# ---------------------------------------------------------------------------
-# Input validation (real code, no network)
-# ---------------------------------------------------------------------------
-
-
-class TestSmtp2goInputValidation:
-    @pytest.mark.asyncio
-    async def test_send_no_bond_returns_failure(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-        inst = _FakeInstance(api_key=None)
-        result = await Smtp2goProvider.send_email(
-            inst, "to@example.com", "Subject", "Body"
-        )
-        assert "failed" in result.lower()
+    def test_bond_no_key_returns_none(self):
+        assert Smtp2goProvider.bond_instance(None) is None
 
     @pytest.mark.asyncio
-    async def test_send_no_from_email(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "key")
-        monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-        inst = _FakeInstance(api_key="key", from_email=None)
+    async def test_send_no_bond_returns_failure(self):
         result = await Smtp2goProvider.send_email(
-            inst, "to@example.com", "Subject", "Body"
+            None, "to@example.com", "Subject", "Body"
         )
-        assert "from_email" in result.lower() or "failed" in result.lower()
+        assert result == "Failed to send email: could not bond SMTP2go instance"
+
+    @pytest.mark.asyncio
+    async def test_send_no_from_email(self, set_env):
+        set_env("SMTP2GO_API_KEY", "key")
+        result = await Smtp2goProvider.send_email(
+            None, "to@example.com", "Subject", "Body"
+        )
+        assert result == "Failed to send email: SMTP2go from_email not configured"
 
 
 # ---------------------------------------------------------------------------
@@ -264,18 +213,113 @@ class TestSmtp2goUnsupportedAbilities:
 
 
 # ---------------------------------------------------------------------------
-# Security
+# Sending through an account, from real instances
 # ---------------------------------------------------------------------------
 
 
-class TestSmtp2goSecurity:
-    def test_api_key_not_in_health_report(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "secret-key-12345")
-        from zephyrex.lib.Environment import refresh_settings
+class TestSmtp2goAccount(ExtensionServerMixin):
+    extension_class = EXT_EMail
 
-        refresh_settings()
-        report = Smtp2goProvider.health_check()
-        assert "secret-key-12345" not in report.detail
+    @pytest.fixture
+    def account(self, monkeypatch, set_env) -> Iterator[SMTP2goTestServer]:
+        set_env("SMTP2GO_API_KEY", "")
+        set_env("SMTP2GO_FROM_EMAIL", "")
+        with SMTP2goTestServer(ACCOUNT_KEY) as server:
+            monkeypatch.setenv("EGRESS_ALLOWED_HOSTS", server.host)
+            yield server
+
+    def _instance(
+        self, model_registry: Any, account: SMTP2goTestServer, **options: Any
+    ) -> Any:
+        settings = {"api_url": account.api_url, FROM_EMAIL_SETTING: SENDER}
+        settings.update(options.pop("settings", {}))
+        return email_instance(model_registry, "smtp2go", settings, **options)
+
+    async def test_an_instance_sends_with_its_own_account(
+        self, model_registry, account
+    ):
+        instance = self._instance(model_registry, account, api_key=ACCOUNT_KEY)
+        result = await Smtp2goProvider.send_email(
+            instance, "to@example.com", "Hello", "The body."
+        )
+        assert result == "Email sent successfully to to@example.com"
+        (sent,) = account.sent
+        assert sent["api_key"] == ACCOUNT_KEY
+        assert sent["sender"] == SENDER
+        assert sent["to"] == ["to@example.com"]
+        assert (sent["subject"], sent["text_body"]) == ("Hello", "The body.")
+
+    async def test_the_operators_instance_defaults_to_the_operators_account(
+        self, model_registry, account, set_env
+    ):
+        set_env("SMTP2GO_API_KEY", ACCOUNT_KEY)
+        set_env("SMTP2GO_FROM_EMAIL", "operator@example.org")
+        instance = email_instance(
+            model_registry, "smtp2go", {"api_url": account.api_url}
+        )
+        result = await Smtp2goProvider.send_email(
+            instance, "to@example.com", "Hello", "The body."
+        )
+        assert result == "Email sent successfully to to@example.com"
+        assert account.sent[0]["sender"] == "operator@example.org"
+
+    async def test_a_users_instance_never_sends_on_the_operators_account(
+        self, model_registry, account, set_env, admin_a
+    ):
+        """A user's instance without a key used to send on the operator's
+        SMTP2GO_API_KEY, from the operator's address."""
+        set_env("SMTP2GO_API_KEY", ACCOUNT_KEY)
+        set_env("SMTP2GO_FROM_EMAIL", "operator@example.org")
+        instance = self._instance(
+            model_registry, account, requester_id=admin_a.id, scope="user"
+        )
+        result = await Smtp2goProvider.send_email(
+            instance, "to@example.com", "Hello", "The body."
+        )
+        assert result == "Failed to send email: could not bond SMTP2go instance"
+        assert account.requests == []
+
+    async def test_send_via_provider_answers_what_was_sent(
+        self, model_registry, account
+    ):
+        instance = self._instance(model_registry, account, api_key=ACCOUNT_KEY)
+        sent = await Smtp2goProvider.send_via_provider(instance, _message())
+        assert sent["provider"] == "smtp2go"
+        assert sent["recipient"] == "to@example.com"
+        assert len(account.sent) == 1
+
+    async def test_a_refused_key_is_an_auth_failure(self, model_registry, account):
+        """401 from the account: the rotation must not retry the same key."""
+        instance = self._instance(model_registry, account, api_key="not-the-key")
+        with pytest.raises(AuthExternalError) as raised:
+            await Smtp2goProvider.send_via_provider(instance, _message())
+        assert raised.value.provider == "smtp2go"
+        assert account.sent == []
+
+    async def test_an_unconfigured_instance_is_transient(self, model_registry, account):
+        """No key is this provider's failure, not the message's: the rotation
+        moves on to the next provider."""
+        instance = self._instance(model_registry, account)
+        with pytest.raises(TransientExternalError) as raised:
+            await Smtp2goProvider.send_via_provider(instance, _message())
+        assert raised.value.provider == "smtp2go"
+        assert account.requests == []
+
+    async def test_a_users_instance_sends_with_the_users_own_account(
+        self, model_registry, account, admin_a
+    ):
+        instance = self._instance(
+            model_registry,
+            account,
+            requester_id=admin_a.id,
+            scope="user",
+            api_key=ACCOUNT_KEY,
+        )
+        result = await Smtp2goProvider.send_email(
+            instance, "to@example.com", "Hello", "The body."
+        )
+        assert result == "Email sent successfully to to@example.com"
+        assert account.sent[0]["sender"] == SENDER
 
 
 # ---------------------------------------------------------------------------
@@ -289,17 +333,14 @@ class TestSmtp2goLiveSend:
     async def test_send_real_email(self):
         from zephyrex.lib.Environment import env
 
-        inst = _FakeInstance(api_key=env("SMTP2GO_API_KEY"))
         result = await Smtp2goProvider.send_email(
-            inst,
+            None,
             env("SMTP2GO_FROM_EMAIL") or "test@example.com",
             "Zephyrex SMTP2Go Test",
             "This is a test email from the zephyrex test suite.",
         )
-        assert isinstance(result, str)
         # send_email returns "Failed to send email: ..." on failure -- also a
-        # str -- so a broken live send would pass an isinstance check. Pin the
-        # success outcome instead.
+        # str -- so pin the success outcome.
         assert "sent successfully" in result.lower(), result
 
     def test_health_check_live(self):
@@ -307,8 +348,4 @@ class TestSmtp2goLiveSend:
         assert report.status in (HealthStatus.OK, HealthStatus.DEGRADED)
 
     def test_bond_instance_live(self):
-        from zephyrex.lib.Environment import env
-
-        inst = _FakeInstance(api_key=env("SMTP2GO_API_KEY"))
-        bonded = Smtp2goProvider.bond_instance(inst)
-        assert bonded is not None
+        assert Smtp2goProvider.bond_instance(None) is not None

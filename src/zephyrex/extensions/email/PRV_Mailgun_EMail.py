@@ -9,26 +9,25 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, List, Optional, Set
-
-from pydantic import EmailStr, HttpUrl, SecretStr
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
-    _DeprecatedEnvDict,
+    from_email_setting,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.RateLimit import RateLimit
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -71,26 +70,25 @@ class MailgunProvider(AbstractEmailProvider):
         ]
     )
 
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        api_key: SecretStr
-        domain: str
-        api_url: HttpUrl = "https://api.mailgun.net/v3"  # type: ignore[assignment]
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "MAILGUN_FROM_EMAIL",
-            "api_key": "MAILGUN_API_KEY",
-            "domain": "MAILGUN_DOMAIN",
-            "api_url": "MAILGUN_API_URL",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "MAILGUN_API_KEY": "",
-            "MAILGUN_FROM_EMAIL": "",
-            "MAILGUN_DOMAIN": "",
-            "MAILGUN_API_URL": "https://api.mailgun.net/v3",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        InstanceSetting(
+            "api_key",
+            "Mailgun API key",
+            env="MAILGUN_API_KEY",
+            secret=True,
+            field="api_key",
+        ),
+        from_email_setting("MAILGUN_FROM_EMAIL"),
+        InstanceSetting(
+            "domain", "The sending domain mail goes out through", env="MAILGUN_DOMAIN"
+        ),
+        InstanceSetting(
+            "api_url",
+            "API address (https://api.eu.mailgun.net/v3 in the EU)",
+            env="MAILGUN_API_URL",
+            default="https://api.mailgun.net/v3",
+        ),
     )
 
     @classmethod
@@ -106,28 +104,25 @@ class MailgunProvider(AbstractEmailProvider):
         if not _requests_available:
             logger.error("requests package not available")
             return False
-        api_key = env("MAILGUN_API_KEY")
-        if instance is not None:
-            api_key = instance.api_key or api_key
-        if not api_key:
+        if not cls.setting(instance, "api_key"):
             logger.error("Mailgun API key not configured")
             return False
-        if not env("MAILGUN_DOMAIN"):
+        if not cls.setting(instance, "domain"):
             logger.error("Mailgun domain not configured")
             return False
         return True
 
     @classmethod
     def health_check(cls) -> HealthReport:
-        api_key = env("MAILGUN_API_KEY")
-        domain = env("MAILGUN_DOMAIN")
+        api_key = cls.setting(None, "api_key")
+        domain = cls.setting(None, "domain")
         if not api_key or not domain:
             return HealthReport(
                 HealthStatus.DOWN, detail="Mailgun api_key/domain not configured"
             )
         if not _requests_available:
             return HealthReport(HealthStatus.DOWN, detail="requests not installed")
-        api_url = (env("MAILGUN_API_URL") or "https://api.mailgun.net/v3").rstrip("/")
+        api_url = (cls.setting(None, "api_url") or "").rstrip("/")
         try:
             response = _requests.get(
                 f"{api_url}/{domain}/stats/total",
@@ -148,23 +143,23 @@ class MailgunProvider(AbstractEmailProvider):
 
     @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
         if not _requests_available:
             logger.error("requests package not available")
             return None
         try:
-            api_key = (instance.api_key if instance else None) or env("MAILGUN_API_KEY")
+            api_key = cls.setting(instance, "api_key")
             if not api_key:
                 logger.error("Mailgun API key missing")
                 return None
             config = {
                 "api_key": api_key,
-                "domain": env("MAILGUN_DOMAIN"),
-                "from_email": env("MAILGUN_FROM_EMAIL"),
-                "api_url": (
-                    env("MAILGUN_API_URL") or "https://api.mailgun.net/v3"
-                ).rstrip("/"),
+                "domain": cls.setting(instance, "domain"),
+                "from_email": cls.setting(instance, FROM_EMAIL_SETTING),
+                "api_url": cls.destination(
+                    instance, (cls.setting(instance, "api_url") or "").rstrip("/")
+                ),
             }
             return AbstractProviderInstance_SDK(config)
         except Exception as e:  # noqa: BLE001
@@ -197,11 +192,7 @@ class MailgunProvider(AbstractEmailProvider):
         if not bonded or not bonded.sdk:
             return "Failed to send email: could not bond Mailgun instance"
         config = bonded.sdk
-        from_email = (
-            (provider_instance.get_setting("from_email") if provider_instance else None)
-            or config.get("from_email")
-            or env("MAILGUN_FROM_EMAIL")
-        )
+        from_email = config.get("from_email")
         domain = config.get("domain")
         if not from_email:
             return "Failed to send email: Mailgun from_email not configured"

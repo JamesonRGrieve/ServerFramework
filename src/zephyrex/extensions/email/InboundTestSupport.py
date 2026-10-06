@@ -7,18 +7,13 @@ from contextlib import contextmanager
 from email.message import EmailMessage
 from typing import Any, Dict, Iterator, List
 
+from zephyrex.extensions.email.EmailTestSupport import email_instance
 from zephyrex.extensions.email.InboundEmail import (
     InboundEmail,
     on_inbound_email,
     remove_inbound_email_listener,
 )
-from zephyrex.lib.Environment import env
-from zephyrex.logic.BLL_Providers import (
-    ProviderInstanceManager,
-    ProviderInstanceModel,
-    ProviderInstanceSettingManager,
-    ProviderManager,
-)
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
 def operator_instance(
@@ -29,24 +24,7 @@ def operator_instance(
     scope: str = "root",
 ) -> ProviderInstanceModel:
     """A new instance of an email provider, made by ROOT, with settings."""
-    root_id = env("ROOT_ID")
-    provider = ProviderManager(model_registry=model_registry, requester_id=root_id).get(
-        name=provider_name
-    )
-    instance = ProviderInstanceModel.model_validate(
-        ProviderInstanceManager(
-            model_registry=model_registry, requester_id=root_id
-        ).create(
-            name=f"inbound_{uuid.uuid4().hex}", provider_id=provider.id, scope=scope
-        ),
-        from_attributes=True,
-    )
-    rows = ProviderInstanceSettingManager(
-        model_registry=model_registry, requester_id=root_id
-    )
-    for key, value in settings.items():
-        rows.create(provider_instance_id=instance.id, key=key, value=value)
-    return instance
+    return email_instance(model_registry, provider_name, settings, scope=scope)
 
 
 def raw_message(subject: str = "Hello", to: str = "desk@example.org") -> bytes:

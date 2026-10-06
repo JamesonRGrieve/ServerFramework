@@ -9,26 +9,25 @@ pre-obtained OAuth2 access token against Microsoft Graph.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, List, Optional, Set
-
-from pydantic import EmailStr, HttpUrl, SecretStr
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
-    _DeprecatedEnvDict,
+    from_email_setting,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.RateLimit import RateLimit
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -79,23 +78,22 @@ class MicrosoftProvider(AbstractEmailProvider):
         ]
     )
 
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        access_token: SecretStr
-        api_url: HttpUrl = "https://graph.microsoft.com/v1.0"  # type: ignore[assignment]
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "MICROSOFT_EMAIL_FROM_EMAIL",
-            "access_token": "MICROSOFT_EMAIL_ACCESS_TOKEN",
-            "api_url": "MICROSOFT_EMAIL_API_URL",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "MICROSOFT_EMAIL_ACCESS_TOKEN": "",
-            "MICROSOFT_EMAIL_FROM_EMAIL": "",
-            "MICROSOFT_EMAIL_API_URL": "https://graph.microsoft.com/v1.0",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        InstanceSetting(
+            "access_token",
+            "An OAuth access token for the Microsoft Graph account",
+            env="MICROSOFT_EMAIL_ACCESS_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+        from_email_setting("MICROSOFT_EMAIL_FROM_EMAIL"),
+        InstanceSetting(
+            "api_url",
+            "Microsoft Graph address (a national cloud's endpoint)",
+            env="MICROSOFT_EMAIL_API_URL",
+            default="https://graph.microsoft.com/v1.0",
+        ),
     )
 
     @classmethod
@@ -108,16 +106,13 @@ class MicrosoftProvider(AbstractEmailProvider):
 
     @classmethod
     def _access_token(cls, instance: Optional[ProviderInstanceModel] = None) -> str:
-        token: str = env("MICROSOFT_EMAIL_ACCESS_TOKEN") or ""
-        if instance is not None:
-            token = instance.api_key or token
-        return token
+        return cls.setting(instance, "access_token") or ""
 
     @classmethod
-    def _api_url(cls) -> str:
-        return (
-            env("MICROSOFT_EMAIL_API_URL") or "https://graph.microsoft.com/v1.0"
-        ).rstrip("/")
+    def _api_url(cls, instance: Optional[ProviderInstanceModel] = None) -> str:
+        return cls.destination(
+            instance, (cls.setting(instance, "api_url") or "").rstrip("/")
+        )
 
     @classmethod
     def validate_config(cls, instance: Optional[ProviderInstanceModel] = None) -> bool:
@@ -155,7 +150,7 @@ class MicrosoftProvider(AbstractEmailProvider):
 
     @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
         if not _requests_available:
             logger.error("requests package not available")
@@ -164,11 +159,16 @@ class MicrosoftProvider(AbstractEmailProvider):
         if not token:
             logger.error("Microsoft access token missing")
             return None
+        try:
+            api_url = cls._api_url(instance)
+        except ValueError as refused:
+            logger.error(f"Microsoft api_url refused: {refused}")
+            return None
         return AbstractProviderInstance_SDK(
             {
                 "access_token": token,
-                "api_url": cls._api_url(),
-                "from_email": env("MICROSOFT_EMAIL_FROM_EMAIL"),
+                "api_url": api_url,
+                "from_email": cls.setting(instance, FROM_EMAIL_SETTING),
             }
         )
 

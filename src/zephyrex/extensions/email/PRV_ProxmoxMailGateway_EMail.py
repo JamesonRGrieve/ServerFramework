@@ -25,24 +25,24 @@ import mimetypes
 import os
 from decimal import Decimal
 from email.utils import formataddr, parseaddr
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Type
-
-from pydantic import EmailStr, HttpUrl, SecretStr
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
     EmailDeliveryEvent,
     Importance,
-    _DeprecatedEnvDict,
     dispatch_email_delivery_event,
+    from_email_setting,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.FieldMappings import (
@@ -154,46 +154,55 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
     PMG_WEBHOOK_SECRET_ENV: ClassVar[str] = "PMG_WEBHOOK_SECRET"
     PMG_SIGNATURE_HEADER: ClassVar[str] = "x-pmg-signature"
 
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        smtp_host: str
-        smtp_port: int = 587
-        smtp_username: Optional[str] = None
-        smtp_password: Optional[SecretStr] = None
-        use_tls: bool = True
-        # REST API (management surface): base URL + a PMGAPIToken value of the
-        # form ``user@realm!tokenid=secret``.
-        api_url: HttpUrl
-        api_token: SecretStr
-        api_node: str = "localhost"
-        api_tls_verify: bool = True
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "PMG_FROM_EMAIL",
-            "smtp_host": "PMG_SMTP_HOST",
-            "smtp_port": "PMG_SMTP_PORT",
-            "smtp_username": "PMG_SMTP_USERNAME",
-            "smtp_password": "PMG_SMTP_PASSWORD",
-            "use_tls": "PMG_SMTP_USE_TLS",
-            "api_url": "PMG_API_URL",
-            "api_token": "PMG_API_TOKEN",
-            "api_node": "PMG_API_NODE",
-            "api_tls_verify": "PMG_API_TLS_VERIFY",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "PMG_FROM_EMAIL": "",
-            "PMG_SMTP_HOST": "",
-            "PMG_SMTP_PORT": "587",
-            "PMG_SMTP_USERNAME": "",
-            "PMG_SMTP_PASSWORD": "",
-            "PMG_SMTP_USE_TLS": "true",
-            "PMG_API_URL": "",
-            "PMG_API_TOKEN": "",
-            "PMG_API_NODE": "localhost",
-            "PMG_API_TLS_VERIFY": "true",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        from_email_setting("PMG_FROM_EMAIL"),
+        InstanceSetting("smtp_host", "The relay's SMTP host", env="PMG_SMTP_HOST"),
+        InstanceSetting(
+            "smtp_port", "The relay's SMTP port", env="PMG_SMTP_PORT", default="587"
+        ),
+        InstanceSetting(
+            "smtp_username",
+            "The SMTP AUTH user, when the relay asks for one",
+            env="PMG_SMTP_USERNAME",
+        ),
+        InstanceSetting(
+            "smtp_password",
+            "The SMTP AUTH password",
+            env="PMG_SMTP_PASSWORD",
+            secret=True,
+        ),
+        InstanceSetting(
+            "use_tls",
+            "STARTTLS to the relay; false only on a trusted network",
+            env="PMG_SMTP_USE_TLS",
+            default="true",
+        ),
+        InstanceSetting(
+            "api_url",
+            "The REST API's address (https://<host>:8006/api2/json)",
+            env="PMG_API_URL",
+        ),
+        InstanceSetting(
+            "api_token",
+            "A PMGAPIToken value (user@realm!tokenid=secret)",
+            env="PMG_API_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "api_node",
+            "The node whose message tracker is read",
+            env="PMG_API_NODE",
+            default="localhost",
+        ),
+        InstanceSetting(
+            "api_tls_verify",
+            "Verify the API's certificate; false only for a self-signed one "
+            "on a trusted network",
+            env="PMG_API_TLS_VERIFY",
+            default="true",
+        ),
     )
 
     @classmethod
@@ -210,76 +219,94 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
         if not _aiosmtplib_available:
             logger.error("aiosmtplib package not available")
             return False
-        host = env("PMG_SMTP_HOST")
-        if not host:
+        if not cls.setting(instance, "smtp_host"):
             logger.error("PMG SMTP host not configured")
             return False
         return True
 
-    @staticmethod
-    def _api_base() -> str:
-        return (env("PMG_API_URL") or "").rstrip("/")
+    @classmethod
+    def _api_base(cls, instance: Optional[ProviderInstanceModel]) -> str:
+        return cls.destination(
+            instance, (cls.setting(instance, "api_url") or "").rstrip("/")
+        )
 
     @classmethod
-    def _api_headers(
-        cls, instance: Optional[ProviderInstanceModel] = None
-    ) -> Dict[str, str]:
-        token = (instance.api_key if instance else None) or env("PMG_API_TOKEN")
+    def _api_headers(cls, instance: Optional[ProviderInstanceModel]) -> Dict[str, str]:
+        token = cls.setting(instance, "api_token")
         return {"Authorization": f"PMGAPIToken={token}"} if token else {}
 
     @classmethod
-    def _api_client(cls) -> Any:
-        verify = (env("PMG_API_TLS_VERIFY") or "true").strip().lower() != "false"
+    def _api_client(cls, instance: Optional[ProviderInstanceModel]) -> Any:
+        verify = cls.setting_flag(instance, "api_tls_verify")
         return get_async_client(ClientPolicy(timeout=15.0, tls_verify=verify))
 
     @classmethod
-    async def _api_get(cls, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        base = cls._api_base()
+    def _api_url(cls, instance: Optional[ProviderInstanceModel], path: str) -> str:
+        base = cls._api_base(instance)
         if not base:
-            raise RuntimeError("PMG_API_URL not configured")
-        response = await cls._api_client().get(
-            f"{base}/{path.lstrip('/')}", headers=cls._api_headers(), params=params
-        )
+            raise RuntimeError("PMG api_url not configured")
+        return f"{base}/{path.lstrip('/')}"
+
+    @staticmethod
+    def _api_data(response: Any) -> Any:
         response.raise_for_status()
         body = response.json()
         # PMG wraps payloads in a top-level {"data": ...} envelope.
         return body.get("data", body) if isinstance(body, dict) else body
 
     @classmethod
-    async def _api_post(cls, path: str, data: Dict[str, Any]) -> Any:
-        base = cls._api_base()
-        if not base:
-            raise RuntimeError("PMG_API_URL not configured")
-        response = await cls._api_client().post(
-            f"{base}/{path.lstrip('/')}", headers=cls._api_headers(), data=data
+    async def _api_get(
+        cls,
+        instance: Optional[ProviderInstanceModel],
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        response = await cls._api_client(instance).get(
+            cls._api_url(instance, path),
+            headers=cls._api_headers(instance),
+            params=params,
         )
-        response.raise_for_status()
-        body = response.json()
-        return body.get("data", body) if isinstance(body, dict) else body
+        return cls._api_data(response)
+
+    @classmethod
+    async def _api_post(
+        cls,
+        instance: Optional[ProviderInstanceModel],
+        path: str,
+        data: Dict[str, Any],
+    ) -> Any:
+        response = await cls._api_client(instance).post(
+            cls._api_url(instance, path),
+            headers=cls._api_headers(instance),
+            data=data,
+        )
+        return cls._api_data(response)
 
     # --------------------------------------------------------------- lifecycle
     @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
         if not _aiosmtplib_available:
             logger.error("aiosmtplib package not available")
             return None
         try:
+            api_token = cls.setting(instance, "api_token")
+            host = cls.setting(instance, "smtp_host")
+            port = cls.setting_port(instance, "smtp_port")
+            if host:
+                cls.mail_server(instance, host, port)
             config = {
-                "host": env("PMG_SMTP_HOST"),
-                "port": int(env("PMG_SMTP_PORT") or "587"),
-                "username": env("PMG_SMTP_USERNAME") or None,
-                "password": env("PMG_SMTP_PASSWORD") or None,
-                "start_tls": (env("PMG_SMTP_USE_TLS") or "true").lower() != "false",
-                "from_email": env("PMG_FROM_EMAIL"),
-                "api_url": cls._api_base(),
-                "api_token": (instance.api_key if instance else None)
-                or env("PMG_API_TOKEN"),
+                "host": host,
+                "port": port,
+                "username": cls.setting(instance, "smtp_username"),
+                "password": cls.setting(instance, "smtp_password"),
+                "start_tls": cls.setting_flag(instance, "use_tls"),
+                "from_email": cls.setting(instance, FROM_EMAIL_SETTING),
+                "api_url": cls._api_base(instance),
+                "api_token": api_token,
                 "auth_strategy": _build_auth_strategy(
-                    cls.default_auth_strategy,
-                    api_key=(instance.api_key if instance else None)
-                    or env("PMG_API_TOKEN"),
+                    cls.default_auth_strategy, api_key=api_token
                 ),
             }
             return AbstractProviderInstance_SDK(config)
@@ -290,13 +317,13 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
     @classmethod
     def health_check(cls) -> HealthReport:
         """Probe PMG liveness via ``GET /version`` on the REST API."""
-        if not cls._api_base():
-            return HealthReport(HealthStatus.DOWN, detail="PMG_API_URL not configured")
+        if not cls._api_base(None):
+            return HealthReport(HealthStatus.DOWN, detail="PMG api_url not configured")
         try:
             import asyncio
 
             async def _probe() -> str:
-                data = await cls._api_get("version")
+                data = await cls._api_get(None, "version")
                 return (
                     f"version {data.get('version', '?')}"
                     if isinstance(data, dict)
@@ -338,9 +365,7 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
         if not bonded or not bonded.sdk:
             return "Failed to bond Proxmox Mail Gateway instance"
         config = bonded.sdk
-        from_email = provider_instance.get_setting("from_email") or config.get(
-            "from_email"
-        )
+        from_email = config.get("from_email")
         if not from_email:
             return "Failed to send email: PMG from_email not configured"
         if not config.get("host"):
@@ -384,11 +409,7 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
                 hostname=config["host"],
                 port=config["port"],
                 username=config["username"],
-                password=(
-                    config["password"].get_secret_value()
-                    if hasattr(config.get("password"), "get_secret_value")
-                    else config.get("password")
-                ),
+                password=config["password"],
                 start_tls=config["start_tls"],
             )
             return f"Email sent successfully to {recipient}"
@@ -411,7 +432,7 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
             params["starttime"] = starttime
         if endtime is not None:
             params["endtime"] = endtime
-        data = await cls._api_get("statistics/mail", params or None)
+        data = await cls._api_get(provider_instance, "statistics/mail", params or None)
         return data if isinstance(data, dict) else {"data": data}
 
     @classmethod
@@ -423,41 +444,61 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
     ) -> List[Dict[str, Any]]:
         """Message tracking via ``GET /nodes/<node>/tracker`` — the PMG
         equivalent of a message list."""
-        node = env("PMG_API_NODE") or "localhost"
+        node = cls.setting(provider_instance, "api_node")
         params: Dict[str, Any] = {}
         if starttime is not None:
             params["starttime"] = starttime
         if endtime is not None:
             params["endtime"] = endtime
-        data = await cls._api_get(f"nodes/{node}/tracker", params or None)
+        data = await cls._api_get(
+            provider_instance, f"nodes/{node}/tracker", params or None
+        )
         return list(data) if isinstance(data, list) else []
 
     @classmethod
     async def list_quarantine(
-        cls, kind: str = "spam", starttime: Optional[int] = None
+        cls,
+        kind: str = "spam",
+        starttime: Optional[int] = None,
+        *,
+        provider_instance: Optional[ProviderInstanceModel] = None,
     ) -> List[Dict[str, Any]]:
         """List quarantined mail. ``kind`` is ``spam``/``virus``/``attachment``
         (``GET /quarantine/<kind>``)."""
         if kind not in ("spam", "virus", "attachment"):
             raise ValueError("kind must be one of: spam, virus, attachment")
         params = {"starttime": starttime} if starttime is not None else None
-        data = await cls._api_get(f"quarantine/{kind}", params)
+        data = await cls._api_get(provider_instance, f"quarantine/{kind}", params)
         return list(data) if isinstance(data, list) else []
 
     @classmethod
-    async def release_quarantine(cls, mail_id: str) -> Any:
+    async def release_quarantine(
+        cls,
+        mail_id: str,
+        *,
+        provider_instance: Optional[ProviderInstanceModel] = None,
+    ) -> Any:
         """Deliver a quarantined message to its recipient
         (``POST /quarantine/content`` with ``action=deliver``)."""
         return await cls._api_post(
-            "quarantine/content", {"id": mail_id, "action": "deliver"}
+            provider_instance,
+            "quarantine/content",
+            {"id": mail_id, "action": "deliver"},
         )
 
     @classmethod
-    async def delete_quarantine(cls, mail_id: str) -> Any:
+    async def delete_quarantine(
+        cls,
+        mail_id: str,
+        *,
+        provider_instance: Optional[ProviderInstanceModel] = None,
+    ) -> Any:
         """Delete a quarantined message
         (``POST /quarantine/content`` with ``action=delete``)."""
         return await cls._api_post(
-            "quarantine/content", {"id": mail_id, "action": "delete"}
+            provider_instance,
+            "quarantine/content",
+            {"id": mail_id, "action": "delete"},
         )
 
     # ---------------------------------------------------------------- webhooks

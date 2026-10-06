@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for Items 96 + 97 — email ops policies + shared HTTP client.
 
 Verifies that each email provider declares the expected ops-policy
@@ -14,6 +15,7 @@ probe fails fast without hitting any real network.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any, List
 
 import pytest
 
@@ -35,28 +37,11 @@ PROVIDERS = [
 ]
 
 
-# Env vars the offline test must clear so each provider's `health_check`
-# follows its "missing-credentials" branch and does not contact the real
-# upstream. Listed explicitly to avoid the deprecated `_env` dict surface.
-PROVIDER_ENV_VARS = {
-    "sendgrid": [
-        "SENDGRID_API_KEY",
-        "SENDGRID_FROM_EMAIL",
-    ],
-    "stalwart": [
-        "STALWART_HOST",
-        "STALWART_PORT",
-        "STALWART_USERNAME",
-        "STALWART_PASSWORD",
-        "STALWART_FROM_EMAIL",
-        "STALWART_USE_TLS",
-    ],
-    "smtp2go": [
-        "SMTP2GO_API_KEY",
-        "SMTP2GO_FROM_EMAIL",
-        "SMTP2GO_API_URL",
-    ],
-}
+def operator_variables(provider: Any) -> List[str]:
+    """The env vars the offline test must clear so the provider's
+    `health_check` follows its "missing-credentials" branch and does not
+    contact the real upstream: its settings' operator defaults."""
+    return [declared.env for declared in provider.instance_settings if declared.env]
 
 
 class TestOpsPolicyDeclarations:
@@ -92,13 +77,13 @@ class TestHealthCheckOfflinePath:
 
     @pytest.mark.parametrize("provider,rps,burst", PROVIDERS)
     def test_returns_health_report_when_unconfigured(
-        self, provider, rps, burst, monkeypatch
+        self, provider, rps, burst, set_env
     ):
         # Strip every env var the provider knows about so the offline
         # path is exercised. `health_check` must not raise; it must
         # return a `HealthReport` with `DOWN` status.
-        for var in PROVIDER_ENV_VARS[provider.name]:
-            monkeypatch.delenv(var, raising=False)
+        for var in operator_variables(provider):
+            set_env(var, "")
         report = provider.health_check()
         assert isinstance(report, HealthReport)
         assert report.status is HealthStatus.DOWN

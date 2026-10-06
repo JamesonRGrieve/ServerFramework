@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 SendGrid email provider for AGInfrastructure.
 Provides email sending capabilities and external models for contacts, templates, and campaigns.
@@ -14,12 +15,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
 
-from pydantic import BaseModel, EmailStr, Field, SecretStr
+from pydantic import BaseModel, Field
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.AbstractExternalModel import AbstractExternalModel
@@ -41,16 +43,21 @@ from zephyrex.extensions.email.EmailErrors import (
     NotSupportedError,
     map_validation_error,
 )
-from zephyrex.extensions.ExternalErrors import AuthExternalError, map_upstream_status
+from zephyrex.extensions.ExternalErrors import (
+    AuthExternalError,
+    InvalidInputExternalError,
+    map_upstream_status,
+)
 from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
     EmailAddress,
     EmailDeliveryEvent,
     EmailMessage,
+    FROM_EMAIL_SETTING,
     Importance,
-    _DeprecatedEnvDict,
     dispatch_email_delivery_event,
+    from_email_setting,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.FieldMappings import (
@@ -134,6 +141,8 @@ def _build_auth_strategy(strategy_name: str, **kwargs):
 # ============================================================================
 # SendGrid Provider Implementation
 # ============================================================================
+
+SENDGRID_API_URL = "https://api.sendgrid.com"
 
 
 class SendgridProvider(AbstractEmailProvider):
@@ -253,28 +262,31 @@ class SendgridProvider(AbstractEmailProvider):
         ]
     )
 
-    # Item 90 — typed Settings model is the source of truth; the legacy
-    # ``_env`` dict is kept for one release as a backward-compat alias and
-    # warns on read via ``_DeprecatedEnvDict``.
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        api_key: SecretStr
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "SENDGRID_FROM_EMAIL",
-            "api_key": "SENDGRID_API_KEY",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "SENDGRID_API_KEY": "",
-            "SENDGRID_FROM_EMAIL": "",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        InstanceSetting(
+            "api_key",
+            "SendGrid API key",
+            env="SENDGRID_API_KEY",
+            secret=True,
+            field="api_key",
+        ),
+        from_email_setting("SENDGRID_FROM_EMAIL"),
+        InstanceSetting(
+            "api_url",
+            "API address (https://api.eu.sendgrid.com for EU data residency)",
+            default=SENDGRID_API_URL,
+        ),
     )
 
     @classmethod
+    def api_endpoint(cls, instance: Optional[ProviderInstanceModel], path: str) -> str:
+        """``path`` on the instance's API address."""
+        return (cls.setting(instance, "api_url") or SENDGRID_API_URL).rstrip("/") + path
+
+    @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
         """
         Bond a provider instance with SendGrid SDK.
@@ -285,15 +297,12 @@ class SendgridProvider(AbstractEmailProvider):
         Returns:
             Bonded instance with SendGrid client or None if failed
         """
-        # credential vault layering (Item 32) is a follow-up that swaps
-        # `.get_secret_value()` for `CredentialRef.resolve()`.
         if not sendgrid:
             logger.error("SendGrid package not available")
             return None
 
         try:
-            # Get API key from instance settings or environment
-            api_key = instance.api_key or env("SENDGRID_API_KEY")
+            api_key = cls.setting(instance, "api_key")
             if not api_key:
                 logger.error("No SendGrid API key found")
                 return None
@@ -309,7 +318,7 @@ class SendgridProvider(AbstractEmailProvider):
             )
 
             # Store from_email in the SDK instance for later use
-            from_email = env("SENDGRID_FROM_EMAIL")
+            from_email = cls.setting(instance, FROM_EMAIL_SETTING)
             if from_email:
                 # Create a wrapper that includes from_email + auth strategy
                 class SendGridWrapper:
@@ -479,21 +488,11 @@ class SendgridProvider(AbstractEmailProvider):
             logger.error("SendGrid package not available")
             return False
 
-        # Check for API key
-        api_key = env("SENDGRID_API_KEY")
-        if instance:
-            api_key = instance.get_setting("api_key") or api_key
-
-        if not api_key:
+        if not cls.setting(instance, "api_key"):
             logger.error("SendGrid API key not configured")
             return False
 
-        # Check for from email
-        from_email = env("SENDGRID_FROM_EMAIL")
-        if instance:
-            from_email = instance.get_setting("from_email") or from_email
-
-        if not from_email:
+        if not cls.setting(instance, FROM_EMAIL_SETTING):
             logger.error("SendGrid from_email not configured")
             return False
 
@@ -507,7 +506,7 @@ class SendgridProvider(AbstractEmailProvider):
         carries traceparent + auth + log redaction. Defensive: never
         raises; always returns a ``HealthReport``.
         """
-        api_key = env("SENDGRID_API_KEY")
+        api_key = cls.setting(None, "api_key")
         if not api_key:
             return HealthReport(
                 HealthStatus.DOWN, detail="SendGrid API key not configured"
@@ -518,7 +517,7 @@ class SendgridProvider(AbstractEmailProvider):
 
             client = get_sync_client(ClientPolicy(timeout=5.0))
             response = client.get(
-                "https://api.sendgrid.com/v3/scopes",
+                cls.api_endpoint(None, "/v3/scopes"),
                 headers={"Authorization": f"Bearer {api_key}"},
             )
             status = response.status_code
@@ -578,10 +577,6 @@ class SendgridProvider(AbstractEmailProvider):
 
         # Get from_email from wrapped client or settings
         from_email = getattr(client, "from_email", None)
-        if not from_email:
-            from_email = provider_instance.get_setting("from_email") or env(
-                "SENDGRID_FROM_EMAIL"
-            )
 
         if not from_email:
             error_msg = "SendGrid from_email not configured."
@@ -640,16 +635,18 @@ class SendgridProvider(AbstractEmailProvider):
             # so a 429 is actually throttled across calls. ``Mail.get()`` produces
             # the exact v3 ``/mail/send`` payload. The API key is resolved
             # per-request (passed as an explicit header, never cached on the
-            # client), so a rotated ``SENDGRID_API_KEY`` takes effect on the next
-            # send without a framework restart.
-            api_key = provider_instance.api_key or env("SENDGRID_API_KEY")
+            # client), so a rotated key takes effect on the next send without
+            # a framework restart.
+            # A non-2xx answer raises a typed error naming its status.
+            api_key = cls.setting(provider_instance, "api_key")
             response = await cls._send_http_client().post(
-                "https://api.sendgrid.com/v3/mail/send",
+                cls.api_endpoint(provider_instance, "/v3/mail/send"),
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 json=message.get(),
+                raw=True,
             )
 
             if 200 <= response.status_code < 300:
@@ -889,8 +886,10 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
         http_client: Optional[Any] = None,
     ) -> None:
         super().__init__(instance=instance)
-        self._api_key = api_key or env("SENDGRID_API_KEY")
-        self._from_email = from_email or env("SENDGRID_FROM_EMAIL")
+        self._api_key = api_key or SendgridProvider.setting(instance, "api_key")
+        self._from_email = from_email or SendgridProvider.setting(
+            instance, FROM_EMAIL_SETTING
+        )
         self._http_client = http_client
 
     # The eight Phase-1 abilities are not implemented at the typed-instance
@@ -1002,7 +1001,14 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
         )
 
         client = self._http_client or get_async_client(ClientPolicy(timeout=30.0))
-        url = f"https://api.sendgrid.com{path}"
+        try:
+            url = SendgridProvider.destination(
+                self.model, SendgridProvider.api_endpoint(self.model, path)
+            )
+        except ValueError as refused:
+            raise InvalidInputExternalError(
+                f"SendGrid api_url refused: {refused}", provider="sendgrid"
+            ) from None
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",

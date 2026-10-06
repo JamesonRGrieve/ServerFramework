@@ -10,9 +10,9 @@ no-credential paths.
 """
 
 import pytest
-from pydantic import BaseModel
 
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
     EXT_EMail,
@@ -44,6 +44,16 @@ RECEIVE_PROVIDERS = [
 ALL_IDS = [c.name for c in SEND_PROVIDERS]
 
 
+@pytest.fixture
+def unset(set_env) -> None:
+    """None of the providers' credentials in the environment, so the
+    no-credential paths run whatever the host has set."""
+    for provider in SEND_PROVIDERS:
+        for declared in provider.instance_settings:
+            if declared.env and declared.secret:
+                set_env(declared.env, "")
+
+
 @pytest.mark.parametrize("cls", SEND_PROVIDERS, ids=ALL_IDS)
 class TestSalvagedEmailProviderConformance:
     def test_is_email_provider(self, cls):
@@ -64,22 +74,24 @@ class TestSalvagedEmailProviderConformance:
         assert cls.capabilities  # non-empty
         assert Capability.SEND in cls.capabilities
 
-    def test_settings_model_with_env_map(self, cls):
-        assert issubclass(cls.Settings, BaseModel)
-        env_map = cls.Settings.env_field_map()
-        assert isinstance(env_map, dict) and env_map  # provider-specific mapping
+    def test_settings_are_declared_per_instance(self, cls):
+        """Its configuration is its instances' settings (a sender address
+        and a secret credential), not a model built from the environment."""
+        assert cls.instance_setting(FROM_EMAIL_SETTING)
+        assert any(
+            declared.secret and declared.field == "api_key"
+            for declared in cls.instance_settings
+        )
+        assert cls.Settings is None
 
-    def test_settings_not_configured_when_empty(self, cls):
-        assert cls.Settings.is_configured({}) is False
-
-    def test_validate_config_false_without_credentials(self, cls):
+    def test_validate_config_false_without_credentials(self, cls, unset):
         # No credentials in the environment -> provider reports unconfigured.
         assert cls.validate_config() is False
 
-    def test_bond_instance_returns_none_without_credentials(self, cls):
+    def test_bond_instance_returns_none_without_credentials(self, cls, unset):
         assert cls.bond_instance(None) is None
 
-    async def test_send_email_graceful_without_credentials(self, cls):
+    async def test_send_email_graceful_without_credentials(self, cls, unset):
         result = await cls.send_email(None, "user@example.com", "Subject", "Body text")
         assert isinstance(result, str)
         assert result.lower().startswith("failed")
@@ -110,7 +122,7 @@ class TestReceiveCapability:
         assert Capability.READ in cls.capabilities
         assert Capability.LIST in cls.capabilities
 
-    async def test_get_emails_graceful_without_credentials(self, cls):
+    async def test_get_emails_graceful_without_credentials(self, cls, unset):
         result = await cls.get_emails(None)
         assert isinstance(result, list)
         assert result == []

@@ -2,21 +2,19 @@
 """Yahoo Mail email provider — IMAP receive + SMTP send.
 
 Yahoo Mail speaks standard IMAP/SMTP, so this provider is a thin subclass of
-:class:`IMAPProvider` with Yahoo host defaults and a ``YAHOO_*`` env namespace.
-Yahoo requires an app password rather than the account password.
+:class:`IMAPProvider` with Yahoo's hosts as its defaults and the ``YAHOO_*``
+variables as the operator's. Yahoo requires an app password rather than the
+account password.
 """
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Dict, List
+from typing import ClassVar, List, Tuple
 
-from pydantic import EmailStr, SecretStr
-
-from zephyrex.extensions.email.EXT_EMail import (
-    AbstractEmailProvider,
-    _DeprecatedEnvDict,
-)
-from zephyrex.extensions.email.PRV_IMAP_EMail import IMAPProvider
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
+from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider
+from zephyrex.extensions.email.InboundIMAP import IMAP_INBOUND_SETTINGS
+from zephyrex.extensions.email.PRV_IMAP_EMail import IMAPProvider, mailbox_settings
 
 
 class YahooProvider(IMAPProvider):
@@ -28,40 +26,17 @@ class YahooProvider(IMAPProvider):
 
     default_imap_host: ClassVar[str] = "imap.mail.yahoo.com"
     default_smtp_host: ClassVar[str] = "smtp.mail.yahoo.com"
-    _env_prefix: ClassVar[str] = "YAHOO"
 
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        username: str
-        password: SecretStr
-        imap_host: str = "imap.mail.yahoo.com"
-        imap_port: int = 993
-        smtp_host: str = "smtp.mail.yahoo.com"
-        smtp_port: int = 587
-        use_ssl: bool = True
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "YAHOO_FROM_EMAIL",
-            "username": "YAHOO_USERNAME",
-            "password": "YAHOO_PASSWORD",
-            "imap_host": "YAHOO_IMAP_HOST",
-            "imap_port": "YAHOO_IMAP_PORT",
-            "smtp_host": "YAHOO_SMTP_HOST",
-            "smtp_port": "YAHOO_SMTP_PORT",
-            "use_ssl": "YAHOO_USE_SSL",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "YAHOO_HOST": "imap.mail.yahoo.com",
-            "YAHOO_PORT": "993",
-            "YAHOO_SMTP_HOST": "smtp.mail.yahoo.com",
-            "YAHOO_SMTP_PORT": "587",
-            "YAHOO_USERNAME": "",
-            "YAHOO_PASSWORD": "",
-            "YAHOO_FROM_EMAIL": "",
-            "YAHOO_USE_SSL": "true",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        *mailbox_settings(
+            "YAHOO",
+            "imap",
+            port="993",
+            host=default_imap_host,
+            smtp_host=default_smtp_host,
+        ),
+        *IMAP_INBOUND_SETTINGS,
     )
 
     @classmethod

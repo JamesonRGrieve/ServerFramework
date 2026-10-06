@@ -15,24 +15,24 @@ import mimetypes
 import os
 from decimal import Decimal
 from email.utils import formataddr, parseaddr
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Type
-
-from pydantic import EmailStr, SecretStr
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
     HealthReport,
     HealthStatus,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.EXT_EMail import (
+    FROM_EMAIL_SETTING,
     AbstractEmailProvider,
     Capability,
     EmailDeliveryEvent,
     Importance,
     dispatch_email_delivery_event,
-    _DeprecatedEnvDict,
+    from_email_setting,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.FieldMappings import (
@@ -147,32 +147,29 @@ class StalwartProvider(AbstractEmailProvider):
         ]
     )
 
-    class Settings(AbstractEmailProvider.Settings):
-        from_email: EmailStr
-        host: str
-        port: int = 587
-        username: str
-        password: SecretStr
-        use_tls: bool = True
-
-        _env_field_map: ClassVar[Dict[str, str]] = {
-            "from_email": "STALWART_FROM_EMAIL",
-            "host": "STALWART_HOST",
-            "port": "STALWART_PORT",
-            "username": "STALWART_USERNAME",
-            "password": "STALWART_PASSWORD",
-            "use_tls": "STALWART_USE_TLS",
-        }
-
-    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
-        {
-            "STALWART_HOST": "",
-            "STALWART_PORT": "587",
-            "STALWART_USERNAME": "",
-            "STALWART_PASSWORD": "",
-            "STALWART_FROM_EMAIL": "",
-            "STALWART_USE_TLS": "true",
-        }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        *AbstractEmailProvider.instance_settings,
+        InstanceSetting(
+            "host", "The submission server's host name", env="STALWART_HOST"
+        ),
+        InstanceSetting(
+            "port", "The submission port", env="STALWART_PORT", default="587"
+        ),
+        InstanceSetting("username", "The SMTP AUTH user", env="STALWART_USERNAME"),
+        InstanceSetting(
+            "password",
+            "The SMTP AUTH password",
+            env="STALWART_PASSWORD",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "use_tls",
+            "STARTTLS before signing in; false only on a trusted network",
+            env="STALWART_USE_TLS",
+            default="true",
+        ),
+        from_email_setting("STALWART_FROM_EMAIL"),
     )
 
     @classmethod
@@ -189,13 +186,9 @@ class StalwartProvider(AbstractEmailProvider):
             logger.error("aiosmtplib package not available")
             return False
 
-        host = env("STALWART_HOST")
-        username = env("STALWART_USERNAME")
-        password = env("STALWART_PASSWORD")
-        if instance is not None:
-            password = instance.api_key or password
-
-        if not host or not username or not password:
+        if not all(
+            cls.setting(instance, key) for key in ("host", "username", "password")
+        ):
             logger.error("Stalwart host/username/password not configured")
             return False
         return True
@@ -203,8 +196,8 @@ class StalwartProvider(AbstractEmailProvider):
     @classmethod
     def health_check(cls) -> HealthReport:
         """Probe upstream liveness via SMTP ``NOOP``."""
-        host = env("STALWART_HOST")
-        port_str = env("STALWART_PORT") or "587"
+        host = cls.setting(None, "host")
+        port_str = cls.setting(None, "port") or "587"
         if not host:
             return HealthReport(
                 HealthStatus.DOWN, detail="Stalwart host not configured"
@@ -247,7 +240,7 @@ class StalwartProvider(AbstractEmailProvider):
 
     @classmethod
     def bond_instance(
-        cls, instance: ProviderInstanceModel
+        cls, instance: Optional[ProviderInstanceModel]
     ) -> Optional[AbstractProviderInstance_SDK]:
         """Bond an instance by capturing its SMTP connection parameters."""
         if not _aiosmtplib_available:
@@ -255,18 +248,17 @@ class StalwartProvider(AbstractEmailProvider):
             return None
 
         try:
-            host = env("STALWART_HOST")
-            port = int(env("STALWART_PORT") or "587")
-            username = env("STALWART_USERNAME")
-            password = (instance.api_key if instance else None) or env(
-                "STALWART_PASSWORD"
-            )
-            use_tls = (env("STALWART_USE_TLS") or "true").lower() != "false"
-            from_email = env("STALWART_FROM_EMAIL")
+            host = cls.setting(instance, "host")
+            port = cls.setting_port(instance, "port")
+            username = cls.setting(instance, "username")
+            password = cls.setting(instance, "password")
+            use_tls = cls.setting_flag(instance, "use_tls")
+            from_email = cls.setting(instance, FROM_EMAIL_SETTING)
 
             if not host or not username or not password:
                 logger.error("Stalwart connection parameters missing")
                 return None
+            cls.mail_server(instance, host, port)
 
             auth_strategy = _build_auth_strategy(
                 cls.default_auth_strategy,
@@ -348,11 +340,7 @@ class StalwartProvider(AbstractEmailProvider):
             return "Failed to send email: could not bond Stalwart instance"
 
         config = bonded.sdk
-        from_email = (
-            (provider_instance.get_setting("from_email") if provider_instance else None)
-            or config.get("from_email")
-            or env("STALWART_FROM_EMAIL")
-        )
+        from_email = config.get("from_email")
         if not from_email:
             return "Failed to send email: Stalwart from_email not configured"
 

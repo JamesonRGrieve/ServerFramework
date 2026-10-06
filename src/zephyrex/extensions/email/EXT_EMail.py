@@ -23,7 +23,6 @@ based on file naming conventions.
 """
 
 import os
-import warnings
 from abc import abstractmethod
 from datetime import datetime
 from email.utils import parseaddr
@@ -43,7 +42,7 @@ from typing import (
 )
 
 from fastapi import HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -68,14 +67,38 @@ from zephyrex.extensions.ExternalErrors import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.pydantic2.registry import classproperty
-from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+from zephyrex.logic.BLL_Providers import OPERATOR_SCOPES, ProviderInstanceModel
 
 # Hard caps applied uniformly across all email providers. Sized for RFC 5322
 # (subject ≤998 octets) and a generous 10 MiB body — anything larger is almost
 # certainly a DoS or smuggling attempt rather than a legitimate message.
 _EMAIL_MAX_SUBJECT_OCTETS = 998
 _EMAIL_MAX_BODY_BYTES = 10 * 1024 * 1024
+
+# The setting every provider sends from.
+FROM_EMAIL_SETTING = "from_email"
+
+
+def from_email_setting(env_var: str) -> InstanceSetting:
+    """The sender address a provider's instance sends from, defaulting for
+    the operator's instances to ``env_var``."""
+    return InstanceSetting(
+        FROM_EMAIL_SETTING, "The address mail is sent from", env=env_var
+    )
+
+
+def speaks_for_operator(instance: ProviderInstanceModel) -> bool:
+    """Whether ``instance`` is the operator's own: in the root or system
+    scope, or owned by ROOT or SYSTEM and no team. The second covers the
+    ``Root_<Provider>`` instances the framework seeds from the environment,
+    which carry the default scope but belong to no user. A user's or team's
+    instance is never the operator's, whoever created it."""
+    if instance.scope in OPERATOR_SCOPES:
+        return True
+    owner = instance.user_id or instance.created_by_user_id
+    return instance.team_id is None and server_side(owner)
 
 
 # ============================================================================
@@ -87,57 +110,6 @@ _EMAIL_MAX_BODY_BYTES = 10 * 1024 * 1024
 # (typed ability declarations) lands, they slot in unchanged as the typed
 # inputs to ``AbstractEmailProviderInstance`` abstract abilities.
 # ============================================================================
-
-
-class _DeprecatedEnvDict(dict):
-    """Dict subclass that emits a DeprecationWarning on read.
-
-    Item 90 — providers' legacy ``_env: Dict[str, Any]`` is being replaced
-    by a typed ``Settings`` Pydantic inner model. The dict is kept for one
-    release as a backward-compat alias that auto-derives from the new
-    ``Settings._env_field_map``. Reads warn so callers can migrate; the
-    framework's startup-time env-var registration toggles ``_silent`` to
-    avoid noise on import.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Suppress during class construction; the framework toggles this
-        # to False once the provider class is fully loaded.
-        self._silent = True
-
-    def _warn(self) -> None:
-        if not self._silent:
-            warnings.warn(
-                "Provider `_env` dict is deprecated; use `Settings.from_env(os.environ)` "
-                "and the typed `Settings` model instead.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-
-    def __getitem__(self, key):
-        self._warn()
-        return super().__getitem__(key)
-
-    def __iter__(self):
-        self._warn()
-        return super().__iter__()
-
-    def keys(self):
-        self._warn()
-        return super().keys()
-
-    def values(self):
-        self._warn()
-        return super().values()
-
-    def items(self):
-        self._warn()
-        return super().items()
-
-    def get(self, key, default=None):
-        self._warn()
-        return super().get(key, default)
 
 
 class Importance(str, Enum):
@@ -407,72 +379,77 @@ class AbstractEmailProvider(AbstractStaticProvider):
             )
         return _SEND_HTTP_CLIENTS[cls]
 
-    # Item 90 — typed Settings model. Subclasses extend with provider-specific
-    # required fields (api_key/host/etc.) and an `_env_field_map` that maps
-    # field name → canonical env-var name. Sensitive fields use Pydantic's
-    # `SecretStr` so ``print(settings.api_key)`` renders as ``**********``
-    # rather than leaking the raw credential into logs.
-    class Settings(BaseModel):
-        """Typed configuration for an email provider.
-
-        Pydantic's `SecretStr` redacts on `repr`/`str` so credential fields
-        do not leak into logs (`print(settings.api_key)` -> `**********`).
-        """
-
-        from_email: EmailStr
-        default_provider_name: Optional[str] | None = None
-
-        _env_field_map: ClassVar[Dict[str, str]] = {}
-
-        @classmethod
-        def env_field_map(cls) -> Dict[str, str]:
-            """Resolve the field-name → env-var mapping for this Settings."""
-            return dict(cls._env_field_map)
-
-        @classmethod
-        def is_configured(cls, env_map: Mapping[str, str]) -> bool:
-            """True iff every required field has a non-empty value in ``env_map``.
-
-            Required fields are those without a model default; the canonical
-            env-var name is read from ``_env_field_map``.
-            """
-            mapping = cls.env_field_map()
-            for field_name, info in cls.model_fields.items():
-                if not info.is_required():
-                    continue
-                env_name = mapping.get(field_name, field_name.upper())
-                value = env_map.get(env_name)
-                if value is None or (isinstance(value, str) and not value.strip()):
-                    return False
-            return True
-
-        @classmethod
-        def from_env(
-            cls, env_map: Mapping[str, str]
-        ) -> "AbstractEmailProvider.Settings":
-            """Build a Settings instance from the canonical env-var names.
-
-            Raises a Pydantic `ValidationError` whose error rows name the
-            missing or invalid field — preferred over the legacy "first-use
-            crash" path because the failure surfaces at startup.
-            """
-            mapping = cls.env_field_map()
-            payload: Dict[str, Any] = {}
-            for field_name in cls.model_fields.keys():
-                env_name = mapping.get(field_name, field_name.upper())
-                if env_name in env_map and env_map[env_name] != "":
-                    payload[field_name] = env_map[env_name]
-            return cls(**payload)
-
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        # Each instance's settings are the provider's configuration; a
+        # setting's environment variable is the default for the operator's
+        # instances only (``resolve_setting``). The framework seeds the
+        # operator's ``Root_<Provider>`` instance, and its place in the root
+        # rotation, from the variables ``_env`` names, so ``_env`` is derived
+        # from the declared settings rather than declared beside them.
+        cls._env = {
+            declared.env: declared.default or ""
+            for declared in cls.instance_settings
+            if declared.env
+        }
         super().__init_subclass__(**kwargs)
-        # Item 90 — once the provider subclass is fully constructed (and
-        # the framework has read `_env` once during env-var registration),
-        # un-silence the deprecation dict so any subsequent caller-side
-        # read surfaces as a `DeprecationWarning`.
-        env = cls.__dict__.get("_env")
-        if isinstance(env, _DeprecatedEnvDict):
-            env._silent = False
+
+    @classmethod
+    def resolve_setting(
+        cls,
+        instance: Optional[ProviderInstanceModel],
+        key: str,
+        env_var: Optional[str] = None,
+        *,
+        field: Optional[str] = None,
+        default: Optional[str] = None,
+    ) -> Optional[str]:
+        """The instance's own value, else (for the operator's instances, and
+        environment-only lookups) the environment's, else the default. A
+        user's or team's instance never sends with the operator's
+        credentials or from the operator's address."""
+        if instance is not None and not speaks_for_operator(instance):
+            env_var = None
+        return super().resolve_setting(
+            instance, key, env_var, field=field, default=default
+        )
+
+    @classmethod
+    def destination(
+        cls, instance: Optional[ProviderInstanceModel], address: str
+    ) -> str:
+        """``address`` (a URL, or a mail server's ``host[:port]``) once
+        ``instance`` may reach it. The operator's instances reach anywhere (a
+        self-hosted mail server is often on the private network); a user's or
+        team's may not reach the server's own network, the SSRF guard's
+        refusal (``SSRFGuardError``, a ValueError) says so. An empty address
+        is returned as is: it reaches nothing."""
+        if address and instance is not None and not speaks_for_operator(instance):
+            from zephyrex.lib.ProviderHTTPClient import validate_outbound_url
+
+            # The guard reads a URL; a bare mail-server address is given a
+            # scheme only so its host and port parse.
+            validate_outbound_url(address if "://" in address else f"http://{address}")
+        return address
+
+    @classmethod
+    def mail_server(
+        cls, instance: Optional[ProviderInstanceModel], host: str, port: int
+    ) -> str:
+        """The mail server ``host:port`` once ``instance`` may reach it
+        (:meth:`destination`)."""
+        bracketed = f"[{host}]" if ":" in host else host
+        return cls.destination(instance, f"{bracketed}:{port}")
+
+    @classmethod
+    def setting_flag(cls, instance: Optional[ProviderInstanceModel], key: str) -> bool:
+        """The declared on/off setting ``key``: on unless it reads ``false``."""
+        return (cls.setting(instance, key) or "").strip().lower() != "false"
+
+    @classmethod
+    def setting_port(cls, instance: Optional[ProviderInstanceModel], key: str) -> int:
+        """The declared port setting ``key``; ValueError when it is not a
+        number."""
+        return int(cls.setting(instance, key) or "")
 
     @classmethod
     @abstractmethod
@@ -1109,69 +1086,6 @@ class AbstractEmailProvider(AbstractStaticProvider):
         )
 
 
-def iter_configured_email_providers(
-    env_map: Optional[Mapping[str, str]] | None = None,
-) -> List[Type["AbstractEmailProvider"]]:
-    """Item 90 — return the loaded email-provider classes whose
-    ``Settings.is_configured(env_map)`` is True.
-
-    Replaces the legacy hardcoded ``_EMAIL_PROVIDER_REGISTRY`` tuple-loop
-    in ``BLL_EMail.py``: the source of truth becomes each provider's own
-    typed Settings model. ``env_map`` defaults to ``os.environ``.
-    """
-    env_source = env_map if env_map is not None else os.environ
-    configured: List[Type[AbstractEmailProvider]] = []
-    for provider_cls in EXT_EMail.providers:
-        if not issubclass(provider_cls, AbstractEmailProvider):
-            continue
-        settings_cls = getattr(provider_cls, "Settings", None)
-        if settings_cls is None or not isinstance(settings_cls, type):
-            continue
-        if not issubclass(settings_cls, BaseModel):
-            continue
-        try:
-            if settings_cls.is_configured(env_source):  # type: ignore[attr-defined]
-                configured.append(provider_cls)
-        except Exception as exc:  # noqa: BLE001 — defensive at startup
-            logger.debug(
-                f"Settings.is_configured raised for {provider_cls.__name__}: {exc}"
-            )
-    return configured
-
-
-def validate_email_provider_settings_at_startup(
-    env_map: Optional[Mapping[str, str]] | None = None,
-) -> Dict[str, bool]:
-    """Item 90 — startup validator.
-
-    Iterates registered email providers, calling ``Settings.is_configured``
-    against ``env_map`` (default: ``os.environ``). Logs an info-level line
-    per provider so operators see at boot which transports will route mail.
-    Returns a name → configured map for tests / health pages.
-    """
-    env_source = env_map if env_map is not None else os.environ
-    report: Dict[str, bool] = {}
-    for provider_cls in EXT_EMail.providers:
-        name = getattr(provider_cls, "name", provider_cls.__name__)
-        settings_cls = getattr(provider_cls, "Settings", None)
-        if settings_cls is None or not isinstance(settings_cls, type):
-            logger.info(f"Email provider {name}: no typed Settings declared")
-            report[name] = False
-            continue
-        try:
-            ok = bool(settings_cls.is_configured(env_source))  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001
-            logger.info(f"Email provider {name}: Settings.is_configured raised {exc}")
-            report[name] = False
-            continue
-        if ok:
-            logger.info(f"Email provider {name}: configured")
-        else:
-            logger.info(f"Email provider {name}: not configured (missing env vars)")
-        report[name] = ok
-    return report
-
-
 class EXT_EMail(AbstractStaticExtension):
     """
     Email extension for AGInfrastructure.
@@ -1188,26 +1102,6 @@ class EXT_EMail(AbstractStaticExtension):
     description: ClassVar[str] = (
         "Email extension for interacting with various email providers"
     )
-
-    # Environment variables that this extension needs
-    _env: ClassVar[Dict[str, Any]] = {
-        "SENDGRID_API_KEY": "",
-        "SENDGRID_FROM_EMAIL": "",
-        "STALWART_HOST": "",
-        "STALWART_PORT": "587",
-        "STALWART_USERNAME": "",
-        "STALWART_PASSWORD": "",
-        "STALWART_FROM_EMAIL": "",
-        "STALWART_USE_TLS": "true",
-        "SMTP2GO_API_KEY": "",
-        "SMTP2GO_FROM_EMAIL": "",
-        "SMTP2GO_API_URL": "https://api.smtp2go.com/v3",
-        "EMAIL_PROVIDER": "sendgrid",
-        "SMTP_SERVER": "",
-        "SMTP_PORT": "587",
-        "IMAP_SERVER": "",
-        "IMAP_PORT": "993",
-    }
 
     # Unified dependencies using the Dependencies class
     dependencies: ClassVar[Dependencies] = Dependencies(
@@ -1300,11 +1194,6 @@ class EXT_EMail(AbstractStaticExtension):
         return [
             provider.name for provider in cls.providers if hasattr(provider, "name")
         ]
-
-    @classproperty
-    def env(cls) -> Dict[str, Any]:
-        """Get environment variables."""
-        return cls._env
 
     # Static methods for rotation system integration
     @classmethod

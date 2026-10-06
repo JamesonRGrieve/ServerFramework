@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Typed `AbstractEmailProviderInstance` ABC (Item 89).
 
@@ -17,8 +18,6 @@ contract from Item 26, switch the base class import to that canonical
 location. The current import path (`extensions.AbstractExtensionProvider`)
 is the existing class to keep this module loadable in isolation.
 """
-
-from __future__ import annotations
 
 from __future__ import annotations
 
