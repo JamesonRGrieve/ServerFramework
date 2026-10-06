@@ -40,10 +40,15 @@ from zephyrex.extensions.webhooks.BLL_WebhookDelivery import (
     WebhookDeliveryManager,
     WebhookSubscriptionManager,
 )
+from zephyrex.extensions.erp.PRV_ERPNext import PRV_ERPNext
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Preconditions import PreconditionFailed, PreconditionRequired
 from zephyrex.lib.ReplayCache import get_replay_cache
-from zephyrex.logic.BLL_Providers import ProviderInstanceManager
+from zephyrex.logic.BLL_Providers import (
+    ProviderInstanceManager,
+    reads_environment_settings,
+    root_instance_name,
+)
 
 INVOICE = {
     "customer": "Acme",
@@ -170,6 +175,19 @@ class TestChecks:
     def test_refused_list_queries(self, kwargs):
         with _Refused(422):
             ListQuery.checked("Customer", **kwargs)
+
+
+class TestSeeding(ERPServerMixin):
+    def test_no_root_instance_is_seeded_for_erpnext(self, model_registry):
+        """ERPNext takes nothing from the environment, and the operator's
+        (root-scoped) instance serves every user: a seeded Root_Erpnext would
+        be an instance shared with everyone that no operator chose (operator
+        decision). Operators create ERP instances in the scope they mean."""
+        assert not reads_environment_settings(PRV_ERPNext)
+        seeded = ProviderInstanceManager(
+            model_registry=model_registry, requester_id=env("ROOT_ID")
+        ).list(name=root_instance_name(PRV_ERPNext.name))
+        assert seeded == []
 
 
 class TestAccess(ERPServerMixin):

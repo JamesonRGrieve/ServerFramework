@@ -43,6 +43,7 @@ from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceManager,
     ProviderInstanceModel,
+    reads_environment_settings,
     root_instance_name,
 )
 from zephyrex.testing.factories import provider_instance_as
@@ -306,14 +307,21 @@ class TestSeededRootInstances(ExtensionServerMixin):
             for providers in model_registry.extension_registry.extension_providers.values()
             for provider in providers
         ]
+        providers = [
+            provider
+            for found in model_registry.extension_registry.extension_providers.values()
+            for provider in found
+        ]
         assert PRV_Stripe_Payment.name in names
-        for name in names:
-            instance = self.seeded(model_registry, name)
+        for provider in providers:
+            if not reads_environment_settings(provider):
+                continue  # none is seeded (test_erp: no Root_ for ERPNext)
+            instance = self.seeded(model_registry, provider.name)
             assert (instance.scope, instance.user_id, instance.team_id) == (
                 "root",
                 None,
                 None,
-            ), name
+            ), provider.name
             assert instance.created_by_user_id == env("ROOT_ID")
 
     def test_the_seeded_root_instance_reads_the_environment(

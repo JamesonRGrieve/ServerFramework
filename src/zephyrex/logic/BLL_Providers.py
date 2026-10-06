@@ -173,6 +173,21 @@ def root_instance_name(provider_name: str) -> str:
     return f"Root_{stringcase.pascalcase(provider_name)}"
 
 
+def reads_environment_settings(provider_class: Any) -> bool:
+    """Whether the provider takes any setting from the server's environment
+    (a declared setting naming a variable, or a legacy ``_env``). Only such
+    a provider gets a seeded ``Root_<Provider>``: that instance exists to
+    hold the operator's environment default. One with none (ERPNext) is set
+    up deliberately, in the scope its operator chooses (operator decision),
+    so no instance shared with everyone appears on its own."""
+    if getattr(provider_class, "_env", None):
+        return True
+    return any(
+        getattr(setting, "env", None)
+        for setting in getattr(provider_class, "instance_settings", ()) or ()
+    )
+
+
 def _get_extension_registry(model_registry: Any) -> Any | None:
     """Return the ``ExtensionRegistry`` from *model_registry*, or ``None``
     when it is absent or empty.  Replaces the 3-line guard that was
@@ -1002,6 +1017,12 @@ class ProviderInstanceModel(
                     provider_name = _resolve_provider_name(
                         provider_class, warn_missing=True
                     )
+                    if not reads_environment_settings(provider_class):
+                        logger.debug(
+                            f"Provider '{provider_name}' takes nothing from the "
+                            "environment: no Root_ instance seeded"
+                        )
+                        continue
 
                     provider_instance_name = root_instance_name(provider_name)
 
