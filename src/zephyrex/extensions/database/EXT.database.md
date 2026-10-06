@@ -71,8 +71,10 @@ class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
 ```
 
 Where an instance keeps its connection settings. The root instances are
-created by the generic provider seed; configure them through instance settings
-or the environment. `model_name` is an AI model name and is never read as a
+created, root-scoped, by the generic provider seed; configure them through
+instance settings or the environment. Only root- and system-scoped instances
+fall back to the environment: a user's or team's never reaches the server's
+own database. `model_name` is an AI model name and is never read as a
 database name or bucket.
 
 | Provider | `api_key` | Instance settings (env fallback) |

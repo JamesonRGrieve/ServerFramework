@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from __future__ import annotations
 
 import asyncio
@@ -159,6 +160,17 @@ def root_rotation_name(extension_name: str) -> str:
     ``AbstractStaticExtension.root``."""
     parts = (stringcase.pascalcase(part) for part in extension_name.split("_"))
     return f"Root_{'_'.join(parts)}"
+
+
+# The scope the operator's seeded ``Root_<Provider>`` instances are in.
+ROOT_INSTANCE_SCOPE = "root"
+
+
+def root_instance_name(provider_name: str) -> str:
+    """Name of the operator's instance the framework seeds for a provider
+    (``stripe`` -> ``Root_Stripe``). The single source for the instance
+    seeder and the rotation/provider-instance link seeder."""
+    return f"Root_{stringcase.pascalcase(provider_name)}"
 
 
 def _get_extension_registry(model_registry: Any) -> Any | None:
@@ -971,7 +983,9 @@ class ProviderInstanceModel(
 
     @classmethod
     def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
-        """Return empty seed data - provider instances should be created by extension hooks."""
+        """The operator's ``Root_<Provider>`` instance of each loaded
+        provider, root-scoped: it is the operator's, so it alone (with the
+        system-scoped ones) defaults to the server's environment."""
         try:
             logger.debug("Discovering provider instances for seeding...")
 
@@ -989,16 +1003,14 @@ class ProviderInstanceModel(
                         provider_class, warn_missing=True
                     )
 
-                    # Create provider instance name using PascalCase of provider name
-                    provider_instance_name = (
-                        f"Root_{stringcase.pascalcase(provider_name)}"
-                    )
+                    provider_instance_name = root_instance_name(provider_name)
 
                     provider_data = {
                         "_provider_name": provider_name,  # Will be resolved to provider_id
                         "name": provider_instance_name,
                         "model_name": provider_name,
                         "api_key": None,  # Will be set by extension hooks
+                        "scope": ROOT_INSTANCE_SCOPE,
                     }
 
                     envs = provider_class._env
@@ -2833,10 +2845,7 @@ class RotationProviderInstanceModel(
                             # the link never resolves for multi-word extensions.
                             rotation_name = root_rotation_name(ext_name)
 
-                            # Create instance name using PascalCase of provider name
-                            instance_name = (
-                                f"Root_{stringcase.pascalcase(provider_name)}"
-                            )
+                            instance_name = root_instance_name(provider_name)
 
                             link_data = {
                                 "_rotation_name": rotation_name,  # Will be resolved to rotation_id
@@ -2846,7 +2855,7 @@ class RotationProviderInstanceModel(
 
                             seed_data.append(link_data)
                             logger.debug(
-                                f"Added rotation/provider-instance instance link for rotation '{rotation_name}' and instance 'Root_{provider_name}'"
+                                f"Added rotation/provider-instance instance link for rotation '{rotation_name}' and instance '{instance_name}'"
                             )
 
                         except Exception as e:

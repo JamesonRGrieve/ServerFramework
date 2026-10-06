@@ -9,7 +9,9 @@ General extension patterns: [EXT.Patterns.md](../EXT.Patterns.md).
 Each provider instance is one merchant account. Its settings
 (`instance_settings`) are read with `cls.setting`; secrets are write-only,
 with the provider's environment variables as the fallback a single-account
-deployment uses. Every provider has an `api_base` (the sandbox address, for
+deployment uses — for the operator's (root- or system-scoped) instances
+only, such as the seeded `Root_<Provider>`; a user's or team's account never
+charges through the operator's. Every provider has an `api_base` (the sandbox address, for
 one). All calls go through `cls.http()` (SSRF-guarded, typed errors).
 
 | Provider | Settings | Offers |

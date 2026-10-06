@@ -221,15 +221,16 @@ class TestValkeyConnectionSecurity:
 class TestValkeyTLS:
     def test_valkey_tls_enforced_when_configured(self):
         """DATABASE_MEMORY_TLS=true must result in a rediss:// or ssl=True connection."""
-        from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
-
-        class TLSInstance:
-            api_key = None
+        from zephyrex.extensions.database_memory.PRV_Valkey import (
+            PRV_Valkey,
+            ValkeyConnectionStub,
+        )
 
         os.environ["DATABASE_MEMORY_TLS"] = "true"
         os.environ["DATABASE_MEMORY_URL"] = "redis://localhost:6379/0"
         try:
-            url = PRV_Valkey._resolve_url(TLSInstance())
+            # The server's own connection: configured from the environment.
+            url = PRV_Valkey._resolve_url(ValkeyConnectionStub())
             assert url is not None
         finally:
             os.environ.pop("DATABASE_MEMORY_TLS", None)
@@ -240,16 +241,17 @@ class TestValkeyTLS:
 class TestValkeyAuth:
     def test_valkey_auth_credentials_applied_from_env(self):
         """DATABASE_MEMORY_USERNAME/PASSWORD must be applied to the connection."""
-        from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
-
-        class NoKeyInstance:
-            api_key = None
+        from zephyrex.extensions.database_memory.PRV_Valkey import (
+            PRV_Valkey,
+            ValkeyConnectionStub,
+        )
 
         os.environ["DATABASE_MEMORY_URL"] = "redis://localhost:6379/0"
         os.environ["DATABASE_MEMORY_USERNAME"] = "testuser"
         os.environ["DATABASE_MEMORY_PASSWORD"] = "testpass"
         try:
-            url = PRV_Valkey._resolve_url(NoKeyInstance())
+            # The server's own connection: configured from the environment.
+            url = PRV_Valkey._resolve_url(ValkeyConnectionStub())
             assert url is not None
         finally:
             os.environ.pop("DATABASE_MEMORY_URL", None)
@@ -465,10 +467,10 @@ class TestValkeyStreamInjection:
 class TestValkeyCrossDatabaseIsolation:
     def test_valkey_uses_consistent_database_number(self):
         """All Valkey connections must use the same database number."""
-        from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
+        from zephyrex.extensions.database_memory.PRV_Valkey import (
+            PRV_Valkey,
+            ValkeyConnectionStub,
+        )
 
-        class Instance1:
-            api_key = None
-
-        url = PRV_Valkey._resolve_url(Instance1())
+        url = PRV_Valkey._resolve_url(ValkeyConnectionStub())
         assert "/0" in url or url.endswith(":6379")

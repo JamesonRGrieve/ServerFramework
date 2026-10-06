@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from __future__ import annotations
 
 from abc import ABC, ABCMeta, abstractmethod
@@ -27,7 +28,11 @@ from zephyrex.lib.Paths import (
     src_dir as _resolve_src_dir,
 )
 from zephyrex.pydantic2.registry import classproperty
-from zephyrex.logic.BLL_Providers import ProviderInstanceModel, RotationManager
+from zephyrex.logic.BLL_Providers import (
+    OPERATOR_SCOPES,
+    ProviderInstanceModel,
+    RotationManager,
+)
 
 # Imports needed for patching in tests and used in methods
 try:
@@ -1098,8 +1103,8 @@ class AbstractStaticExtensionSystemComponent(ABC):
 class InstanceSetting:
     """A setting a provider reads from each of its instances: a
     ``ProviderInstanceSetting`` row named ``key`` (or the instance's own
-    ``field`` column, such as ``api_key``), else the ``env`` variable, else
-    ``default``. A ``secret`` one is stored encrypted and never returned
+    ``field`` column, such as ``api_key``), else (for the operator's
+    instances only) the ``env`` variable, else ``default``. A ``secret`` one is stored encrypted and never returned
     once written. A ``multiline`` value spans lines (a PEM key, a JSON
     credentials file), so a form offers a text area for it."""
 
@@ -1295,8 +1300,9 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
         cls, instance: Optional[ProviderInstanceModel], key: str
     ) -> Optional[str]:
         """The value of the declared setting ``key`` for ``instance``: its
-        column or setting row, else its environment variable, else its
-        default. ``instance`` is None for an environment-only lookup."""
+        column or setting row, else (``reads_environment``) its environment
+        variable, else its default. ``instance`` is None for an
+        environment-only lookup."""
         declared = cls.instance_setting(key)
         return cls.resolve_setting(
             instance,
@@ -1329,6 +1335,15 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
         """GET ``url`` through ``http()``: the decoded JSON answer."""
         return await cls.http().get(url, params=params, headers=headers)
 
+    @staticmethod
+    def reads_environment(instance: Optional[ProviderInstanceModel]) -> bool:
+        """Whether a setting ``instance`` lacks may come from the server's
+        environment: only for the operator's instances (root- or
+        system-scoped) and environment-only lookups (``instance`` None). A
+        user's or team's instance never acts with the operator's
+        credentials, whoever created it."""
+        return instance is None or instance.scope in OPERATOR_SCOPES
+
     @classmethod
     def resolve_setting(
         cls,
@@ -1340,9 +1355,9 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
         default: Optional[str] = None,
     ) -> Optional[str]:
         """The first non-empty of: the instance's ``field`` column, the
-        instance's ``key`` setting, the ``env_var`` environment value, and
-        ``default``. ``instance`` is None for an environment-only lookup
-        (configuration checks have no instance)."""
+        instance's ``key`` setting, the ``env_var`` environment value (when
+        ``reads_environment``), and ``default``. ``instance`` is None for an
+        environment-only lookup (configuration checks have no instance)."""
         if instance is not None:
             if field is not None:
                 value = getattr(instance, field)
@@ -1351,7 +1366,7 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
             setting = instance.get_setting(key)
             if setting:
                 return setting
-        if env_var is not None:
+        if env_var is not None and cls.reads_environment(instance):
             env_value = cls.get_env_value(env_var)
             if env_value:
                 return str(env_value)

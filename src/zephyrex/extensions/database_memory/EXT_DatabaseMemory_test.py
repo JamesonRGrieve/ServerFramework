@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the DatabaseMemory extension.
 
 Covers:
@@ -32,7 +33,11 @@ from zephyrex.extensions.database_memory.PRV_Fake_DatabaseMemory import (
     PRV_Fake_DatabaseMemory,
     _FakeDatabaseMemoryStreamsTransport,
 )
-from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
+from zephyrex.extensions.database_memory.PRV_Valkey import (
+    LOCAL_URL,
+    PRV_Valkey,
+    ValkeyConnectionStub,
+)
 from zephyrex.logic.EventBus import (
     BrokerTransport,
     InMemoryBrokerTransport,
@@ -46,10 +51,12 @@ class _UserSignedUp(BaseModel):
 
 
 class _FakeInstance:
-    """Stand-in for `ProviderInstanceModel` for unit tests; no DB."""
+    """Stand-in for `ProviderInstanceModel` for unit tests; no DB. The
+    operator's (root-scoped) unless ``scope`` says otherwise."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, scope: str = "root") -> None:
         self.api_key = api_key
+        self.scope = scope
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +145,34 @@ def test_resolve_url_canonical_wins_over_legacy(monkeypatch):
     monkeypatch.setenv("VALKEY_URL", "redis://legacy:6379/0")
     instance = _FakeInstance(api_key=None)
     assert PRV_Valkey._resolve_url(instance) == "redis://canonical:6379/0"
+
+
+@pytest.mark.parametrize("scope", ["user", "team"])
+def test_resolve_url_never_gives_a_users_instance_the_operators_server(
+    monkeypatch, scope
+):
+    """A user's or team's instance with no URL of its own used to connect
+    to the operator's Valkey, named by the environment."""
+    monkeypatch.setenv("DATABASE_MEMORY_URL", "redis://operator:6379/0")
+    monkeypatch.setenv("VALKEY_URI", "redis://operator:6379/1")
+    monkeypatch.setenv("VALKEY_URL", "redis://operator:6379/2")
+    instance = _FakeInstance(api_key=None, scope=scope)
+    assert PRV_Valkey._resolve_url(instance) == LOCAL_URL
+    own = _FakeInstance(api_key="redis://mine:6379/0", scope=scope)
+    assert PRV_Valkey._resolve_url(own) == "redis://mine:6379/0"
+
+
+@pytest.mark.parametrize("scope", ["root", "system"])
+def test_resolve_url_gives_the_operators_instances_the_environment(monkeypatch, scope):
+    monkeypatch.setenv("DATABASE_MEMORY_URL", "redis://operator:6379/0")
+    instance = _FakeInstance(api_key=None, scope=scope)
+    assert PRV_Valkey._resolve_url(instance) == "redis://operator:6379/0"
+
+
+def test_the_servers_own_connection_reads_the_environment(monkeypatch):
+    monkeypatch.setenv("DATABASE_MEMORY_URL", "redis://operator:6379/0")
+    assert PRV_Valkey._resolve_url(ValkeyConnectionStub()) == "redis://operator:6379/0"
+    assert PRV_Valkey._resolve_url(None) == "redis://operator:6379/0"
 
 
 def test_resolve_url_default_when_unset(monkeypatch):

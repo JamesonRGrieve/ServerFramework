@@ -67,7 +67,6 @@ from zephyrex.extensions.ExternalErrors import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.pydantic2.registry import classproperty
 from zephyrex.logic.BLL_Providers import OPERATOR_SCOPES, ProviderInstanceModel
 
@@ -87,18 +86,6 @@ def from_email_setting(env_var: str) -> InstanceSetting:
     return InstanceSetting(
         FROM_EMAIL_SETTING, "The address mail is sent from", env=env_var
     )
-
-
-def speaks_for_operator(instance: ProviderInstanceModel) -> bool:
-    """Whether ``instance`` is the operator's own: in the root or system
-    scope, or owned by ROOT or SYSTEM and no team. The second covers the
-    ``Root_<Provider>`` instances the framework seeds from the environment,
-    which carry the default scope but belong to no user. A user's or team's
-    instance is never the operator's, whoever created it."""
-    if instance.scope in OPERATOR_SCOPES:
-        return True
-    owner = instance.user_id or instance.created_by_user_id
-    return instance.team_id is None and server_side(owner)
 
 
 # ============================================================================
@@ -382,7 +369,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         # Each instance's settings are the provider's configuration; a
         # setting's environment variable is the default for the operator's
-        # instances only (``resolve_setting``). The framework seeds the
+        # instances only (``reads_environment``). The framework seeds the
         # operator's ``Root_<Provider>`` instance, and its place in the root
         # rotation, from the variables ``_env`` names, so ``_env`` is derived
         # from the declared settings rather than declared beside them.
@@ -394,36 +381,16 @@ class AbstractEmailProvider(AbstractStaticProvider):
         super().__init_subclass__(**kwargs)
 
     @classmethod
-    def resolve_setting(
-        cls,
-        instance: Optional[ProviderInstanceModel],
-        key: str,
-        env_var: Optional[str] = None,
-        *,
-        field: Optional[str] = None,
-        default: Optional[str] = None,
-    ) -> Optional[str]:
-        """The instance's own value, else (for the operator's instances, and
-        environment-only lookups) the environment's, else the default. A
-        user's or team's instance never sends with the operator's
-        credentials or from the operator's address."""
-        if instance is not None and not speaks_for_operator(instance):
-            env_var = None
-        return super().resolve_setting(
-            instance, key, env_var, field=field, default=default
-        )
-
-    @classmethod
     def destination(
         cls, instance: Optional[ProviderInstanceModel], address: str
     ) -> str:
         """``address`` (a URL, or a mail server's ``host[:port]``) once
-        ``instance`` may reach it. The operator's instances reach anywhere (a
-        self-hosted mail server is often on the private network); a user's or
-        team's may not reach the server's own network, the SSRF guard's
-        refusal (``SSRFGuardError``, a ValueError) says so. An empty address
-        is returned as is: it reaches nothing."""
-        if address and instance is not None and not speaks_for_operator(instance):
+        ``instance`` may reach it. The operator's (root- or system-scoped)
+        instances reach anywhere (a self-hosted mail server is often on the
+        private network); a user's or team's may not reach the server's own
+        network, the SSRF guard's refusal (``SSRFGuardError``, a ValueError)
+        says so. An empty address is returned as is: it reaches nothing."""
+        if address and instance is not None and instance.scope not in OPERATOR_SCOPES:
             from zephyrex.lib.ProviderHTTPClient import validate_outbound_url
 
             # The guard reads a URL; a bare mail-server address is given a

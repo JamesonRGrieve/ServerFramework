@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """PRV_Valkey — concrete in-memory-store provider for the Valkey wire protocol.
 
 Wraps the ``redis.asyncio`` client (the canonical Python implementation
@@ -27,12 +28,20 @@ from zephyrex.extensions.database_memory.EXT_DatabaseMemory import (
     AbstractDatabaseMemoryProvider,
 )
 from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Providers import ROOT_INSTANCE_SCOPE
 
 _logger = logging.getLogger(__name__)
 
+# Where an instance with no URL of its own connects.
+LOCAL_URL = "redis://localhost:6379/0"
+
 
 class ValkeyConnectionStub:
-    """Minimal stand-in for ProviderInstanceModel when connecting by URI."""
+    """Minimal stand-in for ProviderInstanceModel when connecting by URI:
+    the server's own connection, so root-scoped (it may default to the
+    environment)."""
+
+    scope = ROOT_INSTANCE_SCOPE
 
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key
@@ -59,21 +68,18 @@ class PRV_Valkey(AbstractDatabaseMemoryProvider):
     @classmethod
     def _resolve_url(cls, instance: Any) -> str:
         """Pick the connection URL from the instance's `api_key` (the
-        canonical credentials slot per `ProviderInstanceModel`) or from
-        the env var. ``DATABASE_MEMORY_URL`` is the canonical
+        canonical credentials slot per `ProviderInstanceModel`) or, for
+        the operator's instances only (``reads_environment``), from the
+        env var. ``DATABASE_MEMORY_URL`` is the canonical
         protocol-family env name; ``VALKEY_URL`` is honored as a
         provider-specific fallback so deployments that pre-dated the
         Item 98 rename keep working without a config edit. Falls back
         to localhost so the development reference workflow works
         out-of-box."""
-        url = (
-            getattr(instance, "api_key", None)
-            or env("DATABASE_MEMORY_URL")
-            or env("VALKEY_URI")
-            or env("VALKEY_URL")
-            or "redis://localhost:6379/0"
-        )
-        return str(url)
+        url = getattr(instance, "api_key", None)
+        if not url and cls.reads_environment(instance):
+            url = env("DATABASE_MEMORY_URL") or env("VALKEY_URI") or env("VALKEY_URL")
+        return str(url or LOCAL_URL)
 
     @classmethod
     def connect(cls, instance: Any) -> Any:

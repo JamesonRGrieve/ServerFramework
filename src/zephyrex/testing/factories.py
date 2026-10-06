@@ -9,7 +9,7 @@ entities, returning the created object.
 import base64
 import uuid
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Mapping
+from typing import Any, Dict, Iterator, Mapping, Optional
 
 from faker import Faker
 from starlette.testclient import TestClient
@@ -22,6 +22,12 @@ from zephyrex.logic.BLL_Auth import (
     UserCredentialManager,
     UserModel,
     UserTeamModel,
+)
+from zephyrex.logic.BLL_Providers import (
+    ProviderInstanceManager,
+    ProviderInstanceModel,
+    ProviderInstanceSettingManager,
+    ProviderManager,
 )
 
 # The password test users are created with; it meets the password policy.
@@ -240,6 +246,49 @@ def add_user_to_team(server, user_id, team_id, role_id, requester_id=env("SYSTEM
             team_id=team_id,
             role_id=role_id,
         )
+
+
+def provider_instance_as(
+    model_registry: Any,
+    provider_name: str,
+    settings: Optional[Dict[str, str]] = None,
+    *,
+    requester_id: Optional[str] = None,
+    scope: str = "root",
+    team_id: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> ProviderInstanceModel:
+    """A new instance of the provider ``provider_name`` in ``scope``, made
+    (and its ``settings`` written) by ``requester_id``, ROOT by default,
+    through the managers that check those writes. A user's user-scoped
+    instance is theirs; ``team_id`` makes it the team's."""
+    author = requester_id or env("ROOT_ID")
+    provider = ProviderManager(
+        model_registry=model_registry, requester_id=env("ROOT_ID")
+    ).get(name=provider_name)
+    fields: Dict[str, Any] = {
+        "name": f"{provider_name}_{uuid.uuid4().hex}",
+        "provider_id": provider.id,
+        "scope": scope,
+    }
+    if requester_id is not None and scope == "user":
+        fields["user_id"] = requester_id
+    if team_id is not None:
+        fields["team_id"] = team_id
+    if api_key is not None:
+        fields["api_key"] = api_key
+    instance = ProviderInstanceModel.model_validate(
+        ProviderInstanceManager(
+            model_registry=model_registry, requester_id=author
+        ).create(**fields),
+        from_attributes=True,
+    )
+    rows = ProviderInstanceSettingManager(
+        model_registry=model_registry, requester_id=author
+    )
+    for key, value in (settings or {}).items():
+        rows.create(provider_instance_id=instance.id, key=key, value=value)
+    return instance
 
 
 def bind_test_models(registry, *models):

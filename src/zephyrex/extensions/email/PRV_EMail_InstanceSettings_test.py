@@ -15,11 +15,7 @@ import pytest
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.extensions.email.EXT_EMail import (
-    FROM_EMAIL_SETTING,
-    EXT_EMail,
-    speaks_for_operator,
-)
+from zephyrex.extensions.email.EXT_EMail import FROM_EMAIL_SETTING, EXT_EMail
 from zephyrex.extensions.email.EmailTestSupport import email_instance
 from zephyrex.extensions.email.InboundEndpoint import SIGNING_SECRET_SETTING
 from zephyrex.extensions.email.PRV_Google_EMail import GoogleProvider
@@ -34,7 +30,12 @@ from zephyrex.extensions.email.PRV_SendGrid_EMail import SendgridProvider
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 from zephyrex.extensions.email.PRV_Yahoo_EMail import YahooProvider
-from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Providers import (
+    ProviderInstanceManager,
+    ProviderInstanceModel,
+    root_instance_name,
+)
 
 
 def _mailbox(prefix: str) -> Set[str]:
@@ -190,12 +191,26 @@ class TestWhoseEnvironment(ExtensionServerMixin):
     def test_the_seeded_root_instance_defaults_to_the_environment(
         self, model_registry, operator_environment
     ):
-        """The framework seeds Root_<Provider> as ROOT, for no user or team,
-        in the default scope: it is the operator's."""
+        """The framework seeds Root_<Provider> root-scoped: it is the
+        operator's."""
+        instance = ProviderInstanceModel.model_validate(
+            ProviderInstanceManager(
+                model_registry=model_registry, requester_id=env("ROOT_ID")
+            ).get(name=root_instance_name(Smtp2goProvider.name)),
+            from_attributes=True,
+        )
+        assert instance.scope == "root"
+        assert Smtp2goProvider.setting(instance, "api_key") == "operator-api_key"
+
+    def test_a_user_scoped_instance_root_made_never_reads_the_environment(
+        self, model_registry, operator_environment
+    ):
+        """Only the scope makes an instance the operator's: one ROOT made
+        for no user or team in the user scope (as Root_<Provider> once was)
+        no longer borrows the operator's credentials."""
         instance = email_instance(model_registry, Smtp2goProvider.name, scope="user")
         assert instance.user_id is None and instance.team_id is None
-        assert speaks_for_operator(instance)
-        assert Smtp2goProvider.setting(instance, "api_key") == "operator-api_key"
+        assert Smtp2goProvider.setting(instance, "api_key") is None
 
     @pytest.mark.parametrize("provider", PROVIDERS, ids=IDS)
     def test_a_users_instance_never_reads_the_operators_environment(
@@ -204,7 +219,6 @@ class TestWhoseEnvironment(ExtensionServerMixin):
         instance = email_instance(
             model_registry, provider.name, requester_id=admin_a.id, scope="user"
         )
-        assert not speaks_for_operator(instance)
         for declared in env_backed(provider.instance_settings):
             assert provider.setting(instance, declared.key) == declared.default
 
@@ -219,7 +233,6 @@ class TestWhoseEnvironment(ExtensionServerMixin):
             scope="team",
             team_id=team_a.id,
         )
-        assert not speaks_for_operator(instance)
         for declared in env_backed(provider.instance_settings):
             assert provider.setting(instance, declared.key) == declared.default
 
@@ -300,6 +313,17 @@ class TestWhatAnInstanceMayReach(ExtensionServerMixin):
         operator = self._mailgun(model_registry)
         bonded = MailgunProvider.bond_instance(operator)
         assert bonded is not None and bonded.sdk["api_url"] == self.LOOPBACK_API
+
+    def test_only_the_scope_lets_an_instance_reach_the_servers_network(
+        self, model_registry
+    ):
+        """An instance ROOT made in the user scope, for no user or team, is
+        not the operator's: it is held to the guard like any user's."""
+        unowned = self._mailgun(model_registry, scope="user")
+        assert unowned.user_id is None and unowned.team_id is None
+        assert MailgunProvider.bond_instance(unowned) is None
+        system = self._mailgun(model_registry, scope="system")
+        assert MailgunProvider.bond_instance(system) is not None
 
     def test_a_users_mail_server_on_the_servers_network_is_refused(
         self, model_registry, admin_a

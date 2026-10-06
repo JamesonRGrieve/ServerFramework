@@ -71,7 +71,8 @@ class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
         cls, instance: Optional[ProviderInstanceModel]
     ) -> Dict[str, Any]:
         """The connection settings for ``instance``: its own fields and
-        settings first, the environment as fallback. ``None`` resolves from
+        settings first, the environment as fallback for the operator's
+        instances only (``reads_environment``). ``None`` resolves from
         the environment alone (configuration checks have no instance)."""
 
     @classmethod
@@ -137,7 +138,9 @@ class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
     ) -> Dict[str, Any]:
         """Settings of a networked database server: the password is the
         instance's ``api_key``; host, port, database name and username are
-        instance settings; each falls back to ``DATABASE_*``. ``model_name``
+        instance settings; on the operator's instances each falls back to
+        ``DATABASE_*`` (a user's never reaches the server's own database).
+        ``model_name``
         is an AI model name and never names a database."""
         return {
             "database_host": cls.resolve_setting(
