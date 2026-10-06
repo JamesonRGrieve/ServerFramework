@@ -83,7 +83,7 @@ class PromptModel(
     class Create(
         BaseModel,
         NameMixinModel,
-        DescriptionMixinModel,
+        DescriptionMixinModel.Optional,
         UserModel.Reference.ID.Optional,
         TeamModel.Reference.ID.Optional,
     ):

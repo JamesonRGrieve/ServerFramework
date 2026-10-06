@@ -195,6 +195,27 @@ class TestPromptEndpoints(AbstractEPTest, ExtensionServerMixin):
 
         return json_response["prompt_arguments"]
 
+    @pytest.mark.parametrize("description", ["null", "omitted"])
+    def test_a_prompt_needs_no_description(
+        self, server: Any, admin_a: Any, description: str
+    ) -> None:
+        """The stored prompt's description is optional, but Create required
+        one: a prompt left without it (null, or not sent) was a 422 (found by
+        the client's smoke test against 0.0.1a4)."""
+        body: Dict[str, Any] = {
+            "name": f"No description {uuid.uuid4()}",
+            "content": "Summarise {TOPIC}.",
+        }
+        if description == "null":
+            body["description"] = None
+        response = server.post(
+            "/v1/prompt",
+            json={"prompt": body},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["prompt"]["description"] is None
+
     def test_POST_201_batch(
         self, server: Any, admin_a: Any, team_a: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
