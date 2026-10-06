@@ -31,9 +31,9 @@ from zephyrex.extensions.erp.ERPTestSupport import (
     SALES_INVOICE,
     SALES_INVOICE_ITEM,
     WEBHOOK_SECRET,
-    ERPServerMixin,
     erp_instance,
 )
+from zephyrex.extensions.erp.ERPServer_test import ERPServerMixin
 from zephyrex.extensions.erp.EXT_ERP import EXT_ERP
 from zephyrex.extensions.erp.FrappeTestServer import webhook_request
 from zephyrex.extensions.webhooks.BLL_WebhookDelivery import (

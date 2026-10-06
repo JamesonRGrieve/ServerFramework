@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""What the ERP tests share: a Frappe site with standard, submittable and
-custom DocTypes and two accounts, served by :class:`FrappeServer`, and
-provider instances of every scope pointing at it."""
+"""What tests against ERPNext share: a Frappe site with standard,
+submittable and custom DocTypes and two accounts, served by
+:class:`FrappeServer`, and provider instances of every scope pointing at it.
+
+It imports from an install alone (no pytest, no repository conftest), so a
+consumer can stand up a site for its own tests; the framework's own server
+mixin is in ERPServer_test."""
 
 import copy
 import uuid
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Optional
 
-import pytest
-
-from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.extensions.erp.EXT_ERP import EXT_ERP
 from zephyrex.extensions.erp.FrappeTestServer import (
     Account,
     FrappeServer,
@@ -149,23 +149,3 @@ def erp_instance(
     for key, value in settings.items():
         rows.create(provider_instance_id=instance.id, key=key, value=value)
     return instance
-
-
-class ERPServerMixin(ExtensionServerMixin):
-    """The ERP extension's app (with webhooks and federation), and a Frappe
-    site the SSRF guard lets it reach."""
-
-    extension_class = EXT_ERP
-
-    @pytest.fixture
-    def frappe(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[FrappeServer]:
-        with FrappeServer(standard_site()) as served:
-            monkeypatch.setenv("EGRESS_ALLOWED_HOSTS", served.host)
-            yield served
-
-    @pytest.fixture
-    def operator(
-        self, model_registry: Any, frappe: FrappeServer
-    ) -> ProviderInstanceModel:
-        """The operator's instance, holding the operator account's key."""
-        return erp_instance(model_registry, frappe.base_url)

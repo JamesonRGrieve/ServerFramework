@@ -15,11 +15,11 @@ import pytest
 from fastapi import HTTPException
 
 from zephyrex.extensions.erp.BLL_ERP import ERPDocuments, ListQuery
+from zephyrex.extensions.erp.ERPServer_test import ERPServerMixin
 from zephyrex.extensions.erp.ERPTestSupport import (
     OPERATOR_KEY,
     OPERATOR_SECRET,
     WEBHOOK_SECRET,
-    ERPServerMixin,
     erp_instance,
 )
 from zephyrex.extensions.erp.PRV_ERPNext import (

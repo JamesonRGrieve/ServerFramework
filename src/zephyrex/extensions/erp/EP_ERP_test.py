@@ -8,11 +8,11 @@ import json
 import uuid
 from typing import Any, Dict
 
+from zephyrex.extensions.erp.ERPServer_test import ERPServerMixin
 from zephyrex.extensions.erp.ERPTestSupport import (
     OPERATOR_KEY,
     OPERATOR_SECRET,
     WEBHOOK_SECRET,
-    ERPServerMixin,
     erp_instance,
 )
 from zephyrex.extensions.erp.FrappeTestServer import webhook_request
