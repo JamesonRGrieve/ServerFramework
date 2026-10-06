@@ -206,6 +206,7 @@ class TestValkeyConnectionSecurity:
 
         class FakeInstance:
             api_key = "redis://secret_user:secret_pass@valkey.internal:6379/0"
+            scope = "root"
 
         url = PRV_Valkey._resolve_url(FakeInstance())
         assert url == FakeInstance.api_key
@@ -265,10 +266,21 @@ class TestValkeySSRF:
         """Tenant-controlled Valkey URLs must be validated against an allowlist."""
         from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
 
+        from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+
         class MaliciousInstance:
             api_key = "redis://10.0.0.5:6379/0"
+            scope = "user"
 
-        url = PRV_Valkey._resolve_url(MaliciousInstance())
+        class OperatorInstance:
+            api_key = "redis://10.0.0.5:6379/0"
+            scope = "root"
+
+        # The tenant's private-network URL used to be taken as given.
+        os.environ.pop("DISABLE_SSRF_GUARD", None)
+        with pytest.raises(InvalidInputExternalError):
+            PRV_Valkey._resolve_url(MaliciousInstance())
+        url = PRV_Valkey._resolve_url(OperatorInstance())
         assert url == "redis://10.0.0.5:6379/0"
 
 

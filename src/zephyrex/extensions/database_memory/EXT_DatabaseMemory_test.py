@@ -34,10 +34,10 @@ from zephyrex.extensions.database_memory.PRV_Fake_DatabaseMemory import (
     _FakeDatabaseMemoryStreamsTransport,
 )
 from zephyrex.extensions.database_memory.PRV_Valkey import (
-    LOCAL_URL,
     PRV_Valkey,
     ValkeyConnectionStub,
 )
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.logic.EventBus import (
     BrokerTransport,
     InMemoryBrokerTransport,
@@ -156,10 +156,41 @@ def test_resolve_url_never_gives_a_users_instance_the_operators_server(
     monkeypatch.setenv("DATABASE_MEMORY_URL", "redis://operator:6379/0")
     monkeypatch.setenv("VALKEY_URI", "redis://operator:6379/1")
     monkeypatch.setenv("VALKEY_URL", "redis://operator:6379/2")
-    instance = _FakeInstance(api_key=None, scope=scope)
-    assert PRV_Valkey._resolve_url(instance) == LOCAL_URL
-    own = _FakeInstance(api_key="redis://mine:6379/0", scope=scope)
-    assert PRV_Valkey._resolve_url(own) == "redis://mine:6379/0"
+    monkeypatch.delenv("DISABLE_SSRF_GUARD", raising=False)
+    # Nor the server's own Valkey on localhost, the default it then took.
+    with pytest.raises(InvalidInputExternalError):
+        PRV_Valkey._resolve_url(_FakeInstance(api_key=None, scope=scope))
+    own = _FakeInstance(api_key="redis://valkey.example.com:6379/0", scope=scope)
+    assert PRV_Valkey._resolve_url(own) == "redis://valkey.example.com:6379/0"
+
+
+@pytest.mark.parametrize("scope", ["user", "team"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "redis://127.0.0.1:6379/0",
+        "redis://:secret@localhost:6379/0",
+        "rediss://10.0.0.5:6380/0",
+        "redis://[::1]:6379/0",
+        "unix:///var/run/valkey.sock",
+        "http://valkey.example.com:6379",
+    ],
+)
+def test_a_users_valkey_url_cannot_reach_the_servers_network(monkeypatch, scope, url):
+    """A user's or team's own URL naming the loopback or a private address
+    reached the server's own Valkey; it is held to the SSRF guard, and only
+    network Valkey schemes are taken."""
+    monkeypatch.delenv("DISABLE_SSRF_GUARD", raising=False)
+    monkeypatch.delenv("EGRESS_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(InvalidInputExternalError):
+        PRV_Valkey._resolve_url(_FakeInstance(api_key=url, scope=scope))
+
+
+def test_the_operators_valkey_may_be_on_the_private_network(monkeypatch):
+    """A self-hosted Valkey is usually beside the server: the operator's
+    instances are not held to the guard."""
+    instance = _FakeInstance(api_key="redis://10.0.0.5:6379/0", scope="root")
+    assert PRV_Valkey._resolve_url(instance) == "redis://10.0.0.5:6379/0"
 
 
 @pytest.mark.parametrize("scope", ["root", "system"])

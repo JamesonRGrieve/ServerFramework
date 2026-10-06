@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable, ClassVar, Dict, List
 from zephyrex.extensions.database_memory.EXT_DatabaseMemory import (
     AbstractDatabaseMemoryProvider,
 )
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import ROOT_INSTANCE_SCOPE
 
@@ -34,6 +35,37 @@ _logger = logging.getLogger(__name__)
 
 # Where an instance with no URL of its own connects.
 LOCAL_URL = "redis://localhost:6379/0"
+
+
+VALKEY_SCHEMES = ("redis", "rediss")
+DEFAULT_VALKEY_PORT = 6379
+
+
+def _off_the_server_network(url: str) -> str:
+    """``url`` once the SSRF guard lets its host and port through: a
+    network Valkey URL (``redis://`` or ``rediss://``) to a host outside the
+    server's own and private networks. Anything else (a unix socket, another
+    scheme, no host) is refused."""
+    from urllib.parse import urlparse
+
+    from zephyrex.lib.ProviderHTTPClient import validate_outbound_url
+
+    parsed = urlparse(url)
+    if parsed.scheme not in VALKEY_SCHEMES or not parsed.hostname:
+        raise InvalidInputExternalError(
+            "A user's or team's Valkey URL must be redis:// or rediss:// to a host"
+        )
+    host = parsed.hostname
+    bracketed = f"[{host}]" if ":" in host else host
+    # The guard reads http(s) URLs; only the host and port are checked here
+    # (the URL's own credentials are not part of where it goes).
+    try:
+        validate_outbound_url(
+            f"http://{bracketed}:{parsed.port or DEFAULT_VALKEY_PORT}"
+        )
+    except ValueError as exc:
+        raise InvalidInputExternalError(str(exc)) from exc
+    return url
 
 
 class ValkeyConnectionStub:
@@ -77,7 +109,16 @@ class PRV_Valkey(AbstractDatabaseMemoryProvider):
         to localhost so the development reference workflow works
         out-of-box."""
         url = getattr(instance, "api_key", None)
-        if not url and cls.reads_environment(instance):
+        if not cls.reads_environment(instance):
+            # A user's or team's instance: its own URL, to a host off the
+            # server's own network. The localhost default, or a URL naming
+            # 127.0.0.1, was the server's own Valkey.
+            if not url:
+                raise InvalidInputExternalError(
+                    "A user's or team's Valkey instance needs its own URL"
+                )
+            return _off_the_server_network(str(url))
+        if not url:
             url = env("DATABASE_MEMORY_URL") or env("VALKEY_URI") or env("VALKEY_URL")
         return str(url or LOCAL_URL)
 
