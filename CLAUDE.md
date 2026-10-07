@@ -60,7 +60,7 @@ shared queue: `/home/jameson/Source/mem-queuer/memq run -m <GB> -- <cmd>`.
 
 ## Quality Gates
 
-- **Tests:** full suite green; the passing-test floor is ratcheted in `.ratchet-baseline.json`
+- **Tests:** full suite green; the collected-test floor is ratcheted in `.ratchet-baseline.json` (a metric the ratchet cannot measure fails the commit)
 - **Mypy:** 0 errors, unused `# type: ignore` comments rejected (`warn_unused_ignores`)
 - **Black:** 0 violations
 - **Pre-commit hook:** tests + mypy ratchet + black check
