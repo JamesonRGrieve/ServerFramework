@@ -1,13 +1,8 @@
 name: Build and Push to GHCR
 
+# Manual only: no Docker images are built for now (operator decision).
 on:
-  push:
-    branches:
-      - main
-      - dev
-      - legacy
-  release:
-    types: [published]
+  workflow_dispatch:
 
 jobs:
   call-reusable-build:

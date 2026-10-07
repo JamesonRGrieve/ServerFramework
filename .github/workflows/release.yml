@@ -128,6 +128,9 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          # TestPyPI never frees a version, so a re-tag of a version already
+          # uploaded there smoke-tests that upload.
+          skip-existing: true
 
   smoke-testpypi:
     name: Smoke-test zephyrex and zephyrex[all] from TestPyPI
