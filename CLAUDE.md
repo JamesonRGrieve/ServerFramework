@@ -9,7 +9,7 @@ Extensible Python (FastAPI) server framework. Installable via `pip install zephy
 
 Read **before your first edit**:
 
-- `/home/jameson/Source/ai-prompts/python.md` — Python language, typing, formatting, testing, packaging, pre-commit
+- SOP *Stack Standards → Python* — Python language, typing, formatting, testing, packaging, pre-commit
 
 ---
 
