@@ -18,11 +18,13 @@ from zephyrex.extensions.cloud.EXT_Cloud import (
 from zephyrex.extensions.cloud.PRV_Azure import PRV_Azure_Cloud
 from zephyrex.extensions.cloud.PRV_Dropbox import PRV_Dropbox_Cloud
 from zephyrex.extensions.cloud.PRV_GCS import PRV_GCS_Cloud
+from zephyrex.extensions.cloud.PRV_LocalDisk import PRV_LocalDisk_Cloud
 from zephyrex.extensions.cloud.PRV_Nextcloud import PRV_Nextcloud_Cloud
 from zephyrex.extensions.cloud.PRV_S3 import PRV_S3_Cloud
 from zephyrex.extensions.ExternalErrors import (
     AuthExternalError,
     InvalidInputExternalError,
+    PermanentExternalError,
     TransientExternalError,
 )
 
@@ -85,6 +87,7 @@ class TestExtension:
             "gcs",
             "dropbox",
             "nextcloud",
+            "local_disk",
         }
 
     async def test_an_upload_over_the_limit_is_refused(self):
@@ -126,6 +129,7 @@ class TestConfiguration:
             (PRV_GCS_Cloud, ["GCS_BUCKET"]),
             (PRV_Dropbox_Cloud, ["DROPBOX_ACCESS_TOKEN"]),
             (PRV_Nextcloud_Cloud, ["NEXTCLOUD_URL", "NEXTCLOUD_APP_PASSWORD"]),
+            (PRV_LocalDisk_Cloud, ["CLOUD_LOCAL_DIRECTORY"]),
         ],
     )
     async def test_unconfigured_fails_over(
@@ -226,3 +230,50 @@ async def test_nextcloud_round_trip(provider_instance, sandbox_credentials_for):
         entry["path"] == path for entry in await PRV_Nextcloud_Cloud.list(instance, "")
     )
     await PRV_Nextcloud_Cloud.delete(instance, path)
+
+
+class TestLocalDisk:
+    """A directory as an object store: a round trip, replacing a file, a
+    listing that hides partial writes, and no way out of the root."""
+
+    async def test_round_trip_and_listing(self, provider_instance, tmp_path):
+        instance = provider_instance(
+            PRV_LocalDisk_Cloud, settings={"directory": str(tmp_path / "store")}
+        )
+        stored = await PRV_LocalDisk_Cloud.upload(instance, "talks/one.webm", b"take 1")
+        assert stored == {"path": "talks/one.webm", "size": 6, "provider": "local_disk"}
+        await PRV_LocalDisk_Cloud.upload(instance, "talks/one.webm", b"take 2")
+        assert (
+            await PRV_LocalDisk_Cloud.download(instance, "talks/one.webm") == b"take 2"
+        )
+
+        (tmp_path / "store" / "talks" / ".two.webm.partial").write_bytes(b"half")
+        listed = await PRV_LocalDisk_Cloud.list(instance, "talks")
+        assert [(e["path"], e["size"], e["is_folder"]) for e in listed] == [
+            ("talks/one.webm", 6, False)
+        ]
+        root = await PRV_LocalDisk_Cloud.list(instance, "")
+        assert [(e["path"], e["is_folder"]) for e in root] == [("talks", True)]
+
+        await PRV_LocalDisk_Cloud.delete(instance, "talks/one.webm")
+        with pytest.raises(PermanentExternalError):
+            await PRV_LocalDisk_Cloud.download(instance, "talks/one.webm")
+
+    async def test_nothing_outside_the_root_is_reachable(
+        self, provider_instance, tmp_path
+    ):
+        secret = tmp_path / "secret.txt"
+        secret.write_text("private")
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "escape").symlink_to(tmp_path)
+        instance = provider_instance(
+            PRV_LocalDisk_Cloud, settings={"directory": str(store)}
+        )
+        for path in ("escape/secret.txt", "../secret.txt"):
+            with pytest.raises(InvalidInputExternalError):
+                await PRV_LocalDisk_Cloud.download(instance, path)
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_LocalDisk_Cloud.upload(instance, "escape/planted.txt", b"x")
+        assert not (tmp_path / "planted.txt").exists()
+        assert [e["name"] for e in await PRV_LocalDisk_Cloud.list(instance, "")] == []
