@@ -29,7 +29,8 @@ against the user it ran for when one is named.
 import base64
 import binascii
 import json
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -54,6 +55,8 @@ MAX_SPEECH_CHARACTERS = 4096
 ROLES = ("system", "user", "assistant", "tool")
 CHAT, EMBEDDINGS, IMAGES = "chat", "embeddings", "image_generation"
 TRANSCRIPTION, SPEECH = "transcription", "text_to_speech"
+# Transcription with each segment's start and end (captions, read-along).
+TIMED_TRANSCRIPTION = "timed_transcription"
 IMAGE_SIZES = ("1024x1024", "1024x1536", "1536x1024", "auto")
 
 
@@ -67,7 +70,7 @@ def _image_reference(url: Any) -> str:
     return url
 
 
-def checked_messages(messages: Any) -> List[Dict[str, Any]]:
+def checked_messages(messages: Any) -> list[dict[str, Any]]:
     """``messages`` in the neutral shape, or an invalid-input error."""
     if not isinstance(messages, list) or not messages:
         raise InvalidInputExternalError("messages is a non-empty list")
@@ -83,7 +86,7 @@ def checked_messages(messages: Any) -> List[Dict[str, Any]]:
         if content is not None and not isinstance(content, str):
             raise InvalidInputExternalError("a message's content is text")
         role = message["role"]
-        entry: Dict[str, Any] = {"role": role, "content": content}
+        entry: dict[str, Any] = {"role": role, "content": content}
         if message.get("images"):
             if role != "user":
                 raise InvalidInputExternalError("only a user message has images")
@@ -98,7 +101,7 @@ def checked_messages(messages: Any) -> List[Dict[str, Any]]:
     return checked
 
 
-def _tool_call(call: Any) -> Dict[str, str]:
+def _tool_call(call: Any) -> dict[str, str]:
     if not isinstance(call, dict) or not all(
         isinstance(call.get(k), str) for k in ("id", "name", "arguments")
     ):
@@ -108,7 +111,7 @@ def _tool_call(call: Any) -> Dict[str, str]:
     return {"id": call["id"], "name": call["name"], "arguments": call["arguments"]}
 
 
-def checked_tools(tools: Any) -> Optional[List[Dict[str, Any]]]:
+def checked_tools(tools: Any) -> list[dict[str, Any]] | None:
     """``tools`` in the OpenAI function-tool shape, or None for no tools."""
     if not tools:
         return None
@@ -129,7 +132,7 @@ def checked_tools(tools: Any) -> Optional[List[Dict[str, Any]]]:
     return list(tools)
 
 
-def checked_texts(texts: Any) -> List[str]:
+def checked_texts(texts: Any) -> list[str]:
     if isinstance(texts, str):
         texts = [texts]
     if (
@@ -173,9 +176,9 @@ def image_size(size: str) -> str:
     return size
 
 
-def flatten_messages(messages: List[Dict[str, Any]]) -> str:
+def flatten_messages(messages: list[dict[str, Any]]) -> str:
     """A conversation as one labelled prompt, tool calls included."""
-    lines: List[str] = []
+    lines: list[str] = []
     for message in messages:
         role = str(message["role"]).capitalize()
         if message.get("content"):
@@ -186,13 +189,13 @@ def flatten_messages(messages: List[Dict[str, Any]]) -> str:
 
 
 def chat_answer(
-    content: Optional[str],
-    tool_calls: Optional[List[Dict[str, str]]],
-    finish_reason: Optional[str],
+    content: str | None,
+    tool_calls: list[dict[str, str]] | None,
+    finish_reason: str | None,
     model: str,
-    input_tokens: Optional[int],
-    output_tokens: Optional[int],
-) -> Dict[str, Any]:
+    input_tokens: int | None,
+    output_tokens: int | None,
+) -> dict[str, Any]:
     return {
         "message": {
             "role": "assistant",
@@ -219,8 +222,8 @@ class AbstractAIProvider(AbstractStaticProvider):
     name: ClassVar[str] = ""
     friendly_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
-    _abilities: ClassVar[Set[str]] = {CHAT}
-    _env: ClassVar[Dict[str, Any]] = {}
+    _abilities: ClassVar[set[str]] = {CHAT}
+    _env: ClassVar[dict[str, Any]] = {}
     http_timeout_seconds: ClassVar[float] = AI_REQUEST_TIMEOUT_SECONDS
 
     @classmethod
@@ -237,11 +240,11 @@ class AbstractAIProvider(AbstractStaticProvider):
     async def complete(
         cls,
         instance: ProviderInstanceModel,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        max_tokens: Optional[int],
-        temperature: Optional[float],
-    ) -> Dict[str, Any]:
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        temperature: float | None,
+    ) -> dict[str, Any]:
         """One chat turn in this provider's API: a :func:`chat_answer`."""
         raise cls.unsupported("chat")
 
@@ -249,12 +252,12 @@ class AbstractAIProvider(AbstractStaticProvider):
     async def chat(
         cls,
         instance: ProviderInstanceModel,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        requester_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        requester_id: str | None = None,
+    ) -> dict[str, Any]:
         """One chat turn, its tokens recorded against ``instance`` and the
         user named by ``requester_id``."""
         answer = await cls.complete(
@@ -269,15 +272,15 @@ class AbstractAIProvider(AbstractStaticProvider):
 
     @classmethod
     async def embed(
-        cls, instance: ProviderInstanceModel, texts: List[str]
-    ) -> Dict[str, Any]:
+        cls, instance: ProviderInstanceModel, texts: list[str]
+    ) -> dict[str, Any]:
         """``{embeddings: [[float]], model, dimensions}``, one per text."""
         raise cls.unsupported("embeddings")
 
     @classmethod
     async def image(
         cls, instance: ProviderInstanceModel, prompt: str, size: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """``{images: [{base64 | url}], model}``."""
         raise cls.unsupported("image generation")
 
@@ -287,15 +290,26 @@ class AbstractAIProvider(AbstractStaticProvider):
         instance: ProviderInstanceModel,
         audio: bytes,
         filename: str,
-        language: Optional[str],
-    ) -> Dict[str, Any]:
+        language: str | None,
+    ) -> dict[str, Any]:
         """``{text, model}``."""
         raise cls.unsupported("transcription")
 
     @classmethod
+    async def transcribe_timed(
+        cls,
+        instance: ProviderInstanceModel,
+        audio: bytes,
+        filename: str,
+        language: str | None,
+    ) -> dict[str, Any]:
+        """``{text, model, segments: [{start, end, text}]}``, times in seconds."""
+        raise cls.unsupported("timed transcription")
+
+    @classmethod
     async def speak(
-        cls, instance: ProviderInstanceModel, text: str, voice: Optional[str]
-    ) -> Dict[str, Any]:
+        cls, instance: ProviderInstanceModel, text: str, voice: str | None
+    ) -> dict[str, Any]:
         """``{audio_base64, content_type, model, voice}``."""
         raise cls.unsupported("speech")
 
@@ -304,14 +318,14 @@ class AbstractAIProvider(AbstractStaticProvider):
         return str(cls.setting(instance, "model") or "")
 
     @classmethod
-    def services(cls) -> List[str]:
+    def services(cls) -> list[str]:
         return ["ai"]
 
 
 def record_usage(
     instance: ProviderInstanceModel,
     usage: Mapping[str, Any],
-    requester_id: Optional[str],
+    requester_id: str | None,
 ) -> None:
     """Record a call's input and output tokens against ``instance`` (and
     the user it ran for), when an app is running to record them in."""
@@ -342,22 +356,23 @@ class EXT_AI(AbstractStaticExtension):
         "hosted and self-hosted models"
     )
 
-    _env: ClassVar[Dict[str, Any]] = {}
+    _env: ClassVar[dict[str, Any]] = {}
     dependencies: ClassVar[Dependencies] = Dependencies([])
-    _abilities: ClassVar[Set[str]] = {
+    _abilities: ClassVar[set[str]] = {
         "list_ai_models",
         "chat",
         "generate_text",
         "embed",
         "generate_image",
         "transcribe",
+        "transcribe_timed",
         "speak",
         "ai_usage",
     }
 
     @classmethod
     @ability("list_ai_models")
-    async def list_ai_models(cls) -> List[Dict[str, Any]]:
+    async def list_ai_models(cls) -> list[dict[str, Any]]:
         """The configured model instances: id, name and provider."""
         return cls.instances_of()
 
@@ -365,15 +380,15 @@ class EXT_AI(AbstractStaticExtension):
     @ability("chat")
     async def chat(
         cls,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        requester_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        requester_id: str | None = None,
+    ) -> dict[str, Any]:
         """One chat turn over the neutral message shape; with ``tools`` the
         model may answer with tool calls for the caller to run."""
-        result: Dict[str, Any] = await cls.rotate_capable(
+        result: dict[str, Any] = await cls.rotate_capable(
             CHAT,
             "chat",
             checked_messages(messages),
@@ -389,10 +404,10 @@ class EXT_AI(AbstractStaticExtension):
     async def generate_text(
         cls,
         prompt: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        requester_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        requester_id: str | None = None,
+    ) -> dict[str, Any]:
         """A reply to one prompt: ``{text, model, usage}``."""
         answer = await cls.chat(
             [{"role": "user", "content": prompt}],
@@ -409,9 +424,9 @@ class EXT_AI(AbstractStaticExtension):
 
     @classmethod
     @ability("embed")
-    async def embed(cls, texts: List[str]) -> Dict[str, Any]:
+    async def embed(cls, texts: list[str]) -> dict[str, Any]:
         """An embedding vector per text."""
-        result: Dict[str, Any] = await cls.rotate_capable(
+        result: dict[str, Any] = await cls.rotate_capable(
             EMBEDDINGS, "embed", checked_texts(texts)
         )
         return result
@@ -420,10 +435,10 @@ class EXT_AI(AbstractStaticExtension):
     @ability("generate_image")
     async def generate_image(
         cls, prompt: str, size: str = "1024x1024"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not prompt or not prompt.strip():
             raise InvalidInputExternalError("an image needs a prompt")
-        result: Dict[str, Any] = await cls.rotate_capable(
+        result: dict[str, Any] = await cls.rotate_capable(
             IMAGES, "image", prompt, image_size(size)
         )
         return result
@@ -434,26 +449,45 @@ class EXT_AI(AbstractStaticExtension):
         cls,
         audio_base64: str,
         filename: str = "audio.mp3",
-        language: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        language: str | None = None,
+    ) -> dict[str, Any]:
         """The text spoken in the audio (mp3, wav, m4a, ogg, webm, flac)."""
-        result: Dict[str, Any] = await cls.rotate_capable(
+        result: dict[str, Any] = await cls.rotate_capable(
             TRANSCRIPTION, "transcribe", audio_bytes(audio_base64), filename, language
         )
         return result
 
     @classmethod
+    @ability("transcribe_timed")
+    async def transcribe_timed(
+        cls,
+        audio_base64: str,
+        filename: str = "audio.mp3",
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """The text spoken in the audio, in segments with their start and end
+        (seconds): what captions and transcripts are made from."""
+        result: dict[str, Any] = await cls.rotate_capable(
+            TIMED_TRANSCRIPTION,
+            "transcribe_timed",
+            audio_bytes(audio_base64),
+            filename,
+            language,
+        )
+        return result
+
+    @classmethod
     @ability("speak")
-    async def speak(cls, text: str, voice: Optional[str] = None) -> Dict[str, Any]:
+    async def speak(cls, text: str, voice: str | None = None) -> dict[str, Any]:
         """``text`` as speech: base64 audio and its content type."""
-        result: Dict[str, Any] = await cls.rotate_capable(
+        result: dict[str, Any] = await cls.rotate_capable(
             SPEECH, "speak", speech_text(text), voice
         )
         return result
 
     @classmethod
     @ability("ai_usage")
-    async def ai_usage(cls) -> List[Dict[str, Any]]:
+    async def ai_usage(cls) -> list[dict[str, Any]]:
         """Tokens used per model instance: input and output totals."""
         from zephyrex.logic.BLL_Providers import ProviderInstanceUsageManager
 
@@ -463,7 +497,7 @@ class EXT_AI(AbstractStaticExtension):
         usages = ProviderInstanceUsageManager(
             model_registry=root.model_registry, requester_id=env("ROOT_ID")
         )
-        totals: Dict[str, Dict[str, Any]] = {}
+        totals: dict[str, dict[str, Any]] = {}
         for instance in cls.instances_of():
             entry = {**instance, "input_tokens": 0, "output_tokens": 0}
             for row in usages.list(provider_instance_id=instance["id"]):

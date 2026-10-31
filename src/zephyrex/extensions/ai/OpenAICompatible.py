@@ -6,7 +6,8 @@ the abilities it offers, and the error texts that mean a refused key on
 the servers that refuse one with a 400."""
 
 import base64
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 from zephyrex.extensions.ai.EXT_AI import (
     AbstractAIProvider,
@@ -22,9 +23,9 @@ from zephyrex.extensions.ExternalErrors import (
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
-def openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Neutral messages as Chat Completions messages."""
-    found: List[Dict[str, Any]] = []
+    found: list[dict[str, Any]] = []
     for message in messages:
         role = message["role"]
         if role == "tool":
@@ -36,7 +37,7 @@ def openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 }
             )
             continue
-        entry: Dict[str, Any] = {"role": role, "content": message.get("content")}
+        entry: dict[str, Any] = {"role": role, "content": message.get("content")}
         if message.get("images"):
             entry["content"] = [
                 {"type": "text", "text": message.get("content") or ""},
@@ -58,7 +59,7 @@ def openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return found
 
 
-def openai_answer(answer: Mapping[str, Any], model: str) -> Dict[str, Any]:
+def openai_answer(answer: Mapping[str, Any], model: str) -> dict[str, Any]:
     """A Chat Completions response as a neutral chat answer."""
     choices = answer.get("choices") or []
     if not choices:
@@ -84,15 +85,40 @@ def openai_answer(answer: Mapping[str, Any], model: str) -> Dict[str, Any]:
     )
 
 
+def timed_transcript(answer: dict[str, Any]) -> dict[str, Any]:
+    """An OpenAI ``verbose_json`` transcription as ``{text, segments}``.
+
+    A model that ignored the request for segments (one that only answers
+    ``json``) is a provider error, not an empty transcript."""
+    raw = answer.get("segments")
+    if not isinstance(raw, list):
+        raise PermanentExternalError(
+            "the transcription model returned no segments; set a timed "
+            "transcription model that answers verbose_json (whisper-1)"
+        )
+    segments = [
+        {
+            "start": float(segment["start"]),
+            "end": float(segment["end"]),
+            "text": str(segment.get("text", "")).strip(),
+        }
+        for segment in raw
+        if isinstance(segment, dict) and "start" in segment and "end" in segment
+    ]
+    return {"text": str(answer.get("text", "")).strip(), "segments": segments}
+
+
 class OpenAICompatibleProvider(AbstractAIProvider):
     """A server speaking the OpenAI API at ``base(instance)``."""
 
     max_tokens_field: ClassVar[str] = "max_tokens"
     # Texts in a 400's body that mean the key was refused.
-    refused_key_markers: ClassVar[Tuple[str, ...]] = ()
+    refused_key_markers: ClassVar[tuple[str, ...]] = ()
     embedding_model: ClassVar[str] = ""
     image_model: ClassVar[str] = ""
     transcription_model: ClassVar[str] = ""
+    # A model that answers verbose_json with segments; "" uses transcription_model.
+    timed_transcription_model: ClassVar[str] = ""
     speech_model: ClassVar[str] = ""
     default_voice: ClassVar[str] = "alloy"
 
@@ -106,7 +132,7 @@ class OpenAICompatibleProvider(AbstractAIProvider):
         return url
 
     @classmethod
-    def auth_headers(cls, instance: ProviderInstanceModel) -> Dict[str, str]:
+    def auth_headers(cls, instance: ProviderInstanceModel) -> dict[str, str]:
         key = cls.setting(instance, "api_key")
         return {"Authorization": f"Bearer {key}"} if key else {}
 
@@ -144,13 +170,13 @@ class OpenAICompatibleProvider(AbstractAIProvider):
     async def complete(
         cls,
         instance: ProviderInstanceModel,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        max_tokens: Optional[int],
-        temperature: Optional[float],
-    ) -> Dict[str, Any]:
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        temperature: float | None,
+    ) -> dict[str, Any]:
         model = cls.required_model(instance)
-        body: Dict[str, Any] = {"model": model, "messages": openai_messages(messages)}
+        body: dict[str, Any] = {"model": model, "messages": openai_messages(messages)}
         if tools:
             body["tools"] = tools
         if max_tokens is not None:
@@ -163,8 +189,8 @@ class OpenAICompatibleProvider(AbstractAIProvider):
 
     @classmethod
     async def embed(
-        cls, instance: ProviderInstanceModel, texts: List[str]
-    ) -> Dict[str, Any]:
+        cls, instance: ProviderInstanceModel, texts: list[str]
+    ) -> dict[str, Any]:
         model = str(cls.setting(instance, "embedding_model") or cls.embedding_model)
         answer = await cls.call(
             instance,
@@ -188,7 +214,7 @@ class OpenAICompatibleProvider(AbstractAIProvider):
     @classmethod
     async def image(
         cls, instance: ProviderInstanceModel, prompt: str, size: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         model = str(cls.setting(instance, "image_model") or cls.image_model)
         answer = await cls.call(
             instance,
@@ -212,8 +238,8 @@ class OpenAICompatibleProvider(AbstractAIProvider):
         instance: ProviderInstanceModel,
         audio: bytes,
         filename: str,
-        language: Optional[str],
-    ) -> Dict[str, Any]:
+        language: str | None,
+    ) -> dict[str, Any]:
         model = str(
             cls.setting(instance, "transcription_model") or cls.transcription_model
         )
@@ -229,9 +255,38 @@ class OpenAICompatibleProvider(AbstractAIProvider):
         return {"text": str(answer.get("text", "")), "model": model}
 
     @classmethod
+    async def transcribe_timed(
+        cls,
+        instance: ProviderInstanceModel,
+        audio: bytes,
+        filename: str,
+        language: str | None,
+    ) -> dict[str, Any]:
+        model = str(
+            cls.setting(instance, "timed_transcription_model")
+            or cls.timed_transcription_model
+            or cls.setting(instance, "transcription_model")
+            or cls.transcription_model
+        )
+        form = {
+            "model": model,
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": "segment",
+        }
+        if language:
+            form["language"] = language
+        answer = await cls.call(
+            instance,
+            "/audio/transcriptions",
+            data=form,
+            files={"file": (filename, audio, "application/octet-stream")},
+        )
+        return {**timed_transcript(answer), "model": model}
+
+    @classmethod
     async def speak(
-        cls, instance: ProviderInstanceModel, text: str, voice: Optional[str]
-    ) -> Dict[str, Any]:
+        cls, instance: ProviderInstanceModel, text: str, voice: str | None
+    ) -> dict[str, Any]:
         model = str(cls.setting(instance, "speech_model") or cls.speech_model)
         chosen = voice or cls.default_voice
         response = await cls.call(
