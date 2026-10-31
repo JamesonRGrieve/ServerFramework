@@ -26,6 +26,14 @@ from zephyrex.extensions.calendar.EXT_Calendar import (
     time_range,
     zone,
 )
+from zephyrex.extensions.calendar.PRV_CalDAV import (
+    PRV_CalDAV_Calendar,
+    calendar_query,
+    changed_calendar,
+    event_id,
+    new_calendar,
+    resources,
+)
 from zephyrex.extensions.calendar.PRV_Calendly import PRV_Calendly_Calendar
 from zephyrex.extensions.calendar.PRV_Google import PRV_Google_Calendar, when
 from zephyrex.extensions.calendar.PRV_Microsoft import (
@@ -204,6 +212,167 @@ class TestProviders:
             await PRV_Calendly_Calendar.delete_event(instance, "../users/me")
 
 
+# A REPORT answer as Nextcloud and iCloud give it: a timed event with an
+# attendee, a recurring one expanded into an occurrence, an all-day event, a
+# transparent one and a cancelled one.
+CALDAV_MULTISTATUS = """<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+ <d:response><d:href>/cal/dates/dinner%20one.ics</d:href><d:propstat><d:prop>
+  <cal:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:dinner
+SUMMARY:Dinner &amp; a show
+DTSTART:20261005T180000Z
+DTEND:20261005T210000Z
+LOCATION:Downtown
+ATTENDEE;CN=Alex:mailto:alex@example.com
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data></d:prop></d:propstat></d:response>
+ <d:response><d:href>/cal/dates/weekly.ics</d:href><d:propstat><d:prop>
+  <cal:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:weekly
+SUMMARY:Date night
+DTSTART:20261005T090000Z
+DURATION:PT1H
+RECURRENCE-ID:20261005T090000Z
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data></d:prop></d:propstat></d:response>
+ <d:response><d:href>/cal/dates/trip.ics</d:href><d:propstat><d:prop>
+  <cal:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:trip
+SUMMARY:Weekend away
+DTSTART;VALUE=DATE:20261005
+DTEND;VALUE=DATE:20261006
+END:VEVENT
+BEGIN:VEVENT
+UID:reminder
+SUMMARY:Reminder
+DTSTART:20261005T120000Z
+DTEND:20261005T130000Z
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VEVENT
+UID:called-off
+SUMMARY:Called off
+DTSTART:20261005T140000Z
+DTEND:20261005T150000Z
+STATUS:CANCELLED
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data></d:prop></d:propstat></d:response>
+ <d:response><d:href>/cal/dates/</d:href><d:propstat><d:prop/></d:propstat></d:response>
+</d:multistatus>"""
+
+
+class TestCalDAV:
+    def test_the_query_asks_for_the_range_with_recurrences_expanded(self):
+        query = calendar_query(at(9), at(17))
+        assert '<C:expand start="20261005T090000Z" end="20261005T170000Z"/>' in query
+        assert (
+            '<C:time-range start="20261005T090000Z" end="20261005T170000Z"/>' in query
+        )
+
+    def test_an_answer_lists_each_event_earliest_first(self):
+        found = PRV_CalDAV_Calendar._events(resources(CALDAV_MULTISTATUS))
+        events = [event for event, _ in found]
+        assert [e["title"] for e in events] == [
+            "Weekend away",
+            "Date night",
+            "Reminder",
+            "Called off",
+            "Dinner & a show",
+        ]
+        dinner = events[-1]
+        assert dinner["id"] == "dinner one.ics"
+        assert (dinner["start"], dinner["end"]) == (
+            "2026-10-05T18:00:00Z",
+            "2026-10-05T21:00:00Z",
+        )
+        assert dinner["attendees"] == ["alex@example.com"]
+        assert dinner["location"] == "Downtown"
+        assert events[1]["end"] == "2026-10-05T10:00:00Z"  # from its DURATION
+        assert (events[0]["start"], events[0]["end"]) == ("2026-10-05", "2026-10-06")
+
+    def test_only_time_that_blocks_is_busy(self):
+        spans = {
+            event["title"]: span
+            for event, span in PRV_CalDAV_Calendar._events(
+                resources(CALDAV_MULTISTATUS)
+            )
+        }
+        assert spans["Reminder"] is None
+        assert spans["Called off"] is None
+        assert spans["Dinner & a show"] == (at(18), at(21))
+        assert spans["Weekend away"] == (at(0), at(0) + timedelta(days=1))
+
+    def test_a_new_event_round_trips(self):
+        body = new_calendar(
+            "uid-1",
+            {
+                "title": "Picnic",
+                "start": at(12),
+                "end": at(14),
+                "attendees": ["jo@x.co"],
+            },
+        )
+        [(event, span)] = PRV_CalDAV_Calendar._events([("uid-1.ics", body.decode())])
+        assert (event["id"], event["title"], event["attendees"]) == (
+            "uid-1.ics",
+            "Picnic",
+            ["jo@x.co"],
+        )
+        assert span == (at(12), at(14))
+
+    def test_a_change_rewrites_the_series_not_its_overrides(self):
+        original = new_calendar(
+            "uid-2", {"title": "Old", "start": at(9), "end": at(10)}
+        )
+        changed = changed_calendar(
+            original.decode(), {"title": "New", "start": at(11), "end": at(12)}
+        )
+        [(event, _)] = PRV_CalDAV_Calendar._events([("uid-2.ics", changed.decode())])
+        assert (event["title"], event["start"]) == ("New", "2026-10-05T11:00:00Z")
+
+    def test_an_online_meeting_is_refused(self):
+        with pytest.raises(InvalidInputExternalError, match="online meetings"):
+            new_calendar(
+                "uid-3",
+                {
+                    "title": "Call",
+                    "start": at(9),
+                    "end": at(10),
+                    "online_meeting": True,
+                },
+            )
+
+    def test_an_id_is_the_resource_name(self):
+        assert event_id("/cal/dates/dinner%20one.ics") == "dinner one.ics"
+
+    async def test_an_id_stays_one_path_segment(self, provider_instance):
+        instance = provider_instance(
+            PRV_CalDAV_Calendar,
+            api_key=BOGUS,
+            settings={"calendar_url": "https://caldav.example.com/cal/"},
+        )
+        for bad in ("../other/x.ics", "..", ""):
+            with pytest.raises(InvalidInputExternalError):
+                await PRV_CalDAV_Calendar.delete_event(instance, bad)
+
+    def test_a_non_xml_answer_is_a_precise_error(self):
+        with pytest.raises(PermanentExternalError, match="not XML"):
+            resources("<html><body>Sign in")
+
+
 class TestRefusedTokens:
     @reachable("https://www.googleapis.com")
     async def test_google(self, provider_instance):
@@ -217,6 +386,23 @@ class TestRefusedTokens:
         with pytest.raises(AuthExternalError):
             await PRV_Microsoft_Calendar.list_events(
                 provider_instance(PRV_Microsoft_Calendar, api_key=BOGUS),
+                at(9),
+                at(10),
+                5,
+            )
+
+    @reachable("https://caldav.icloud.com")
+    async def test_caldav(self, provider_instance):
+        with pytest.raises(AuthExternalError):
+            await PRV_CalDAV_Calendar.list_events(
+                provider_instance(
+                    PRV_CalDAV_Calendar,
+                    api_key=BOGUS,
+                    settings={
+                        "username": "nobody@example.com",
+                        "calendar_url": "https://caldav.icloud.com/",
+                    },
+                ),
                 at(9),
                 at(10),
                 5,

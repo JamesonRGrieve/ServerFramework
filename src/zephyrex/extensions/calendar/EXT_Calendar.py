@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Calendars: read, create, change and delete events and find free time on
-Google Calendar, Microsoft 365 / Outlook (Microsoft Graph) and Calendly.
+Google Calendar, Microsoft 365 / Outlook (Microsoft Graph), Calendly and any
+CalDAV calendar (iCloud, Fastmail, Nextcloud, …).
 
 An event belongs to one calendar account, so every ability names its
 ``provider`` and runs on that provider's instances (one instance per
@@ -249,7 +250,7 @@ class EXT_Calendar(AbstractStaticExtension):
     name: ClassVar[str] = "calendar"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (
-        "Events and free time on Google Calendar, Microsoft 365 and Calendly"
+        "Events and free time on Google Calendar, Microsoft 365, Calendly and any CalDAV calendar"
     )
 
     _env: ClassVar[Dict[str, Any]] = {}

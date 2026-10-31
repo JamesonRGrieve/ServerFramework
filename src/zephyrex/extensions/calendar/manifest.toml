@@ -6,10 +6,10 @@
 
 name = "calendar"
 version = "1.0.0"
-description = "Events and free time on Google Calendar, Microsoft 365 and Calendly"
+description = "Events and free time on Google Calendar, Microsoft 365, Calendly and any CalDAV calendar"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Calendar"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["icalendar>=7.3"]
 system_dependencies = []

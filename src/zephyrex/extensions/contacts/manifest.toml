@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
+name = "contacts"
+version = "1.0.0"
+description = "Contacts on Google Contacts, Microsoft 365 and any CardDAV address book"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Contacts"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = ["vobject>=0.9.9"]
+system_dependencies = []

@@ -23,7 +23,7 @@ src/zephyrex/
   logic/                Business logic managers (BLL_Auth, BLL_Providers, AbstractLogicManager)
   endpoints/            REST endpoints, AbstractEPTest
   database/             SQLAlchemy ORM, migrations, seeding, read replicas
-  extensions/           34 pluggable extensions (auth, billing, federation, etc.)
+  extensions/           Pluggable extensions (auth, billing, calendar, contacts, genealogy, etc.)
   lib/                  Utilities (Environment, Pydantic, ContentNegotiation, etc.)
   sdk/                  Auto-generated client SDK
 ```
@@ -37,7 +37,7 @@ run(extensions="my_ext", extensions_path="./extensions", port=2000)
 
 ### Extension System
 
-34 in-framework extensions, each self-contained with its own models, BLL, endpoints, tests, and migrations. Extensions loaded dynamically via `APP_EXTENSIONS` env var or `extensions=` parameter.
+In-framework extensions, each self-contained with its own models, BLL, endpoints, tests, and migrations. Extensions loaded dynamically via `APP_EXTENSIONS` env var or `extensions=` parameter.
 
 ---
 
@@ -82,6 +82,7 @@ npm install zephyrex          # Client
 - Extension tests follow `EXT.Test.md` and `PRV.Test.md` patterns
 - Migrations per-extension, ordered by `MigrationOrdering.py`
 - Blocking/non-blocking hooks via `hook_bll` (Items 21/22/41)
+- A lookup run as ROOT (`requester_id=env("ROOT_ID")`) also returns soft-deleted rows: filter `db.deleted_at.is_(None)` yourself, or a deleted record keeps counting (a deleted seat still granting a plan, a deleted self person still publishing)
 
 ## License
 
