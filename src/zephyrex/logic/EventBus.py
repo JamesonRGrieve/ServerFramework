@@ -70,15 +70,21 @@ import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
+from collections import defaultdict, deque
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 from pydantic import BaseModel
 
 _logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-EventHandler = Callable[[BaseModel], Optional[Awaitable[None]]]
+
+# How many of its most recent publishes an ``InMemoryEventBus`` keeps for
+# inspection. The bus is the process default, so an unbounded record would grow
+# with every event a long-running server publishes.
+PUBLISHED_HISTORY_SIZE = 1000
+EventHandler = Callable[[BaseModel], Awaitable[None] | None]
 
 
 class AbstractEventBus(ABC):
@@ -97,7 +103,7 @@ class AbstractEventBus(ABC):
 
     @abstractmethod
     def subscribe(
-        self, event_class: Type[BaseModel], handler: EventHandler
+        self, event_class: type[BaseModel], handler: EventHandler
     ) -> None: ...
 
     @abstractmethod
@@ -113,8 +119,8 @@ class InMemoryEventBus(AbstractEventBus):
     """
 
     def __init__(self) -> None:
-        self._subscribers: Dict[str, List[EventHandler]] = defaultdict(list)
-        self._published_events: List[BaseModel] = []
+        self._subscribers: dict[str, list[EventHandler]] = defaultdict(list)
+        self._published_events: deque[BaseModel] = deque(maxlen=PUBLISHED_HISTORY_SIZE)
         self._closed = False
 
     async def publish(self, event: BaseModel) -> None:
@@ -127,7 +133,7 @@ class InMemoryEventBus(AbstractEventBus):
             if hasattr(result, "__await__"):
                 await result  # type: ignore[misc]
 
-    def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None:
+    def subscribe(self, event_class: type[BaseModel], handler: EventHandler) -> None:
         key = f"{event_class.__module__}.{event_class.__name__}"
         self._subscribers[key].append(handler)
 
@@ -136,7 +142,8 @@ class InMemoryEventBus(AbstractEventBus):
         self._subscribers.clear()
 
     @property
-    def published_events(self) -> List[BaseModel]:
+    def published_events(self) -> list[BaseModel]:
+        """The most recent publishes, oldest first (at most ``PUBLISHED_HISTORY_SIZE``)."""
         return list(self._published_events)
 
 
@@ -183,7 +190,7 @@ class InMemoryBrokerTransport(BrokerTransport):
     invocation, swallowed handler errors logged but not raised."""
 
     def __init__(self) -> None:
-        self._subscribers: Dict[str, List[Callable[[bytes], Awaitable[None]]]] = (
+        self._subscribers: dict[str, list[Callable[[bytes], Awaitable[None]]]] = (
             defaultdict(list)
         )
         self._closed = False
@@ -233,18 +240,18 @@ class _BrokerEventBus(AbstractEventBus):
 
     def __init__(
         self,
-        transport: Optional[BrokerTransport] | None = None,
-        dlq_topic: Optional[str] | None = None,
+        transport: BrokerTransport | None = None,
+        dlq_topic: str | None = None,
     ) -> None:
         self._transport = transport or InMemoryBrokerTransport()
         self._dlq_topic = dlq_topic
         # Map topic key → list of (event_class, handler) so dispatch can
         # decode the bytes back into the right Pydantic class on receive.
-        self._handlers: Dict[str, List[tuple]] = defaultdict(list)
+        self._handlers: dict[str, list[tuple]] = defaultdict(list)
         self._subscribed_topics: set = set()
 
     @staticmethod
-    def _topic_for(event_class: Type[BaseModel]) -> str:
+    def _topic_for(event_class: type[BaseModel]) -> str:
         return f"{event_class.__module__}.{event_class.__name__}"
 
     async def publish(self, event: BaseModel) -> None:
@@ -252,7 +259,7 @@ class _BrokerEventBus(AbstractEventBus):
         payload = json.dumps(event.model_dump()).encode("utf-8")
         await self._transport.send(topic, payload)
 
-    def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None:
+    def subscribe(self, event_class: type[BaseModel], handler: EventHandler) -> None:
         topic = self._topic_for(event_class)
         self._handlers[topic].append((event_class, handler))
         if topic not in self._subscribed_topics:
@@ -371,7 +378,7 @@ def get_event_bus() -> AbstractEventBus:
     return _active_bus
 
 
-def on_event(event_class: Type[BaseModel]):
+def on_event(event_class: type[BaseModel]):
     """Decorator: subscribe a handler to an event class on the active bus.
 
     Usage::
@@ -390,14 +397,14 @@ def on_event(event_class: Type[BaseModel]):
 
 __all__ = [
     "AbstractEventBus",
-    "InMemoryEventBus",
     "BrokerTransport",
+    "EventHandler",
     "InMemoryBrokerTransport",
+    "InMemoryEventBus",
     "KafkaEventBus",
     "NATSEventBus",
     "RedisStreamsEventBus",
-    "EventHandler",
-    "set_event_bus",
     "get_event_bus",
     "on_event",
+    "set_event_bus",
 ]

@@ -850,7 +850,7 @@ ABC for cross-process event-bus adapters.
 ### `on_event` (decorator)
 
 - Module: `zephyrex.logic.EventBus`
-- Signature: `on_event(event_class: Type[pydantic.main.BaseModel])`
+- Signature: `on_event(event_class: type[pydantic.main.BaseModel])`
 - Live docstring: Decorator: subscribe a handler to an event class on the active bus.
 
 Registers a function as a typed cross-process event handler.

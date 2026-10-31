@@ -4,6 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from zephyrex.logic.EventBus import (
+    PUBLISHED_HISTORY_SIZE,
     AbstractEventBus,
     InMemoryEventBus,
     KafkaEventBus,
@@ -318,3 +319,18 @@ async def test_published_events_property_records_publishes():
     await bus.publish(e2)
 
     assert bus.published_events == [e1, e2]
+
+
+@pytest.mark.asyncio
+async def test_published_history_is_bounded_not_kept_forever():
+    """The in-memory bus is the process default: a long-running server
+    publishing (live sync, for one) must not keep every event it ever sent."""
+    bus = InMemoryEventBus()
+    events = [
+        OrderCreated(order_id=str(i), total=1.0)
+        for i in range(PUBLISHED_HISTORY_SIZE + 5)
+    ]
+    for event in events:
+        await bus.publish(event)
+
+    assert bus.published_events == events[-PUBLISHED_HISTORY_SIZE:]
