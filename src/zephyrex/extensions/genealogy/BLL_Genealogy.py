@@ -9,17 +9,21 @@ columns (e.g. ``faction_id`` / ``target_faction_id``) via
 per side" once those are injected.
 
 An edge reads "subject (kind, discriminator) object", the discriminator
-naming the subject's role: ``ancestry`` reads parent → child.
+naming the subject's role: ``ancestry`` reads parent → child. The kinds
+genealogy knows, and the discriminators each accepts, are in
+``Relationships``; a relationship of one of them is checked on every write.
 
 Routes on ``/v1/person``: ``/{id}/ancestors``, ``/{id}/descendants`` and
 ``/{id}/kinship/{other_id}`` walk the ancestry graph (``FamilyTree``);
+``/{id}/connections``, ``/{id}/metamours`` and ``/{id}/network`` walk the
+symmetric ties (partnership, friendship, …; ``SocialGraph``);
 ``GET /gedcom`` exports the people the requester can see as GEDCOM 5.5.1
 and ``POST /gedcom`` imports GEDCOM 5.5 to 7.0 (``GEDCOM``). Every read is
 as the requester, so a tree never reaches past what they may see.
 """
 
-from datetime import date, datetime, time
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
+from datetime import date, datetime, time, timezone
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Type
 
 from fastapi import HTTPException
 from fastapi.responses import PlainTextResponse
@@ -32,6 +36,21 @@ from zephyrex.extensions.genealogy.FamilyTree import (
     Kinship,
     ParentEdge,
 )
+from zephyrex.extensions.genealogy.Relationships import (
+    PARTNERSHIP,
+    RelationshipError,
+    check_relationship,
+    describe_discriminators,
+    directed_kinds,
+    symmetric_kinds,
+)
+from zephyrex.extensions.genealogy.MergedTrees import (
+    MergedGraph,
+    Tree,
+    TreePerson,
+    merge,
+)
+from zephyrex.extensions.genealogy.SocialGraph import SocialGraph, Tie
 from zephyrex.extensions.genealogy.GEDCOM import (
     ExportFamily,
     ExportPerson,
@@ -40,8 +59,10 @@ from zephyrex.extensions.genealogy.GEDCOM import (
     parse,
 )
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
+from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import RouterMixin
+from zephyrex.logic.AbstractLogicManager.ownership import each_created
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -53,6 +74,9 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+
+# How a person shows to strangers in a merged tree, least to most revealing.
+Visibility = Literal["hidden", "anonymous", "named", "profile"]
 
 # A relationship's signed magnitude: -1.0 nemesis to +1.0 closest.
 INTENSITY_MIN = -1.0
@@ -80,6 +104,23 @@ class PersonModel(
         None,
         description="Free-form gender label",
     )
+    # Not ``user_id``: that names a record's owner, and the person this record
+    # is about must not thereby see what its owner keeps about them.
+    linked_user_id: Optional[str] = Field(
+        None,
+        description=(
+            "The account this person is, when they have one; on the account's "
+            "own record (created by it) this is its self person"
+        ),
+    )
+    visibility: Optional[str] = Field(
+        None,
+        description=(
+            "How this person shows in the trees of people who are strangers to them, "
+            "when linked trees merge: hidden, anonymous (the default), named or profile. "
+            "An account sets it on its self person; a ghost's recorder sets it on the ghost."
+        ),
+    )
     table_comment: ClassVar[str] = (
         "An actor identity. Used standalone for genealogy and as the "
         "humanoid subject of RPG Characters via Character.person_id. "
@@ -93,6 +134,8 @@ class PersonModel(
         birth_date: Optional[datetime] = None
         death_date: Optional[datetime] = None
         gender: Optional[str] = None
+        linked_user_id: Optional[str] = None
+        visibility: Optional[Visibility] = None
 
     class Update(BaseModel):
         name: Optional[str] = None
@@ -100,12 +143,15 @@ class PersonModel(
         birth_date: Optional[datetime] = None
         death_date: Optional[datetime] = None
         gender: Optional[str] = None
+        linked_user_id: Optional[str] = None
+        visibility: Optional[Visibility] = None
 
     class Search(ApplicationModel.Search):
         name: Optional[StringSearchModel] = None
         birth_date: Optional[DateSearchModel] = None
         death_date: Optional[DateSearchModel] = None
         gender: Optional[StringSearchModel] = None
+        linked_user_id: Optional[StringSearchModel] = None
 
 
 class RelativeEntry(ResponseModel):
@@ -133,6 +179,125 @@ class KinshipResponse(ResponseModel):
     lineal: Optional[bool] = Field(None, description="One is the other's ancestor")
 
 
+class ConnectionEntry(ResponseModel):
+    person_id: str
+    kind: str
+    discriminator: Optional[str] = None
+
+
+class ConnectionsResponse(ResponseModel):
+    person_id: str
+    connections: List[ConnectionEntry]
+
+
+class MetamourEntry(ResponseModel):
+    person_id: str
+    via: List[str] = Field(..., description="The partners the two people share")
+
+
+class MetamoursResponse(ResponseModel):
+    person_id: str
+    metamours: List[MetamourEntry]
+
+
+class NetworkEntry(ResponseModel):
+    person_id: str
+    distance: int = Field(..., description="1 = a direct tie, 2 = a tie of a tie, …")
+
+
+class NetworkTie(ResponseModel):
+    """A tie between two people in a network, once however it was stored:
+    a symmetric tie's ``person_id`` sorts first; a directed tie's is its
+    subject (the mentor of a mentorship)."""
+
+    person_id: str
+    target_person_id: str
+    kind: str
+    discriminator: Optional[str] = None
+    directed: bool = False
+
+
+class NetworkResponse(ResponseModel):
+    person_id: str
+    kinds: List[str]
+    members: List[NetworkEntry]
+    ties: List[NetworkTie] = Field(
+        ...,
+        description="Every walked tie between the person and their members, to draw the network",
+    )
+
+
+class AttributeEntry(ResponseModel):
+    id: str
+    category: str
+    label: str
+    value: str
+    unit: Optional[str] = None
+    position: int = 0
+    created_by_user_id: Optional[str] = None
+    # The row's version (updated_at, else created_at), which a write sends back as If-Match.
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class PersonCardResponse(ResponseModel):
+    """A person as the requester sees them: what the requester keeps about
+    them, and what they published from their own record to the requester."""
+
+    person_id: str
+    linked_user_id: Optional[str] = None
+    notes: List[AttributeEntry] = Field(
+        ...,
+        description="The attributes on this record: the requester's own notes, or their own profile",
+    )
+    published: List[AttributeEntry] = Field(
+        ...,
+        description=(
+            "The attributes the linked account published from its self person to "
+            "the requester (directly or through a team); none for a ghost"
+        ),
+    )
+
+
+class LinkedNode(ResponseModel):
+    """A person in the merged graph, as the requester may see them."""
+
+    key: str = Field(
+        ...,
+        description="user:<account> for a linked account, person:<id> for anyone else",
+    )
+    name: Optional[str] = Field(
+        None, description="Null when they show to the requester anonymously"
+    )
+    visibility: str
+    mine: bool = Field(
+        ..., description="The requester's own record of them, shown as written"
+    )
+    person_id: Optional[str] = Field(
+        None, description="The requester's record of them, when they have one"
+    )
+    user_id: Optional[str] = None
+    distance: int
+    group: Optional[int] = Field(
+        None, description="Which of the requester's polycules they are in"
+    )
+
+
+class LinkedTie(ResponseModel):
+    source: str
+    target: str
+    kind: str
+    discriminator: Optional[str] = None
+    directed: bool = False
+
+
+class LinkedNetworkResponse(ResponseModel):
+    center: str
+    kinds: List[str]
+    nodes: List[LinkedNode]
+    ties: List[LinkedTie]
+
+
 class GEDCOMImportRequest(ResponseModel):
     gedcom: str = Field(..., description="GEDCOM 5.5, 5.5.1, 5.5.5 or 7.0 text")
 
@@ -152,12 +317,94 @@ def _roles(roles: Optional[str]) -> Optional[List[str]]:
     return [r.strip() for r in roles.split(",") if r.strip()]
 
 
+def _kinds(kinds: Optional[str]) -> List[str]:
+    """``?kinds=partnership,mentorship``: the kinds a social walk follows;
+    every registered symmetric kind when omitted. A directed kind (but not
+    ancestry, which the family-tree routes walk) may be named too, and is
+    walked both ways with its direction kept. A kind that is not registered
+    is refused, never silently ignored."""
+    if kinds is None:
+        return list(symmetric_kinds())
+    known = tuple(sorted({*symmetric_kinds(), *directed_kinds()} - {ANCESTRY}))
+    chosen = [k.strip() for k in kinds.split(",") if k.strip()]
+    unknown = [k for k in chosen if k not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Not a relationship kind to walk: {', '.join(unknown)}; expected {', '.join(known)}",
+        )
+    return chosen
+
+
 def _as_datetime(value: Optional[date]) -> Optional[datetime]:
     return datetime.combine(value, time()) if value is not None else None
 
 
+def _entries(rows: List[Any]) -> List[AttributeEntry]:
+    return [
+        AttributeEntry(
+            id=r.id,
+            category=r.category,
+            label=r.label,
+            value=r.value,
+            unit=r.unit,
+            position=r.position or 0,
+            created_by_user_id=r.created_by_user_id,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+        )
+        for r in sorted(rows, key=lambda r: (r.category, r.position or 0, r.label))
+    ]
+
+
 class PersonManager(AbstractBLLManager, RouterMixin):
     _model = PersonModel
+
+    def self_person_id(self, user_id: str) -> Optional[str]:
+        """The id of ``user_id``'s self person, looked up as ROOT: only the id
+        leaves this method, and what the requester then reads of it is
+        filtered as the requester."""
+        db = self._db(PersonModel)
+        found = (
+            db.list(
+                requester_id=str(env("ROOT_ID")),
+                model_registry=self.model_registry,
+                filters=[
+                    db.linked_user_id == user_id,
+                    db.created_by_user_id == user_id,
+                    # ROOT sees deleted rows; a deleted self person is gone.
+                    db.deleted_at.is_(None),
+                ],
+                return_type="dto",
+                override_dto=PersonModel,
+            )
+            or []
+        )
+        return str(found[0].id) if found else None
+
+    def _check_self_link(
+        self, fields: Dict[str, Any], person_id: Optional[str] = None
+    ) -> None:
+        """An account has one self person: a second record of the requester's
+        linked to the requester is refused."""
+        if fields.get("linked_user_id") != self.requester.id:
+            return
+        existing = self.self_person_id(str(self.requester.id))
+        if existing is not None and existing != person_id:
+            raise HTTPException(
+                status_code=409, detail="You already have a self person"
+            )
+
+    def create(self, **kwargs: Any) -> Any:
+        def checked(fields: Dict[str, Any]) -> Dict[str, Any]:
+            self._check_self_link(fields)
+            return fields
+
+        return super().create(**each_created(kwargs, checked))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        self._check_self_link(kwargs, id)
+        return super().update(id, **kwargs)
 
     def _db(self, model: Any) -> Any:
         return model.DB(self.model_registry.DB.manager.Base)
@@ -196,6 +443,106 @@ class PersonManager(AbstractBLLManager, RouterMixin):
             if r.person_id and r.target_person_id
         ]
         return FamilyTree(edges, roles)
+
+    def social_graph(
+        self, kinds: List[str], include_ended: bool = False
+    ) -> SocialGraph:
+        """The ties of ``kinds`` the requester can see; only those in effect
+        now unless ``include_ended``."""
+        db = self._db(RelationshipModel)
+        directed = set(directed_kinds())
+        ties = [
+            Tie(
+                person_id=r.person_id,
+                target_person_id=r.target_person_id,
+                kind=r.kind,
+                discriminator=r.discriminator,
+                valid_from=r.valid_from,
+                valid_to=r.valid_to,
+                directed=r.kind in directed,
+            )
+            for r in self._visible(RelationshipModel, [db.kind.in_(kinds)])
+            if r.person_id and r.target_person_id
+        ]
+        return SocialGraph(
+            ties, kinds, None if include_ended else datetime.now(timezone.utc)
+        )
+
+    def _tree(self, owner: str, kinds: List[str], include_ended: bool) -> Tree:
+        """``owner``'s tree, read as ROOT for merging: only what ``merge``
+        lets through, by each person's visibility, leaves this manager."""
+        root = str(env("ROOT_ID"))
+        people_db = self._db(PersonModel)
+        persons = (
+            people_db.list(
+                requester_id=root,
+                model_registry=self.model_registry,
+                filters=[
+                    people_db.created_by_user_id == owner,
+                    people_db.deleted_at.is_(None),
+                ],
+                return_type="dto",
+                override_dto=PersonModel,
+            )
+            or []
+        )
+        ties_db = self._db(RelationshipModel)
+        directed = set(directed_kinds())
+        rows = (
+            ties_db.list(
+                requester_id=root,
+                model_registry=self.model_registry,
+                filters=[
+                    ties_db.created_by_user_id == owner,
+                    ties_db.kind.in_(kinds),
+                    ties_db.deleted_at.is_(None),
+                ],
+                return_type="dto",
+                override_dto=RelationshipModel,
+            )
+            or []
+        )
+        now = datetime.now(timezone.utc)
+        ties = [
+            Tie(
+                person_id=r.person_id,
+                target_person_id=r.target_person_id,
+                kind=r.kind,
+                discriminator=r.discriminator,
+                valid_from=r.valid_from,
+                valid_to=r.valid_to,
+                directed=r.kind in directed,
+            )
+            for r in rows
+            if r.person_id and r.target_person_id
+        ]
+        return Tree(
+            owner=owner,
+            persons={
+                p.id: TreePerson(
+                    id=p.id,
+                    owner=owner,
+                    name=p.name,
+                    linked_user_id=p.linked_user_id,
+                    visibility=p.visibility,
+                )
+                for p in persons
+            },
+            ties=[t for t in ties if include_ended or t.in_effect(now)],
+        )
+
+    def linked_network(
+        self, kinds: List[str], include_ended: bool = False
+    ) -> Optional[MergedGraph]:
+        """The requester's network merged across mutually linked trees, or
+        None when they have no self person. For extensions building on it
+        (who counts as in a polycule); the route answers the same."""
+        viewer = self._tree(str(self.requester.id), kinds, include_ended)
+        if viewer.self_person() is None:
+            return None
+        return merge(
+            viewer, lambda owner: self._tree(owner, kinds, include_ended), kinds
+        )
 
     def _relatives(self, person_id: str, found: Dict[str, int]) -> RelativesResponse:
         return RelativesResponse(
@@ -279,6 +626,179 @@ class PersonManager(AbstractBLLManager, RouterMixin):
             cousin=kinship.cousin,
             removed=kinship.removed,
             lineal=kinship.lineal,
+        )
+
+    @custom_route(
+        method="GET",
+        path="/linked-network",
+        output_model=LinkedNetworkResponse,
+        authentication_type="jwt",
+        openapi_tags=("Genealogy",),
+        summary="Your network merged with the trees of the accounts you and they have linked",
+        expose_in=(ExposeIn.REST,),
+    )
+    def linked_network_route(
+        self, kinds: Optional[str] = None, include_ended: bool = False
+    ) -> LinkedNetworkResponse:
+        """Centred on your self person; ``?kinds=partnership`` walks polycules.
+        Each node's ``group`` says which of your polycules it is in."""
+        chosen = _kinds(kinds)
+        graph = self.linked_network(chosen, include_ended)
+        if graph is None:
+            raise HTTPException(status_code=404, detail="You have no self person yet")
+        return LinkedNetworkResponse(
+            center=graph.center,
+            kinds=chosen,
+            nodes=[
+                LinkedNode(
+                    key=n.key,
+                    name=n.name,
+                    visibility=n.visibility,
+                    mine=n.mine,
+                    person_id=n.person_id,
+                    user_id=n.user_id,
+                    distance=n.distance,
+                    group=n.group,
+                )
+                for n in graph.nodes
+            ],
+            ties=[
+                LinkedTie(
+                    source=t.person_id,
+                    target=t.target_person_id,
+                    kind=t.kind,
+                    discriminator=t.discriminator,
+                    directed=t.directed,
+                )
+                for t in graph.ties
+            ],
+        )
+
+    @custom_route(
+        method="GET",
+        path="/{person_id}/card",
+        output_model=PersonCardResponse,
+        authentication_type="jwt",
+        openapi_tags=("Genealogy",),
+        summary="A person's card: your notes about them, and what they published to you",
+        expose_in=(ExposeIn.REST,),
+    )
+    def card_route(self, person_id: str) -> PersonCardResponse:
+        self._require_person(person_id)
+        person = self._db(PersonModel).get(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=person_id,
+            return_type="dto",
+            override_dto=PersonModel,
+        )
+        attributes = self._db(PersonAttributeModel)
+        notes = self._visible(PersonAttributeModel, [attributes.person_id == person_id])
+        published: List[Any] = []
+        linked = person.linked_user_id
+        if linked:
+            self_id = self.self_person_id(str(linked))
+            if self_id is not None and self_id != person_id:
+                published = self._visible(
+                    PersonAttributeModel, [attributes.person_id == self_id]
+                )
+        return PersonCardResponse(
+            person_id=person_id,
+            linked_user_id=linked,
+            notes=_entries(notes),
+            published=_entries(published),
+        )
+
+    @custom_route(
+        method="GET",
+        path="/{person_id}/connections",
+        output_model=ConnectionsResponse,
+        authentication_type="jwt",
+        openapi_tags=("Genealogy",),
+        summary="Everyone a person is tied to: partners, friends, siblings, acquaintances",
+        expose_in=(ExposeIn.REST,),
+    )
+    def connections_route(
+        self,
+        person_id: str,
+        kinds: Optional[str] = None,
+        include_ended: bool = False,
+    ) -> ConnectionsResponse:
+        """``?kinds=friendship`` limits the kinds of tie; ``?include_ended=true``
+        keeps ties whose ``valid_to`` has passed."""
+        self._require_person(person_id)
+        graph = self.social_graph(_kinds(kinds), include_ended)
+        return ConnectionsResponse(
+            person_id=person_id,
+            connections=[
+                ConnectionEntry(
+                    person_id=c.person_id, kind=c.kind, discriminator=c.discriminator
+                )
+                for c in graph.connections(person_id)
+            ],
+        )
+
+    @custom_route(
+        method="GET",
+        path="/{person_id}/metamours",
+        output_model=MetamoursResponse,
+        authentication_type="jwt",
+        openapi_tags=("Genealogy",),
+        summary="A person's partners' partners who are not their own partners",
+        expose_in=(ExposeIn.REST,),
+    )
+    def metamours_route(
+        self, person_id: str, include_ended: bool = False
+    ) -> MetamoursResponse:
+        self._require_person(person_id)
+        found = self.social_graph([PARTNERSHIP], include_ended).metamours(person_id)
+        return MetamoursResponse(
+            person_id=person_id,
+            metamours=[
+                MetamourEntry(person_id=m, via=sorted(via))
+                for m, via in sorted(found.items())
+            ],
+        )
+
+    @custom_route(
+        method="GET",
+        path="/{person_id}/network",
+        output_model=NetworkResponse,
+        authentication_type="jwt",
+        openapi_tags=("Genealogy",),
+        summary="Everyone reachable from a person through the chosen kinds of tie, nearest first",
+        expose_in=(ExposeIn.REST,),
+    )
+    def network_route(
+        self,
+        person_id: str,
+        kinds: Optional[str] = None,
+        depth: Optional[int] = None,
+        include_ended: bool = False,
+    ) -> NetworkResponse:
+        """``?kinds=partnership`` walks a polycule; ``?depth=`` limits how many
+        ties away."""
+        self._require_person(person_id)
+        chosen = _kinds(kinds)
+        graph = self.social_graph(chosen, include_ended)
+        found = graph.network(person_id, depth)
+        return NetworkResponse(
+            person_id=person_id,
+            kinds=chosen,
+            members=[
+                NetworkEntry(person_id=p, distance=d)
+                for p, d in sorted(found.items(), key=lambda item: (item[1], item[0]))
+            ],
+            ties=[
+                NetworkTie(
+                    person_id=t.person_id,
+                    target_person_id=t.target_person_id,
+                    kind=t.kind,
+                    discriminator=t.discriminator,
+                    directed=t.directed,
+                )
+                for t in graph.ties_among([person_id, *found])
+            ],
         )
 
     @custom_route(
@@ -441,24 +961,25 @@ class RelationshipModel(
     )
 
     # The relationship label. Free-form so downstream extensions and
-    # standalone-genealogy users may introduce their own taxonomies.
+    # standalone-genealogy users may introduce their own taxonomies; the
+    # kinds registered in ``Relationships`` are checked on every write.
     # Conventional values:
-    #   ancestry|partnership|sibling_of           (genealogy core)
+    #   ancestry|partnership|sibling_of|friendship|acquaintance (genealogy core)
     #   member_of|affiliated_with                  (rpg_state when injected)
     #   social|obligation                          (rpg_state when injected)
     kind: Optional[str] = Field(
         None,
         description=(
-            "Relationship kind. Genealogy core: ancestry|partnership|"
-            "sibling_of. Downstream extensions add their own labels."
+            "Relationship kind. Genealogy core: ancestry (directed) and the "
+            "symmetric partnership|sibling_of|friendship|acquaintance. "
+            "Downstream extensions add their own labels."
         ),
     )
     discriminator: Optional[str] = Field(
         None,
         description=(
             "Subkind / refinement of the relationship: "
-            "biological|adopted|step|foster|legal_guardian for ancestry; "
-            "marriage|engagement|partnership|liaison for partnership; "
+            f"{describe_discriminators()}; "
             "leader|member|treasurer for member_of; etc."
         ),
     )
@@ -527,11 +1048,127 @@ class RelationshipModel(
         valid_to: Optional[DateSearchModel] = None
 
 
+def _checked(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """``fields`` after :func:`check_relationship`; 422 when they fail it."""
+    try:
+        check_relationship(
+            fields.get("kind"),
+            fields.get("discriminator"),
+            fields.get("person_id"),
+            fields.get("target_person_id"),
+        )
+    except RelationshipError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return fields
+
+
 class RelationshipManager(AbstractBLLManager, RouterMixin):
     _model = RelationshipModel
 
+    def create(self, **kwargs: Any) -> Any:
+        """A relationship of a registered kind must relate two different
+        people and name a discriminator the kind accepts."""
+        return super().create(**each_created(kwargs, _checked))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """The changed relationship, read whole, passes the same check."""
+        if {"kind", "discriminator"} & kwargs.keys():
+            current = self.get(id=id)
+            _checked(
+                {
+                    "kind": current.kind,
+                    "discriminator": current.discriminator,
+                    "person_id": current.person_id,
+                    "target_person_id": current.target_person_id,
+                    **{
+                        k: v
+                        for k, v in kwargs.items()
+                        if k in ("kind", "discriminator")
+                    },
+                }
+            )
+        return super().update(id, **kwargs)
+
 
 RelationshipModel.Manager = RelationshipManager
+
+
+# ---------------------------------------------------------------------------
+# Person attribute
+# ---------------------------------------------------------------------------
+
+
+class PersonAttributeModel(
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    PersonModel.Reference.Optional,  # → person_id
+    metaclass=ModelMeta,
+):
+    """One typed fact on a person's card (``category`` "sizes", ``label``
+    "ring", ``value`` "7", ``unit`` "US"). On someone else's record it is
+    its creator's private note; on an account's self person it is that
+    account's profile, published per record through the framework's grants
+    (a user, or a team), so each field is shared on its own."""
+
+    Manager: ClassVar[Type["PersonAttributeManager"]]
+    category: str = Field(
+        ..., description="The card section: contact, sizes, allergies, favourites, …"
+    )
+    label: str = Field(..., description="What the value is, within its category")
+    value: str = Field(..., description="The value, as written")
+    unit: Optional[str] = Field(
+        None, description="The value's unit or system (cm, US, EU, …)"
+    )
+    position: Optional[int] = Field(0, description="Order within its category")
+
+    table_comment: ClassVar[str] = (
+        "Typed facts on a person's card: a note on someone else's record, a "
+        "published profile field on an account's self person"
+    )
+
+    class Create(BaseModel, PersonModel.Reference.ID):
+        category: str = Field(..., min_length=1)
+        label: str = Field(..., min_length=1)
+        value: str
+        unit: Optional[str] = None
+        position: Optional[int] = 0
+
+    class Update(BaseModel):
+        category: Optional[str] = Field(None, min_length=1)
+        label: Optional[str] = Field(None, min_length=1)
+        value: Optional[str] = None
+        unit: Optional[str] = None
+        position: Optional[int] = None
+
+    class Search(ApplicationModel.Search, PersonModel.Reference.ID.Search):
+        category: Optional[StringSearchModel] = None
+        label: Optional[StringSearchModel] = None
+
+
+class PersonAttributeManager(AbstractBLLManager, RouterMixin):
+    _model = PersonAttributeModel
+
+    def create(self, **kwargs: Any) -> Any:
+        """Only on a person the requester owns: their own notes, or their own
+        profile on their self person."""
+        people = PersonModel.DB(self.model_registry.DB.manager.Base)
+
+        def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
+            person = people.get(
+                requester_id=self.requester.id,
+                model_registry=self.model_registry,
+                id=fields.get("person_id"),
+                return_type="dto",
+                override_dto=PersonModel,
+            )
+            if person is None or person.created_by_user_id != self.requester.id:
+                raise HTTPException(status_code=404, detail="Person not found")
+            return fields
+
+        return super().create(**each_created(kwargs, owned))
+
+
+PersonAttributeModel.Manager = PersonAttributeManager
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +1179,7 @@ RelationshipModel.Manager = RelationshipManager
 ALL_MODELS: List[type] = [
     PersonModel,
     RelationshipModel,
+    PersonAttributeModel,
 ]
 
 
@@ -550,5 +1188,7 @@ __all__ = [
     "PersonManager",
     "RelationshipModel",
     "RelationshipManager",
+    "PersonAttributeModel",
+    "PersonAttributeManager",
     "ALL_MODELS",
 ]

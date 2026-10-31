@@ -8,6 +8,8 @@ os.environ.setdefault("PYTEST_CURRENT_TEST", "genealogy_test")
 
 from zephyrex.extensions.genealogy.BLL_Genealogy import (
     ALL_MODELS,
+    PersonAttributeManager,
+    PersonAttributeModel,
     PersonManager,
     PersonModel,
     RelationshipManager,
@@ -19,6 +21,7 @@ class TestModelManagerWiring:
     PAIRS = [
         (PersonModel, PersonManager),
         (RelationshipModel, RelationshipManager),
+        (PersonAttributeModel, PersonAttributeManager),
     ]
 
     def test_each_model_has_its_manager(self):

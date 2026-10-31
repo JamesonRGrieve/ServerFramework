@@ -21,7 +21,9 @@ class TestExtensionMetadata:
     def test_discovered_models_are_the_roster(self):
         """The framework finds exactly the declared roster in BLL_Genealogy."""
         assert EXT_Genealogy.models == set(ALL_MODELS)
-        assert len(ALL_MODELS) == 2  # PersonModel, RelationshipModel
+        assert (
+            len(ALL_MODELS) == 3
+        )  # PersonModel, RelationshipModel, PersonAttributeModel
 
     def test_initializes(self):
         assert EXT_Genealogy.on_initialize() is True

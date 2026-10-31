@@ -15,6 +15,16 @@ column carries the ancestry / partnership / sibling / social labels;
 temporal validity. GEDCOM I/O and family-tree algorithms (ancestors_of,
 descendants_of, MRCA, kinship_degree) are layered on top.
 
+Social ties
+-----------
+Besides ancestry, genealogy knows the symmetric kinds ``partnership``
+(romantic and sexual: marriage, nesting, anchor, dating, comet, …),
+``friendship``, ``acquaintance`` and ``sibling_of`` (``Relationships``).
+``SocialGraph`` walks them: a person's connections, their metamours
+(partners' partners who are not their own partners) and the network they
+reach, such as a whole polycule through partnerships. Only ties in effect
+now count unless ended ones are asked for.
+
 Cross-extension extension
 -------------------------
 ``RelationshipModel`` is designed to be widened by downstream extensions
@@ -38,7 +48,10 @@ Edge doctrine
 - **Validity is nullable both ends.** ``valid_from = NULL`` means "from
   the dawn of time"; ``valid_to = NULL`` means "still in effect".
 - **`kind` is free-form** so downstream extensions can introduce their
-  own labels without a schema change.
+  own labels without a schema change. A kind registered in
+  ``Relationships`` is checked on every write (two different people, a
+  discriminator the kind accepts); a downstream extension registers its
+  own with ``register_relationship_kind`` to be checked and walked too.
 - **`intensity` is signed**: -1.0 nemesis ↔ +1.0 closest. Reused for
   reputation, regard, partnership closeness, etc.
 - **`qualifier` is conditional context** ("since the war", "while she
