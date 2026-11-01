@@ -60,6 +60,7 @@ from zephyrex.extensions.genealogy.GEDCOM import (
 )
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
+from zephyrex.lib.SecretEncryption import decrypt_secret, encrypt_secret
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.logic.AbstractLogicManager.ownership import each_created
@@ -340,13 +341,24 @@ def _as_datetime(value: Optional[date]) -> Optional[datetime]:
     return datetime.combine(value, time()) if value is not None else None
 
 
+# Card categories whose values are sealed at rest (codes, say): an app registers them.
+SENSITIVE_CATEGORIES: set[str] = set()
+
+
+def register_sensitive_category(name: str) -> None:
+    """Store every value in card category ``name`` encrypted (``encrypt_secret``),
+    opened only when the card is read by someone who may see it."""
+    SENSITIVE_CATEGORIES.add(name)
+
+
 def _entries(rows: List[Any]) -> List[AttributeEntry]:
     return [
         AttributeEntry(
             id=r.id,
             category=r.category,
             label=r.label,
-            value=r.value,
+            # A sealed value (a sensitive category's) is opened here; plain ones pass through.
+            value=decrypt_secret(r.value),
             unit=r.unit,
             position=r.position or 0,
             created_by_user_id=r.created_by_user_id,
@@ -1163,9 +1175,33 @@ class PersonAttributeManager(AbstractBLLManager, RouterMixin):
             )
             if person is None or person.created_by_user_id != self.requester.id:
                 raise HTTPException(status_code=404, detail="Person not found")
-            return fields
+            return _sealed(fields, fields.get("category"))
 
         return super().create(**each_created(kwargs, owned))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A value in a sensitive category stays sealed, including a value
+        moved into one (its category changed, its value unchanged)."""
+        category = kwargs.get("category")
+        if "value" in kwargs or category in SENSITIVE_CATEGORIES:
+            current = PersonAttributeModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=self.requester.id,
+                model_registry=self.model_registry,
+                id=id,
+                return_type="dto",
+                override_dto=PersonAttributeModel,
+            )
+            if current is not None:
+                fields = {"value": decrypt_secret(current.value), **kwargs}
+                kwargs = _sealed(fields, category or current.category)
+        return super().update(id, **kwargs)
+
+
+def _sealed(fields: Dict[str, Any], category: Optional[str]) -> Dict[str, Any]:
+    """``fields`` with the value encrypted when ``category`` is sensitive."""
+    if category in SENSITIVE_CATEGORIES and fields.get("value"):
+        return {**fields, "value": encrypt_secret(fields["value"])}
+    return fields
 
 
 PersonAttributeModel.Manager = PersonAttributeManager
@@ -1190,5 +1226,6 @@ __all__ = [
     "RelationshipManager",
     "PersonAttributeModel",
     "PersonAttributeManager",
+    "register_sensitive_category",
     "ALL_MODELS",
 ]

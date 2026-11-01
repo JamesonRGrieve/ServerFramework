@@ -550,6 +550,62 @@ class TestPersonCards(ExtensionServerMixin):
         )
         assert saved.status_code == 200, saved.text
 
+    def test_a_sensitive_category_is_sealed_at_rest_and_opened_on_the_card(
+        self, server, admin_a, cards
+    ):
+        from zephyrex.extensions.genealogy.BLL_Genealogy import (
+            SENSITIVE_CATEGORIES,
+            PersonAttributeModel,
+            register_sensitive_category,
+        )
+        from zephyrex.lib.Environment import env
+
+        register_sensitive_category("codes")
+        try:
+            made = self._attribute(
+                server, admin_a, cards["alex_self"], "codes", "locker", "1234"
+            )
+            assert made.status_code == 201, made.text
+            row_id = made.json()["person_attribute"]["id"]
+
+            def stored() -> str:
+                row = PersonAttributeModel.DB(
+                    server.app.state.model_registry.DB.manager.Base
+                ).get(
+                    requester_id=env("ROOT_ID"),
+                    model_registry=server.app.state.model_registry,
+                    id=row_id,
+                    return_type="dto",
+                    override_dto=PersonAttributeModel,
+                )
+                return str(row.value)
+
+            assert stored().startswith("fernet:") and "1234" not in stored()
+            card = server.get(
+                f"/v1/person/{cards['alex_self']}/card", headers=self._headers(admin_a)
+            ).json()
+            (code,) = [n for n in card["notes"] if n["category"] == "codes"]
+            assert code["value"] == "1234"
+
+            saved = server.put(
+                f"/v1/person_attribute/{row_id}",
+                json={"person_attribute": {"value": "9876"}},
+                headers={
+                    **self._headers(admin_a),
+                    "If-Match": f'"{code["updated_at"] or code["created_at"]}"',
+                },
+            )
+            assert saved.status_code == 200, saved.text
+            assert stored().startswith("fernet:") and "9876" not in stored()
+            card = server.get(
+                f"/v1/person/{cards['alex_self']}/card", headers=self._headers(admin_a)
+            ).json()
+            assert [n["value"] for n in card["notes"] if n["category"] == "codes"] == [
+                "9876"
+            ]
+        finally:
+            SENSITIVE_CATEGORIES.discard("codes")
+
     def test_nobody_sees_anothers_notes_about_them(self, server, admin_a, cards):
         listed = server.get("/v1/person_attribute", headers=self._headers(admin_a))
         assert listed.status_code == 200, listed.text
