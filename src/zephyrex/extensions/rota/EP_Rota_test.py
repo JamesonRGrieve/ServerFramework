@@ -199,6 +199,8 @@ class TestRota(ExtensionServerMixin):
         assert [night["user_id"] for night in mine[0]["nights"]] == [
             household["alex"].id
         ]
+        # Each night carries its id and version, for the owner to change it.
+        assert all(night["id"] and night["created_at"] for night in mine[0]["nights"])
         erase_rota(household["owner"].id, registry)
         assert (
             server.get(

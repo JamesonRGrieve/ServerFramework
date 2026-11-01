@@ -114,8 +114,11 @@ class RotaSwapModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
 
 
 class NightEntry(ResponseModel):
+    id: str
     day_index: int
     user_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class RotaEntry(ResponseModel):
@@ -337,7 +340,13 @@ class RotaSwapManager(AbstractBLLManager, RouterMixin):
                     starts_on=rota.starts_on,
                     owner_id=str(rota.created_by_user_id),
                     nights=[
-                        NightEntry(day_index=night.day_index, user_id=night.user_id)
+                        NightEntry(
+                            id=night.id,
+                            day_index=night.day_index,
+                            user_id=night.user_id,
+                            created_at=night.created_at,
+                            updated_at=night.updated_at,
+                        )
                         for night in sorted(
                             _nights(rota.id, self.model_registry),
                             key=lambda n: n.day_index,
