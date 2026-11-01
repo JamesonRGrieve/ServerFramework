@@ -17,6 +17,7 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.extensions.health.BLL_Health import (
     HealthActivityManager,
+    HealthCheckInManager,
     HealthMealManager,
     HealthSleepManager,
     HealthWeightManager,
@@ -31,6 +32,7 @@ KINDS: Mapping[str, Tuple[Type[Any], str]] = {
     "meal": (HealthMealManager, "eaten_at"),
     "weight": (HealthWeightManager, "measured_at"),
     "sleep": (HealthSleepManager, "bedtime"),
+    "check_in": (HealthCheckInManager, "checked_at"),
 }
 MAX_RECORDS = 1_000
 
@@ -43,7 +45,7 @@ class EXT_Health(AbstractStaticExtension):
     name: ClassVar[str] = "health"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (
-        "A personal health log of activities, meals, weight and sleep"
+        "A personal health log of activities, meals, weight, sleep and check-ins"
     )
 
     _env: ClassVar[Dict[str, Any]] = {}
@@ -53,6 +55,7 @@ class EXT_Health(AbstractStaticExtension):
         "log_meal",
         "log_weight",
         "log_sleep",
+        "check_in",
         "list_health_records",
         "delete_health_record",
         "health_summary",
@@ -167,11 +170,31 @@ class EXT_Health(AbstractStaticExtension):
         )
 
     @classmethod
+    @ability("check_in")
+    async def check_in(
+        cls,
+        requester_id: str,
+        checked_at: datetime,
+        mood: int,
+        about: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """How the user feels, 1 (low) to 5 (great), about themselves or someone."""
+        return cls._log(
+            requester_id,
+            "check_in",
+            checked_at=checked_at,
+            mood=mood,
+            about=about,
+            notes=notes,
+        )
+
+    @classmethod
     @ability("list_health_records")
     async def list_health_records(
         cls, requester_id: str, kind: str, start: datetime, end: datetime
     ) -> List[Dict[str, Any]]:
-        """One kind of record (activity, meal, weight, sleep) in a period,
+        """One kind of record (activity, meal, weight, sleep, check_in) in a period,
         earliest first."""
         return [
             record.model_dump(mode="json")
@@ -191,7 +214,7 @@ class EXT_Health(AbstractStaticExtension):
     async def health_summary(
         cls, requester_id: str, start: datetime, end: datetime
     ) -> Dict[str, Any]:
-        """Activity, nutrition, weight change and sleep over a period."""
+        """Activity, nutrition, weight change, sleep and mood over a period."""
         return summarize(
             start,
             end,

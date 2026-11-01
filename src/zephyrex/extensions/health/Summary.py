@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A period of a user's health log, summed up: activity, nutrition per
-day, weight change and average sleep."""
+day, weight change, average sleep, and mood (overall and by whom or what
+the check-ins were about)."""
 
 from collections import Counter
 from datetime import datetime
@@ -27,6 +28,7 @@ def summarize(
     meals: Sequence[Any],
     weights: Sequence[Any],
     sleeps: Sequence[Any],
+    check_ins: Sequence[Any] = (),
 ) -> Dict[str, Any]:
     """The records between ``start`` and ``end``, summed up."""
     days = max((moment(end) - moment(start)).total_seconds() / SECONDS_PER_DAY, 1.0)
@@ -73,5 +75,19 @@ def summarize(
                     if record.quality is not None
                 ]
             ),
+        },
+        "check_ins": {
+            "count": len(check_ins),
+            "average_mood": _average([float(record.mood) for record in check_ins]),
+            "by_about": {
+                about: _average(
+                    [
+                        float(record.mood)
+                        for record in check_ins
+                        if (record.about or "") == about
+                    ]
+                )
+                for about in sorted({record.about or "" for record in check_ins})
+            },
         },
     }

@@ -6,7 +6,7 @@
 
 name = "health"
 version = "1.0.0"
-description = "A personal health log of activities, meals, weight and sleep"
+description = "A personal health log of activities, meals, weight, sleep and check-ins"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Health"
 minimum_framework_version = "0.0.0"

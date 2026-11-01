@@ -39,6 +39,8 @@ class Row:
     measured_at: datetime = MONDAY
     weight_kg: float = 0
     quality: Optional[int] = None
+    mood: int = 3
+    about: Optional[str] = None
 
 
 class TestTimes:
@@ -88,6 +90,26 @@ class TestSummary:
             "nights": 2,
             "average_minutes": 450.0,
             "average_quality": 80.0,
+        }
+
+    def test_mood_overall_and_by_whom(self):
+        summary = summarize(
+            MONDAY,
+            MONDAY + timedelta(days=7),
+            [],
+            [],
+            [],
+            [],
+            [
+                Row(mood=4, about="Alex"),
+                Row(mood=2, about="Alex"),
+                Row(mood=5, about=None),
+            ],
+        )
+        assert summary["check_ins"] == {
+            "count": 3,
+            "average_mood": 3.7,
+            "by_about": {"": 5.0, "Alex": 3.0},
         }
 
     def test_an_empty_period(self):
@@ -157,6 +179,14 @@ class TestHealthLog(ExtensionServerMixin):
         )
         assert response.status_code == 422, response.text
 
+    def test_a_mood_outside_one_to_five_is_refused(self, server, admin_a):
+        response = server.post(
+            "/v1/health_check_in",
+            json={"health_check_in": {"checked_at": "2026-09-28T21:00:00Z", "mood": 6}},
+            headers=auth(admin_a),
+        )
+        assert response.status_code == 422, response.text
+
     def test_another_user_sees_nothing(self, server, admin_a, admin_b):
         created = server.post(
             "/v1/health_weight",
@@ -195,6 +225,14 @@ class TestHealthLog(ExtensionServerMixin):
         assert summary["activity"]["distance_km"] == 20.0
         assert summary["weight"]["change_kg"] == -0.8
         assert summary["sleep"]["average_minutes"] == 420.0
+
+        await EXT_Health.check_in(
+            admin_a.id, start + timedelta(days=2), 4, about="Alex", notes="A good talk"
+        )
+        summary = await EXT_Health.health_summary(
+            admin_a.id, start, start + timedelta(days=7)
+        )
+        assert summary["check_ins"]["by_about"] == {"Alex": 4.0}
 
         others = await EXT_Health.health_summary(
             admin_b.id, start, start + timedelta(days=7)

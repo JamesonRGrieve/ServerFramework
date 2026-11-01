@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A person's own health log: activities, meals, weigh-ins and sleep.
+"""A person's own health log: activities, meals, weigh-ins, sleep and
+check-ins (how they feel, about themselves or someone, over time).
 
 Each record belongs to the user who logged it and nobody else (no team
 sharing: this is health data). Values are range-checked on the way in,
@@ -35,6 +36,8 @@ ActivityKind = Literal[
     "other",
 ]
 MealKind = Literal["breakfast", "lunch", "dinner", "snack"]
+# A check-in's mood: 1 (low) to 5 (great).
+MOOD_LOW, MOOD_HIGH = 1, 5
 MAX_MINUTES = 24 * 60
 MAX_SLEEP = timedelta(hours=24)
 
@@ -214,6 +217,44 @@ class HealthSleepModel(
         bedtime: Optional[DateSearchModel] = None
 
 
+class HealthCheckInModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
+):
+    """How the user feels at a moment, about themselves or about someone or
+    something (a partner, a relationship): private to them, like the rest."""
+
+    Manager: ClassVar[Type["HealthCheckInManager"]]
+    checked_at: datetime = Field(..., description="When the check-in was made")
+    mood: int = Field(..., description="1 (low) to 5 (great)")
+    about: Optional[str] = Field(
+        None, description="Who or what it is about; the user themselves when empty"
+    )
+    notes: Optional[str] = Field(None, description="Free-form notes")
+
+    table_comment: ClassVar[str] = (
+        "A user's check-ins: mood over time, about themselves or someone"
+    )
+
+    class Create(BaseModel):
+        checked_at: datetime
+        mood: int = Field(..., ge=MOOD_LOW, le=MOOD_HIGH)
+        about: Optional[str] = Field(None, max_length=200)
+        notes: Optional[str] = Field(None, max_length=2_000)
+
+    class Update(BaseModel):
+        checked_at: Optional[datetime] = None
+        mood: Optional[int] = Field(None, ge=MOOD_LOW, le=MOOD_HIGH)
+        about: Optional[str] = Field(None, max_length=200)
+        notes: Optional[str] = Field(None, max_length=2_000)
+
+    class Search(ApplicationModel.Search):
+        checked_at: Optional[DateSearchModel] = None
+        about: Optional[StringSearchModel] = None
+
+
 def moment(value: Any) -> datetime:
     """A datetime (or its ISO text) in UTC; a naive one is taken as UTC."""
     parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
@@ -268,3 +309,7 @@ class HealthSleepManager(AbstractBLLManager, RouterMixin):
             wake_time = kwargs.get("wake_time") or existing.wake_time
             kwargs["duration_minutes"] = sleep_minutes(bedtime, wake_time)
         return super().update(id, **kwargs)
+
+
+class HealthCheckInManager(AbstractBLLManager, RouterMixin):
+    _model = HealthCheckInModel
