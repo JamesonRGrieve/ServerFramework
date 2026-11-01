@@ -13,6 +13,8 @@ from typing import Any, ClassVar, Dict, Literal, Optional, Type
 from fastapi import HTTPException
 from pydantic import Field
 
+from zephyrex.extensions.privacy.Erasure import register_eraser
+from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -313,3 +315,36 @@ class HealthSleepManager(AbstractBLLManager, RouterMixin):
 
 class HealthCheckInManager(AbstractBLLManager, RouterMixin):
     _model = HealthCheckInModel
+
+
+def erase_health(user_id: str, model_registry: Any) -> None:
+    """A deleted account's whole health log goes. Safe to run twice."""
+    root = env("ROOT_ID")
+    base = model_registry.DB.manager.Base
+    for model in (
+        HealthActivityModel,
+        HealthMealModel,
+        HealthWeightModel,
+        HealthSleepModel,
+        HealthCheckInModel,
+    ):
+        db = model.DB(base)
+        rows = (
+            db.list(
+                requester_id=root,
+                model_registry=model_registry,
+                filters=[db.created_by_user_id == user_id, db.deleted_at.is_(None)],
+                return_type="dto",
+                override_dto=model,
+            )
+            or []
+        )
+        for row in rows:
+            db.delete(
+                requester_id=root,
+                model_registry=model_registry,
+                filters=[db.id == row.id],
+            )
+
+
+register_eraser("health", erase_health)

@@ -239,6 +239,22 @@ class TestHealthLog(ExtensionServerMixin):
         )
         assert others["activity"]["sessions"] == 0
 
+    def test_a_deleted_account_takes_its_log_with_it(self, server):
+        from zephyrex.extensions.health.BLL_Health import erase_health
+        from zephyrex.testing.factories import create_user
+
+        leaving = create_user(server)
+        made = server.post(
+            "/v1/health_check_in",
+            json={"health_check_in": {"checked_at": "2026-09-28T21:00:00Z", "mood": 4}},
+            headers=auth(leaving),
+        )
+        assert made.status_code == 201, made.text
+        erase_health(leaving.id, server.app.state.model_registry)
+        erase_health(leaving.id, server.app.state.model_registry)
+        left = server.get("/v1/health_check_in", headers=auth(leaving)).json()
+        assert left["health_check_ins"] == []
+
     async def test_ability_arguments(self, attached, admin_a):
         with pytest.raises(InvalidInputExternalError):
             await EXT_Health.list_health_records(
