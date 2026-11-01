@@ -33,6 +33,18 @@ class EXT_Genealogy(AbstractStaticExtension):
     _providers: ClassVar[List] = []
 
     @classmethod
+    def register_services(cls, model_registry: Any, requester_id: str) -> List[Any]:
+        """The daily birthday and anniversary reminders, when the app also
+        loads auth_notifications (where they are delivered)."""
+        if "auth_notifications" not in model_registry.loaded_extension_names():
+            return []
+        from zephyrex.extensions.genealogy.Reminders import ReminderService
+
+        return [
+            ReminderService(requester_id=requester_id, model_registry=model_registry)
+        ]
+
+    @classmethod
     def on_initialize(cls) -> bool:
         from zephyrex.extensions.genealogy import BLL_Genealogy  # noqa: F401
 
