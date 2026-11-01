@@ -760,3 +760,57 @@ class TestLinkedNetwork(ExtensionServerMixin):
             "/v1/person/linked-network", headers=self._headers(newcomer)
         )
         assert response.status_code == 404
+
+
+class TestErasure(ExtensionServerMixin):
+    """A deleted account's tree goes; the records others keep of them stay,
+    as ghosts."""
+
+    extension_class = EXT_Genealogy
+
+    @staticmethod
+    def _headers(user) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {user.jwt}"}
+
+    def test_an_erased_account_leaves_ghosts_in_other_trees(self, server):
+        from zephyrex.extensions.genealogy.BLL_Genealogy import erase_genealogy
+        from zephyrex.testing.factories import create_user
+
+        leaving = create_user(server)
+        staying = create_user(server)
+        mine = server.post(
+            "/v1/person",
+            json={"person": {"name": "Me", "linked_user_id": leaving.id}},
+            headers=self._headers(leaving),
+        ).json()["person"]["id"]
+        note = server.post(
+            "/v1/person_attribute",
+            json={
+                "person_attribute": {
+                    "person_id": mine,
+                    "category": "contact",
+                    "label": "phone",
+                    "value": "555",
+                }
+            },
+            headers=self._headers(leaving),
+        )
+        assert note.status_code == 201, note.text
+        theirs = server.post(
+            "/v1/person",
+            json={"person": {"name": "Them", "linked_user_id": leaving.id}},
+            headers=self._headers(staying),
+        ).json()["person"]["id"]
+
+        registry = server.app.state.model_registry
+        erase_genealogy(leaving.id, registry)
+        erase_genealogy(leaving.id, registry)  # idempotent
+
+        assert (
+            server.get("/v1/person", headers=self._headers(leaving)).json()["persons"]
+            == []
+        )
+        kept = server.get(f"/v1/person/{theirs}", headers=self._headers(staying))
+        assert kept.status_code == 200, kept.text
+        assert kept.json()["person"]["name"] == "Them"
+        assert kept.json()["person"]["linked_user_id"] is None

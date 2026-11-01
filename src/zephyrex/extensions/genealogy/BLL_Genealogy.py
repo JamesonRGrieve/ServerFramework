@@ -61,6 +61,7 @@ from zephyrex.extensions.genealogy.GEDCOM import (
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.lib.SecretEncryption import decrypt_secret, encrypt_secret
+from zephyrex.extensions.privacy.Erasure import register_eraser
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.logic.AbstractLogicManager.ownership import each_created
@@ -1208,6 +1209,58 @@ PersonAttributeModel.Manager = PersonAttributeManager
 
 
 # ---------------------------------------------------------------------------
+# Right to erasure
+# ---------------------------------------------------------------------------
+
+
+def erase_genealogy(user_id: str, model_registry: Any) -> None:
+    """A deleted account's own tree goes (its people, ties, notes and profile);
+    the records others keep of them stay theirs, returned to ghosts (no longer
+    linked to the account). Safe to run twice."""
+    root = env("ROOT_ID")
+    base = model_registry.DB.manager.Base
+    for model in (PersonAttributeModel, RelationshipModel, PersonModel):
+        db = model.DB(base)
+        rows = (
+            db.list(
+                requester_id=root,
+                model_registry=model_registry,
+                filters=[db.created_by_user_id == user_id, db.deleted_at.is_(None)],
+                return_type="dto",
+                override_dto=model,
+            )
+            or []
+        )
+        for row in rows:
+            db.delete(
+                requester_id=root,
+                model_registry=model_registry,
+                filters=[db.id == row.id],
+            )
+    people = PersonModel.DB(base)
+    linked = (
+        people.list(
+            requester_id=root,
+            model_registry=model_registry,
+            filters=[people.linked_user_id == user_id, people.deleted_at.is_(None)],
+            return_type="dto",
+            override_dto=PersonModel,
+        )
+        or []
+    )
+    for row in linked:
+        people.update(
+            requester_id=root,
+            model_registry=model_registry,
+            new_properties={"linked_user_id": None},
+            filters=[people.id == row.id],
+        )
+
+
+register_eraser("genealogy", erase_genealogy)
+
+
+# ---------------------------------------------------------------------------
 # Public roster
 # ---------------------------------------------------------------------------
 
@@ -1227,5 +1280,6 @@ __all__ = [
     "PersonAttributeModel",
     "PersonAttributeManager",
     "register_sensitive_category",
+    "erase_genealogy",
     "ALL_MODELS",
 ]

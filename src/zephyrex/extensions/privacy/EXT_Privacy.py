@@ -33,4 +33,8 @@ class EXT_Privacy(AbstractStaticExtension):
     @classmethod
     def on_initialize(cls) -> bool:
         logger.debug("Initializing privacy extension")
+        # An account deleting itself first erases what extensions hold about it.
+        from zephyrex.extensions.privacy.Erasure import hook_account_deletion
+
+        hook_account_deletion()
         return True
