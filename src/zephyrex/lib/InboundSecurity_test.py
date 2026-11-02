@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 
 import pytest
-
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
@@ -70,7 +69,7 @@ class TestETagMiddleware:
         """A record's version ETag answers a conditional GET with 304, the
         same as a body hash does (it once fell through to a full 200)."""
         client = _etag_app()
-        for offered in ('W/"v7"', '"v7"', f'"v6", W/"v7"', "*"):
+        for offered in ('W/"v7"', '"v7"', '"v6", W/"v7"', "*"):
             answered = client.get("/versioned", headers={"If-None-Match": offered})
             assert answered.status_code == 304, offered
             assert answered.headers.get_list("etag") == ['W/"v7"']
@@ -257,7 +256,7 @@ class TestAnomalyDetector:
 # ---------------------------------------------------------------------------
 
 
-from zephyrex.lib.InboundSecurity import (  # noqa: E402
+from zephyrex.lib.InboundSecurity import (
     RateLimitMiddleware,
     discover_rate_limited_routes,
     register_rate_limited_route,
@@ -939,7 +938,7 @@ class TestResponseSplitting:
                 "X-Custom": "value\r\nX-Injected: evil",
             },
         )
-        assert "x-injected" not in {k.lower() for k in response.headers.keys()}
+        assert "x-injected" not in {k.lower() for k in response.headers}
 
 
 class TestVerbTampering:
@@ -1139,7 +1138,7 @@ class TestGraphQLSecurity:
         # limit bypassed) or a 500 (crash) is a failure.
         assert response.status_code != 500, response.text
         body = response.json()
-        assert "errors" in body and body["errors"], "deep query was not rejected"
+        assert body.get("errors"), "deep query was not rejected"
         assert not body.get("data"), "deep query returned data despite the depth limit"
 
 
@@ -1152,11 +1151,12 @@ class TestRequestTimeoutClamp:
     """X-Request-Timeout-Ms clamped to 5 minutes."""
 
     def test_clamp_to_max(self):
-        from zephyrex.lib.RequestContext import (
-            set_request_deadline_ms,
-            _MAX_REQUEST_TIMEOUT_MS,
-        )
         import time
+
+        from zephyrex.lib.RequestContext import (
+            _MAX_REQUEST_TIMEOUT_MS,
+            set_request_deadline_ms,
+        )
 
         set_request_deadline_ms(999999999)
         from zephyrex.lib.RequestContext import _request_deadline
@@ -1167,8 +1167,9 @@ class TestRequestTimeoutClamp:
         set_request_deadline_ms(None)
 
     def test_normal_value_not_clamped(self):
-        from zephyrex.lib.RequestContext import set_request_deadline_ms
         import time
+
+        from zephyrex.lib.RequestContext import set_request_deadline_ms
 
         before = time.monotonic()
         set_request_deadline_ms(1000)
@@ -1183,9 +1184,11 @@ class TestPaginationCursorSigning:
     """Forged pagination cursors are rejected."""
 
     def test_forged_cursor_rejected(self):
-        import base64, json
-        from zephyrex.extensions.Paginators import decode_token
+        import base64
+        import json
+
         from zephyrex.extensions.ExternalErrors import InvalidPaginationError
+        from zephyrex.extensions.Paginators import decode_token
 
         forged = (
             base64.urlsafe_b64encode(
@@ -1201,7 +1204,7 @@ class TestPaginationCursorSigning:
             decode_token(forged)
 
     def test_valid_cursor_accepted(self):
-        from zephyrex.extensions.Paginators import encode_token, decode_token
+        from zephyrex.extensions.Paginators import decode_token, encode_token
 
         token = encode_token("cursor_val", 25, "hash123")
         decoded = decode_token(token)
@@ -1253,8 +1256,9 @@ class TestExecuteFileTimeout:
     """execute_file has a 30s timeout to prevent worker hang."""
 
     def test_timeout_constant_exists(self):
-        from zephyrex.extensions.fileio.Local import LocalFileSystem
         import inspect
+
+        from zephyrex.extensions.fileio.Local import LocalFileSystem
 
         source = inspect.getsource(LocalFileSystem.execute_file)
         assert "wait_for" in source, "execute_file should use asyncio.wait_for"
@@ -1266,6 +1270,7 @@ class TestAttachmentFilenameSanitization:
 
     def test_basename_used_for_suffix(self):
         import inspect
+
         from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider
 
         source = inspect.getsource(AbstractEmailProvider)
@@ -1275,9 +1280,58 @@ class TestAttachmentFilenameSanitization:
 
     def test_temp_files_cleaned_up(self):
         import inspect
+
         from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider
 
         source = inspect.getsource(AbstractEmailProvider)
         assert (
             "os.unlink" in source or "finally" in source
         ), "Temp attachment files should be cleaned up"
+
+
+async def test_an_event_stream_goes_out_as_it_is_written():
+    """Server-sent events never end, so the ETag middleware must not hold them
+    for a whole-body validator (live_sync and device pairing streamed nothing)."""
+    import asyncio
+
+    stream_open = asyncio.Event()
+
+    async def endless_stream(scope, receive, send):
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream; charset=utf-8")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b": connected\n\n",
+                "more_body": True,
+            }
+        )
+        await stream_open.wait()
+
+    sent: list[dict] = []
+    first_event = asyncio.Event()
+
+    async def send(message):
+        sent.append(message)
+        if message.get("type") == "http.response.body":
+            first_event.set()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    scope = {"type": "http", "method": "GET", "headers": []}
+    serving = asyncio.create_task(ETagMiddleware(endless_stream)(scope, receive, send))
+    await asyncio.wait_for(first_event.wait(), timeout=2)
+    assert [message["type"] for message in sent] == [
+        "http.response.start",
+        "http.response.body",
+    ]
+    assert sent[1]["body"] == b": connected\n\n"
+    assert not any(key == b"etag" for key, _ in sent[0]["headers"])
+    stream_open.set()
+    await serving

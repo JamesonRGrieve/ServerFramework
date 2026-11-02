@@ -32,23 +32,18 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
 from typing import (
     Any,
-    Callable,
-    Deque,
-    Dict,
-    List,
     Literal,
-    Optional,
-    Tuple,
     TypeVar,
 )
 
 
 @functools.lru_cache(maxsize=8)
-def _parse_trusted_proxies(raw: str) -> Tuple[ipaddress._BaseNetwork, ...]:
+def _parse_trusted_proxies(raw: str) -> tuple[ipaddress._BaseNetwork, ...]:
     """Parse a raw ``TRUSTED_PROXIES`` value into ip_network objects.
 
     Memoized on the raw string: a stable config is parsed once rather than on
@@ -58,7 +53,7 @@ def _parse_trusted_proxies(raw: str) -> Tuple[ipaddress._BaseNetwork, ...]:
     """
     if not raw:
         return ()
-    nets: List[ipaddress._BaseNetwork] = []
+    nets: list[ipaddress._BaseNetwork] = []
     for part in (p.strip() for p in raw.split(",") if p.strip()):
         if part == "*" or "*" in part:
             raise ValueError(
@@ -72,7 +67,7 @@ def _parse_trusted_proxies(raw: str) -> Tuple[ipaddress._BaseNetwork, ...]:
     return tuple(nets)
 
 
-def _trusted_proxy_networks() -> List[ipaddress._BaseNetwork]:
+def _trusted_proxy_networks() -> list[ipaddress._BaseNetwork]:
     """Return the parsed TRUSTED_PROXIES networks (empty unless configured).
 
     Delegates to the raw-string-memoized :func:`_parse_trusted_proxies` so the
@@ -83,7 +78,7 @@ def _trusted_proxy_networks() -> List[ipaddress._BaseNetwork]:
     return list(_parse_trusted_proxies(raw))
 
 
-def _peer_is_trusted_proxy(peer_host: Optional[str]) -> bool:
+def _peer_is_trusted_proxy(peer_host: str | None) -> bool:
     """Return True iff the immediate connection peer is in TRUSTED_PROXIES."""
     if not peer_host:
         return False
@@ -100,31 +95,31 @@ def _peer_is_trusted_proxy(peer_host: Optional[str]) -> bool:
 from zephyrex.lib.Logging import logger
 
 __all__ = [
-    "CORSPolicyError",
-    "RateLimitExceeded",
-    "validate_cors_config",
-    "parse_cors_origins",
-    "rate_limit",
-    "parse_rate_spec",
-    "RateLimitScope",
-    "RateLimitMiddleware",
-    "register_rate_limited_route",
-    "reset_rate_limit_state",
-    "discover_rate_limited_routes",
-    "set_rate_limit_counter",
-    "LockoutPolicy",
-    "LockoutTracker",
-    "AnomalyDetector",
-    "NoOpAnomalyDetector",
     "DEFAULT_AUTH_RATE_LIMIT",
+    "DEFAULT_MAX_BODY_BYTES",
     "DEFAULT_MUTATING_RATE_LIMIT",
     "DEFAULT_READ_RATE_LIMIT",
-    "compare_api_key",
-    "resolve_principal_from_api_key",
-    "resolve_client_ip",
-    "SecurityHeadersMiddleware",
+    "AnomalyDetector",
     "BodySizeLimitMiddleware",
-    "DEFAULT_MAX_BODY_BYTES",
+    "CORSPolicyError",
+    "LockoutPolicy",
+    "LockoutTracker",
+    "NoOpAnomalyDetector",
+    "RateLimitExceeded",
+    "RateLimitMiddleware",
+    "RateLimitScope",
+    "SecurityHeadersMiddleware",
+    "compare_api_key",
+    "discover_rate_limited_routes",
+    "parse_cors_origins",
+    "parse_rate_spec",
+    "rate_limit",
+    "register_rate_limited_route",
+    "reset_rate_limit_state",
+    "resolve_client_ip",
+    "resolve_principal_from_api_key",
+    "set_rate_limit_counter",
+    "validate_cors_config",
 ]
 
 
@@ -151,7 +146,7 @@ async def _send_asgi_error(
 # baked into core. CSP is intentionally narrow (``default-src 'none'``) —
 # this surface is JSON, not HTML; pages that need CSP relaxation should
 # either declare their own header at the route level or adjust the env.
-_DEFAULT_SECURITY_HEADERS: Dict[str, str] = {
+_DEFAULT_SECURITY_HEADERS: dict[str, str] = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -175,20 +170,20 @@ DEFAULT_MAX_BODY_BYTES: int = 10 * 1024 * 1024
 
 
 def _with_vary(
-    raw: List[Tuple[bytes, bytes]], required: str
-) -> List[Tuple[bytes, bytes]]:
+    raw: list[tuple[bytes, bytes]], required: str
+) -> list[tuple[bytes, bytes]]:
     """``raw`` with a single ``Vary`` naming every field it already varied on
     plus each of ``required``. ``Vary`` is a list: a layer that varies on
     ``Origin`` must not stop the response varying on ``Authorization``."""
-    fields: List[str] = []
-    rest: List[Tuple[bytes, bytes]] = []
+    fields: list[str] = []
+    rest: list[tuple[bytes, bytes]] = []
     for key, value in raw:
         if key.decode("latin-1").lower() == "vary":
             fields.extend(value.decode("latin-1").split(","))
         else:
             rest.append((key, value))
     fields.extend(required.split(","))
-    merged: Dict[str, str] = {}
+    merged: dict[str, str] = {}
     for field in (f.strip() for f in fields):
         if field:
             merged.setdefault(field.lower(), field)
@@ -213,7 +208,7 @@ class SecurityHeadersMiddleware:
         self._strip_server = os.environ.get("SECURITY_STRIP_SERVER_HEADER", "1") != "0"
 
     @staticmethod
-    def _resolve_headers() -> Dict[str, str]:
+    def _resolve_headers() -> dict[str, str]:
         headers = dict(_DEFAULT_SECURITY_HEADERS)
         from zephyrex.lib.Environment import is_production as _is_prod
 
@@ -276,7 +271,7 @@ class BodySizeLimitMiddleware:
     is ``DEFAULT_MAX_BODY_BYTES``.
     """
 
-    def __init__(self, app: Any, max_bytes: Optional[int] | None = None) -> None:
+    def __init__(self, app: Any, max_bytes: int | None = None) -> None:
         self.app = app
         if max_bytes is None:
             raw = os.environ.get("MAX_REQUEST_BODY_BYTES")
@@ -331,6 +326,10 @@ class BodySizeLimitMiddleware:
 MAX_JSON_DEPTH: int = 32
 
 
+# Responses the ETag middleware passes through as they are written.
+STREAM_CONTENT_TYPE = b"text/event-stream"
+
+
 class ETagMiddleware:
     """ASGI middleware that adds ETag headers to GET 200 responses and
     handles conditional requests (If-None-Match → 304).
@@ -363,11 +362,27 @@ class ETagMiddleware:
 
         response_started = {"status": 0, "headers": []}
         body_parts: list[bytes] = []
+        # A stream (server-sent events) never ends, so it has no body to validate:
+        # it goes out as it is written instead of waiting for an end that never comes.
+        streaming = False
 
         async def capture_send(message):
+            nonlocal streaming
+            if streaming:
+                await send(message)
+                return
             if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                if any(
+                    key.lower() == b"content-type"
+                    and value.lower().startswith(STREAM_CONTENT_TYPE)
+                    for key, value in headers
+                ):
+                    streaming = True
+                    await send(message)
+                    return
                 response_started["status"] = message.get("status", 200)
-                response_started["headers"] = list(message.get("headers") or [])
+                response_started["headers"] = headers
                 return
             if message.get("type") == "http.response.body":
                 body_parts.append(message.get("body") or b"")
@@ -613,7 +628,7 @@ class JSONDepthMiddleware:
 import hmac as _hmac
 
 
-def compare_api_key(submitted: Optional[str], expected: Optional[str]) -> bool:
+def compare_api_key(submitted: str | None, expected: str | None) -> bool:
     """Constant-time comparison for API keys (H-3).
 
     Returns ``False`` for empty/None inputs — never let a misconfigured
@@ -626,7 +641,7 @@ def compare_api_key(submitted: Optional[str], expected: Optional[str]) -> bool:
     return _hmac.compare_digest(submitted_b, expected_b)
 
 
-def resolve_principal_from_api_key(api_key: Optional[str]) -> Optional[str]:
+def resolve_principal_from_api_key(api_key: str | None) -> str | None:
     """Map a submitted API key to one of (ROOT_ID, SYSTEM_ID, TEMPLATE_ID).
 
     Returns ``None`` when no key matches. Single source of truth for
@@ -649,9 +664,7 @@ def resolve_principal_from_api_key(api_key: Optional[str]) -> Optional[str]:
     return None
 
 
-def resolve_client_ip(
-    request_or_headers, peer_host: Optional[str] | None = None
-) -> Optional[str]:
+def resolve_client_ip(request_or_headers, peer_host: str | None = None) -> str | None:
     """Return the client IP, honouring `X-Forwarded-For` only when the
     immediate peer is a configured trusted proxy (H-7).
 
@@ -669,9 +682,7 @@ def resolve_client_ip(
         headers = request_or_headers.headers
         get_header = headers.get
     else:
-        get_header = lambda k, default=None: request_or_headers.get(
-            k, default
-        )  # noqa: E731
+        get_header = lambda k, default=None: request_or_headers.get(k, default)
 
     if _peer_is_trusted_proxy(peer_host):
         xff = get_header("X-Forwarded-For", "") or ""
@@ -718,9 +729,9 @@ class RateLimitExceeded(Exception):
         self,
         message: str = "Rate limit exceeded",
         *,
-        retry_after_seconds: Optional[float] | None = None,
-        scope: Optional[str] | None = None,
-        actor_key: Optional[str] | None = None,
+        retry_after_seconds: float | None = None,
+        scope: str | None = None,
+        actor_key: str | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -737,7 +748,7 @@ class RateLimitExceeded(Exception):
 _URL_SHAPE = re.compile(r"^https?://[A-Za-z0-9._\-]+(:[0-9]+)?(/.*)?$")
 
 
-def parse_cors_origins(env_value: str) -> List[str]:
+def parse_cors_origins(env_value: str) -> list[str]:
     """Split a comma-separated `APP_CORS_ALLOWED_ORIGINS` env value.
 
     Trims whitespace, drops empty entries, and validates that each non-`*`
@@ -762,7 +773,7 @@ def parse_cors_origins(env_value: str) -> List[str]:
 
 
 def validate_cors_config(
-    allow_origins: List[str],
+    allow_origins: list[str],
     allow_credentials: bool,
     app_env: str,
 ) -> None:
@@ -832,7 +843,7 @@ _UNIT_SECONDS = {
 _RATE_SPEC = re.compile(r"^\s*(\d+)\s*/\s*([A-Za-z]+)\s*$")
 
 
-def parse_rate_spec(spec: str) -> Tuple[int, int]:
+def parse_rate_spec(spec: str) -> tuple[int, int]:
     """Parse a `"100/min"` style rate spec into `(count, window_seconds)`.
 
     Accepts the units recognized in `_UNIT_SECONDS`. Raises `ValueError` on
@@ -883,10 +894,10 @@ def rate_limit(spec: str, scope: RateLimitScope = "ip") -> Callable[[F], F]:
     count, window_seconds = parse_rate_spec(spec)
 
     def _decorator(fn: F) -> F:
-        setattr(fn, "_rate_limit_spec", spec)
-        setattr(fn, "_rate_limit_count", count)
-        setattr(fn, "_rate_limit_window_seconds", window_seconds)
-        setattr(fn, "_rate_limit_scope", scope)
+        fn._rate_limit_spec = spec
+        fn._rate_limit_count = count
+        fn._rate_limit_window_seconds = window_seconds
+        fn._rate_limit_scope = scope
         return fn
 
     return _decorator
@@ -908,7 +919,7 @@ class _InMemoryCounter:
     """
 
     def __init__(self) -> None:
-        self._buckets: Dict[str, Deque[float]] = defaultdict(deque)
+        self._buckets: dict[str, deque[float]] = defaultdict(deque)
         self._lock = RLock()
 
     def incr(self, key: str, window_seconds: int) -> int:
@@ -921,7 +932,7 @@ class _InMemoryCounter:
             bucket.append(now)
             return len(bucket)
 
-    def reset(self, key: Optional[str] | None = None) -> None:
+    def reset(self, key: str | None = None) -> None:
         with self._lock:
             if key is None:
                 self._buckets.clear()
@@ -948,7 +959,7 @@ def _get_counter() -> Any:
     return _rate_limit_counter or _inmemory_counter
 
 
-_rate_limit_counter: Optional[Any] | None = None
+_rate_limit_counter: Any | None = None
 
 
 def set_rate_limit_counter(counter: Any) -> None:
@@ -997,10 +1008,10 @@ class LockoutTracker:
     is intentionally minimal so the swap is mechanical.
     """
 
-    def __init__(self, policy: Optional[LockoutPolicy] | None = None) -> None:
+    def __init__(self, policy: LockoutPolicy | None = None) -> None:
         self.policy = policy or LockoutPolicy()
-        self._failures: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
-        self._locked_until: Dict[Tuple[str, str], float] = {}
+        self._failures: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+        self._locked_until: dict[tuple[str, str], float] = {}
         self._lock = RLock()
         self._warn_if_multi_worker()
 
@@ -1077,7 +1088,7 @@ class LockoutTracker:
                 return False
             return True
 
-    def remaining_lockout_seconds(self, actor_key: str, flow: str) -> Optional[float]:
+    def remaining_lockout_seconds(self, actor_key: str, flow: str) -> float | None:
         """Return seconds remaining on an active lockout, or None."""
         key = (actor_key, flow)
         now = time.monotonic()
@@ -1141,15 +1152,15 @@ class NoOpAnomalyDetector(AnomalyDetector):
 # Registry maps `(method, path)` -> (count, window_seconds, scope). Populated
 # at app startup from `@rate_limit`-decorated handlers. Key is normalized
 # `path` (FastAPI's templated form, e.g. `/v1/user/{id}`).
-_RATE_LIMIT_REGISTRY: Dict[Tuple[str, str], Tuple[int, int, str]] = {}
+_RATE_LIMIT_REGISTRY: dict[tuple[str, str], tuple[int, int, str]] = {}
 # Templated paths, compiled: the middleware runs before routing resolves the
 # route, so a request path is matched against these patterns.
-_TEMPLATED_RATE_LIMITS: Dict[
-    str, List[Tuple["re.Pattern[str]", Tuple[int, int, str]]]
+_TEMPLATED_RATE_LIMITS: dict[
+    str, list[tuple[re.Pattern[str], tuple[int, int, str]]]
 ] = {}
 
 # Attributes `@rate_limit` stamps on a callable.
-RATE_LIMIT_MARKERS: Tuple[str, ...] = (
+RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "_rate_limit_spec",
     "_rate_limit_count",
     "_rate_limit_window_seconds",
@@ -1165,7 +1176,7 @@ def carry_rate_limit(source: Any, target: Any) -> None:
             setattr(target, marker, getattr(source, marker))
 
 
-def _rate_limit_policy(method: str, path: str) -> Optional[Tuple[int, int, str]]:
+def _rate_limit_policy(method: str, path: str) -> tuple[int, int, str] | None:
     """The policy for a request, by exact path or templated pattern."""
     policy = _RATE_LIMIT_REGISTRY.get((method, path))
     if policy is not None:
@@ -1237,7 +1248,7 @@ def reset_rate_limit_state() -> None:
     _rate_limit_counter = None
 
 
-def _resolve_actor_key(scope: str, request: Any) -> Optional[str]:
+def _resolve_actor_key(scope: str, request: Any) -> str | None:
     """Compute the actor identity for a `(scope, request)` pair.
 
     Returns None when the scope cannot be resolved (e.g. `user` scope on an
@@ -1309,7 +1320,7 @@ class RateLimitMiddleware:
         self.app = app
 
     async def __call__(
-        self, scope_dict: Dict[str, Any], receive: Any, send: Any
+        self, scope_dict: dict[str, Any], receive: Any, send: Any
     ) -> None:
         if scope_dict.get("type") != "http":
             await self.app(scope_dict, receive, send)
@@ -1430,7 +1441,7 @@ class RateLimitMiddleware:
             (b"x-ratelimit-remaining", str(remaining).encode("ascii")),
         ]
 
-        async def _send_with_rl_headers(message: Dict[str, Any]) -> None:
+        async def _send_with_rl_headers(message: dict[str, Any]) -> None:
             if message.get("type") == "http.response.start":
                 headers = list(message.get("headers", []))
                 headers.extend(_rl_headers)
