@@ -254,6 +254,39 @@ NotificationModel.Manager = NotificationManager
 UserNotificationModel.Manager = UserNotificationManager
 
 
+def notify(
+    model_registry,
+    user_id: str,
+    title: str,
+    content: str,
+    reference_type: Optional[str] = None,
+    reference_id: Optional[str] = None,
+) -> str:
+    """Send one user a notification, as the system (for extensions that tell
+    someone something: a reminder, a notice): the notification and its
+    delivery to them. Answers the notification's id."""
+    root = env("ROOT_ID")
+    base = model_registry.DB.manager.Base
+    made = NotificationModel.DB(base).create(
+        requester_id=root,
+        model_registry=model_registry,
+        return_type="dto",
+        override_dto=NotificationModel,
+        user_id=user_id,
+        title=title,
+        content=content,
+        reference_type=reference_type,
+        reference_id=reference_id,
+    )
+    UserNotificationModel.DB(base).create(
+        requester_id=root,
+        model_registry=model_registry,
+        user_id=user_id,
+        notification_id=made.id,
+    )
+    return str(made.id)
+
+
 # ---------------------------------------------------------------------------
 # Merge participation
 # ---------------------------------------------------------------------------

@@ -178,13 +178,11 @@ def send_reminders(model_registry: Any, today: date) -> int:
     """Send today's due reminders that have not been sent; answers how many went."""
     from zephyrex.extensions.auth_notifications.BLL_Auth_Notifications import (
         NotificationModel,
-        UserNotificationModel,
+        notify,
     )
 
     root = env("ROOT_ID")
-    base = model_registry.DB.manager.Base
-    notifications = NotificationModel.DB(base)
-    deliveries = UserNotificationModel.DB(base)
+    notifications = NotificationModel.DB(model_registry.DB.manager.Base)
     sent = 0
     for owner, occasions in occasions_for_all(model_registry, today).items():
         for found in due(occasions):
@@ -201,23 +199,7 @@ def send_reminders(model_registry: Any, today: date) -> int:
             if already:
                 continue
             title, content = message(found)
-            made = notifications.create(
-                requester_id=root,
-                model_registry=model_registry,
-                return_type="dto",
-                override_dto=NotificationModel,
-                user_id=owner,
-                title=title,
-                content=content,
-                reference_type=REFERENCE_TYPE,
-                reference_id=key,
-            )
-            deliveries.create(
-                requester_id=root,
-                model_registry=model_registry,
-                user_id=owner,
-                notification_id=made.id,
-            )
+            notify(model_registry, owner, title, content, REFERENCE_TYPE, key)
             sent += 1
     return sent
 

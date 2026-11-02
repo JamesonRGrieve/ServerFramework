@@ -22,8 +22,9 @@ and ``POST /gedcom`` imports GEDCOM 5.5 to 7.0 (``GEDCOM``). Every read is
 as the requester, so a tree never reaches past what they may see.
 """
 
+from collections import deque
 from datetime import date, datetime, time, timezone
-from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Type
+from typing import Any, ClassVar, Deque, Dict, List, Literal, Optional, Set, Tuple, Type
 
 from fastapi import HTTPException
 from fastapi.responses import PlainTextResponse
@@ -556,6 +557,57 @@ class PersonManager(AbstractBLLManager, RouterMixin):
         return merge(
             viewer, lambda owner: self._tree(owner, kinds, include_ended), kinds
         )
+
+    def reachable_accounts(self, kinds: List[str], since: datetime) -> Dict[str, int]:
+        """Every account reachable from the requester through ties of
+        ``kinds`` in effect at any time since ``since``, each with how many
+        ties away it is (1: the requester's own partner). A step goes from an
+        account to one its self person is tied to, when the two have linked
+        each other (as in ``linked_network``); everyone's visibility is
+        ignored, so a hidden person is still reached. For extensions that
+        must reach people without showing them (exposure notices)."""
+        me = str(self.requester.id)
+        now = datetime.now(timezone.utc)
+        trees: Dict[str, Tree] = {}
+
+        def tree_of(owner: str) -> Tree:
+            if owner not in trees:
+                trees[owner] = self._tree(owner, kinds, include_ended=True)
+            return trees[owner]
+
+        def links(owner: str, other: str) -> bool:
+            return bool(tree_of(owner).linked_to(other))
+
+        def contacts(account: str) -> Set[str]:
+            tree = tree_of(account)
+            own = tree.self_person()
+            if own is None:
+                return set()
+            found: Set[str] = set()
+            for tie in tree.ties:
+                if own.id not in (tie.person_id, tie.target_person_id):
+                    continue
+                if not tie.in_effect_between(since, now):
+                    continue
+                other = (
+                    tie.target_person_id if tie.person_id == own.id else tie.person_id
+                )
+                person = tree.persons.get(other)
+                user = person.linked_user_id if person else None
+                if user and user != account and links(user, account):
+                    found.add(user)
+            return found
+
+        reached: Dict[str, int] = {me: 0}
+        queue: Deque[str] = deque([me])
+        while queue:
+            account = queue.popleft()
+            for contact in contacts(account):
+                if contact not in reached:
+                    reached[contact] = reached[account] + 1
+                    queue.append(contact)
+        del reached[me]
+        return reached
 
     def _relatives(self, person_id: str, found: Dict[str, int]) -> RelativesResponse:
         return RelativesResponse(

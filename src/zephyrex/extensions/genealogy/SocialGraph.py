@@ -39,6 +39,12 @@ class Tie:
         ended = self.valid_to is not None and _utc(self.valid_to) <= moment
         return started and not ended
 
+    def in_effect_between(self, start: datetime, end: datetime) -> bool:
+        """Whether the tie was in effect at any moment from ``start`` to ``end``."""
+        began = self.valid_from is None or _utc(self.valid_from) <= _utc(end)
+        lasted = self.valid_to is None or _utc(self.valid_to) > _utc(start)
+        return began and lasted
+
 
 def _utc(value: datetime) -> datetime:
     """``value`` as an aware UTC datetime; a naive one is read as UTC, as the
