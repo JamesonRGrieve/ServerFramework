@@ -248,8 +248,9 @@ class TestWatchLists(ExtensionServerMixin):
             json={"user_id": alex.id},
             headers=self._headers(keeper),
         )
-        left = server.delete(
-            f"/v1/watch-lists/{other['id']}/members/{alex.id}",
+        left = server.post(
+            f"/v1/watch-lists/{other['id']}/members/{alex.id}/remove",
+            json={},
             headers=self._headers(alex),
         )
         assert left.status_code == 200, left.text
@@ -272,3 +273,46 @@ def test_a_tmdb_title_carries_its_poster():
     assert (
         PRV_TMDb_Media._item("movie", {"id": 1, "title": "No poster"})["image"] is None
     )
+
+
+class TestRemoving(ExtensionServerMixin):
+    extension_class = EXT_Media
+
+    @pytest.fixture(autouse=True)
+    def catalogue(self, monkeypatch):
+        async def info(media: str) -> Dict[str, Any]:
+            return CATALOGUE[media]
+
+        monkeypatch.setattr(EXT_Media, "get_media_info", info)
+
+    def test_whoever_added_a_title_or_the_keeper_takes_it_off(self, server):
+        keeper, alex, sam = (create_user(server) for _ in range(3))
+        made = server.post(
+            "/v1/watch-lists",
+            json={"name": "Films"},
+            headers=TestWatchLists._headers(keeper),
+        ).json()
+        for member in (alex, sam):
+            server.post(
+                f"/v1/watch-lists/{made['id']}/members",
+                json={"user_id": member.id},
+                headers=TestWatchLists._headers(keeper),
+            )
+        added = server.post(
+            f"/v1/watch-lists/{made['id']}/titles",
+            json={"media_id": "tmdb:movie:603"},
+            headers=TestWatchLists._headers(alex),
+        ).json()
+        refused = server.post(
+            f"/v1/watch-lists/titles/{added['title_id']}/remove",
+            json={},
+            headers=TestWatchLists._headers(sam),
+        )
+        assert refused.status_code == 403
+        removed = server.post(
+            f"/v1/watch-lists/titles/{added['title_id']}/remove",
+            json={},
+            headers=TestWatchLists._headers(alex),
+        )
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["titles"] == []

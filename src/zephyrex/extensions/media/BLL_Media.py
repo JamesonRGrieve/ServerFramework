@@ -10,10 +10,12 @@ wants, else one the most of them want; among equals it is chosen at random,
 the same choice for everyone that day.
 
 Routes on ``/v1/watch-lists``: ``GET /search`` (the catalogue), ``GET
-/mine``, ``POST /`` (start a list), ``POST /{list_id}/members``, ``DELETE
-/{list_id}/members/{user_id}``, ``POST /{list_id}/titles``, ``POST
-/titles/{title_id}/want``, ``POST /titles/{title_id}/watched``, ``DELETE
-/titles/{title_id}`` and ``GET /{list_id}/pick``.
+/mine``, ``POST /`` (start a list), ``POST /{list_id}/members``, ``POST
+/{list_id}/members/{user_id}/remove``, ``POST /{list_id}/titles``, ``POST
+/titles/{title_id}/want``, ``POST /titles/{title_id}/watched``, ``POST
+/titles/{title_id}/remove`` and ``GET /{list_id}/pick``. They are actions on
+a shared list rather than writes to a versioned row: two people acting at
+once lose nothing.
 """
 
 from __future__ import annotations
@@ -185,6 +187,10 @@ class NewMember(ResponseModel):
 
 class NewTitle(ResponseModel):
     media_id: str = Field(..., min_length=1)
+
+
+class NoDetails(ResponseModel):
+    """The body of an action that needs nothing more than its path."""
 
 
 class Want(ResponseModel):
@@ -485,15 +491,18 @@ class WatchListManager(AbstractBLLManager, RouterMixin):
         return self._entry(watch_list)
 
     @custom_route(
-        method="DELETE",
-        path="/{list_id}/members/{user_id}",
+        method="POST",
+        path="/{list_id}/members/{user_id}/remove",
+        input_model=NoDetails,
         output_model=WatchListEntry,
         authentication_type="jwt",
         openapi_tags=("Watch lists",),
         summary="Take someone off your list, or leave someone else's",
         expose_in=(ExposeIn.REST,),
     )
-    def remove_member_route(self, list_id: str, user_id: str) -> WatchListEntry:
+    def remove_member_route(
+        self, list_id: str, user_id: str, body: NoDetails
+    ) -> WatchListEntry:
         watch_list, _ = self._list(list_id)
         if self._me not in (str(watch_list.created_by_user_id), user_id):
             raise HTTPException(
@@ -609,15 +618,16 @@ class WatchListManager(AbstractBLLManager, RouterMixin):
         )
 
     @custom_route(
-        method="DELETE",
-        path="/titles/{title_id}",
+        method="POST",
+        path="/titles/{title_id}/remove",
+        input_model=NoDetails,
         output_model=WatchListEntry,
         authentication_type="jwt",
         openapi_tags=("Watch lists",),
         summary="Take a title off the list (its keeper, or whoever added it)",
         expose_in=(ExposeIn.REST,),
     )
-    def remove_title_route(self, title_id: str) -> WatchListEntry:
+    def remove_title_route(self, title_id: str, body: NoDetails) -> WatchListEntry:
         title, _ = self._title(title_id)
         watch_list, _ = self._list(str(title.list_id))
         if self._me not in (
