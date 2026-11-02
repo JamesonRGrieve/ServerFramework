@@ -198,22 +198,41 @@ class LiveHub:
     def join(
         self, user_id: str, channel: str, client_id: str
     ) -> asyncio.Queue[str | None]:
+        """Opens the device's stream. A device that joins again (it reconnected, or
+        reloaded) replaces its old stream, which is closed: a dropped connection is
+        only noticed at the next keepalive, and the device must not wait for it."""
         self._ensure_bus_subscription()
         streams = self._streams.setdefault((user_id, channel), {})
-        if client_id in streams:
-            raise HTTPException(
-                status_code=409,
-                detail="That device is already connected to the channel",
-            )
+        replaced = streams.get(client_id)
+        if replaced is not None:
+            replaced.loop.call_soon_threadsafe(self._close, replaced)
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=DEVICE_QUEUE_SIZE)
         streams[client_id] = _Subscriber(client_id, queue, asyncio.get_running_loop())
         return queue
 
-    def leave(self, user_id: str, channel: str, client_id: str) -> None:
+    @staticmethod
+    def _close(subscriber: _Subscriber) -> None:
+        """Ends a stream: its close marker, making room for it if the queue is full."""
+        if subscriber.queue.full():
+            subscriber.queue.get_nowait()
+        subscriber.queue.put_nowait(None)
+
+    def leave(
+        self,
+        user_id: str,
+        channel: str,
+        client_id: str,
+        queue: asyncio.Queue[str | None] | None = None,
+    ) -> None:
+        """Forgets the device's stream; with ``queue``, only if that stream is still
+        the device's (not one it has since replaced by joining again)."""
         streams = self._streams.get((user_id, channel))
         if streams is None:
             return
-        streams.pop(client_id, None)
+        current = streams.get(client_id)
+        if current is None or (queue is not None and current.queue is not queue):
+            return
+        del streams[client_id]
         if not streams:
             del self._streams[(user_id, channel)]
 
@@ -245,10 +264,8 @@ class LiveHub:
                 "live_sync: dropping a device that fell %s messages behind",
                 DEVICE_QUEUE_SIZE,
             )
-            self.leave(user_id, channel, subscriber.client_id)
-            # Drain one frame so the close marker fits; the stream ends anyway.
-            subscriber.queue.get_nowait()
-            subscriber.queue.put_nowait(None)
+            self.leave(user_id, channel, subscriber.client_id, subscriber.queue)
+            self._close(subscriber)
 
 
 HUB = LiveHub()
@@ -381,17 +398,20 @@ class LiveSyncManager(AbstractBLLManager, RouterMixin):
                     return
                 yield frame
         finally:
-            HUB.leave(self._user_id, channel, client_id)
+            HUB.leave(self._user_id, channel, client_id, queue)
             # A disconnect cancels the stream, and anyio re-raises that at every
-            # await in a cancelled scope: shield the hand-over announcement.
+            # await in a cancelled scope: shield the hand-over announcement. A
+            # device that rejoined is still here: its new stream announces itself.
+            rejoined = client_id in HUB.connected(self._user_id, channel)
             with anyio.CancelScope(shield=True):
-                was_main = any(
-                    d.client_id == client_id and d.is_main
-                    for d in self._devices(channel)
-                )
-                if was_main:
-                    self._set_main(channel, None)
-                await self._announce(channel)
+                if not rejoined:
+                    was_main = any(
+                        d.client_id == client_id and d.is_main
+                        for d in self._devices(channel)
+                    )
+                    if was_main:
+                        self._set_main(channel, None)
+                    await self._announce(channel)
 
     @custom_route(
         method="GET",
@@ -400,7 +420,7 @@ class LiveSyncManager(AbstractBLLManager, RouterMixin):
         expose_in=(ExposeIn.REST,),
         response_class=StreamingResponse,
         openapi_tags=("Live Sync",),
-        summary="Join a channel and receive its messages as server-sent events",
+        summary="Join a channel and receive its messages as server-sent events (rejoining replaces the device's old stream)",
     )
     async def events_route(
         self, request: Request, channel: str, client_id: str, label: str | None = None
@@ -416,7 +436,7 @@ class LiveSyncManager(AbstractBLLManager, RouterMixin):
         try:
             self._register(channel, client_id, label)
         except Exception:
-            HUB.leave(self._user_id, channel, client_id)
+            HUB.leave(self._user_id, channel, client_id, queue)
             raise
         return StreamingResponse(
             self._stream(request, channel, client_id, queue),

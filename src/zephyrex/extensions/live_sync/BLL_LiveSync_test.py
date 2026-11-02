@@ -184,12 +184,23 @@ class TestLiveSync(ExtensionServerMixin):
         for device in (other, theirs, mine):
             await device.close()
 
-    async def test_the_same_device_cannot_join_twice(self, model_registry, admin_a):
+    async def test_a_device_that_rejoins_replaces_its_old_stream(
+        self, model_registry, admin_a
+    ):
+        """A reconnecting device (a network blip, a reload) is let back in at once:
+        its old stream ends, it keeps leading, and it is listed once."""
         first = await self._join(model_registry, admin_a, "prompter-c", "tablet")
-        with pytest.raises(Exception) as refused:
-            await self._join(model_registry, admin_a, "prompter-c", "tablet")
-        assert getattr(refused.value, "status_code", None) == 409
-        await first.close()
+        await first.presence()
+        again = await self._join(model_registry, admin_a, "prompter-c", "tablet")
+        assert await again.presence() == [
+            {"client_id": "tablet", "label": None, "main": True, "connected": True}
+        ]
+        # The old stream ends; its cleanup leaves the new one in place.
+        with pytest.raises(StopAsyncIteration):
+            while True:
+                await first.frame()
+        assert HUB.connected(str(admin_a.id), "prompter-c") == {"tablet"}
+        await again.close()
 
     async def test_a_device_that_falls_behind_is_dropped_not_buffered_forever(
         self, model_registry, admin_a
