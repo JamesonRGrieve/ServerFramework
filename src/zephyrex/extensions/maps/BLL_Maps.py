@@ -17,7 +17,7 @@ globe) is 422.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Awaitable, ClassVar, Dict, List, Optional, TypeVar
 
 from fastapi import HTTPException
 from pydantic import BaseModel as ResponseModel
@@ -47,6 +47,8 @@ from zephyrex.pydantic2.fastapi import RouterMixin
 MAPS_PREFIX = "/v1/maps"
 MAX_QUERY_LENGTH = 200
 MAX_MIDPOINT_LOCATIONS = 8
+HTTP_SERVER_ERROR = 500
+MAP_SILENT = "The map did not answer; try again shortly"
 
 
 class Place(ResponseModel):
@@ -105,6 +107,24 @@ class Midpoint(ResponseModel):
     places: List[Place]
 
 
+T = TypeVar("T")
+
+
+async def answered(asking: Awaitable[T]) -> T:
+    """``asking``'s answer, or the refusal a caller can act on: a provider's
+    failure, and the rotation's own (every instance failed, or none is
+    configured), whose detail names internals, become 422, 429 or 502."""
+    try:
+        return await asking
+    except BaseExternalError as err:
+        raise refusal(err) from err
+    except HTTPException as err:
+        if err.status_code < HTTP_SERVER_ERROR:
+            raise
+        logger.warning("maps: the rotation failed: %s", err.detail)
+        raise HTTPException(status_code=502, detail=MAP_SILENT) from err
+
+
 def refusal(err: BaseExternalError) -> HTTPException:
     """A map provider's failure as the HTTP answer a caller can act on."""
     if isinstance(err, InvalidInputExternalError):
@@ -114,7 +134,7 @@ def refusal(err: BaseExternalError) -> HTTPException:
             status_code=429, detail="The map is busy; try again shortly"
         )
     logger.warning("maps: the provider failed: %s", err)
-    return HTTPException(status_code=502, detail="The map did not answer")
+    return HTTPException(status_code=502, detail=MAP_SILENT)
 
 
 def _places(found: List[Dict[str, Any]]) -> List[Place]:
@@ -157,10 +177,9 @@ class MapsManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(
                 status_code=422, detail=f"Search for 1 to {MAX_QUERY_LENGTH} characters"
             )
-        try:
-            return PlaceList(places=_places(await EXT_Maps.search_location(q, limit)))
-        except BaseExternalError as err:
-            raise refusal(err) from err
+        return PlaceList(
+            places=_places(await answered(EXT_Maps.search_location(q, limit)))
+        )
 
     @custom_route(
         method="GET",
@@ -180,14 +199,11 @@ class MapsManager(AbstractBLLManager, RouterMixin):
     ) -> PlaceList:
         if not near.strip() or len(near) > MAX_QUERY_LENGTH:
             raise HTTPException(status_code=422, detail="Say where to search around")
-        try:
-            return PlaceList(
-                places=_places(
-                    await EXT_Maps.find_nearby(near, category, radius_m, limit)
-                )
+        return PlaceList(
+            places=_places(
+                await answered(EXT_Maps.find_nearby(near, category, radius_m, limit))
             )
-        except BaseExternalError as err:
-            raise refusal(err) from err
+        )
 
     @custom_route(
         method="POST",
@@ -200,7 +216,7 @@ class MapsManager(AbstractBLLManager, RouterMixin):
         summary="The point halfway between several locations, and places around it",
     )
     async def midpoint_route(self, body: MidpointRequest) -> Midpoint:
-        return await meet_between(body)
+        return await answered(meet_between(body))
 
 
 async def _leg(location: str, point: tuple[float, float], there: str, mode: str) -> Leg:

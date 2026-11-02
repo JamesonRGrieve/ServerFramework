@@ -292,3 +292,47 @@ class TestSeeding(ExtensionServerMixin):
         }
         assert root_instance_name(PRV_OpenStreetMap_Maps.name) in linked
         assert root_instance_name("google_maps") not in linked
+
+
+class TestAnswered:
+    """What a person sees when the map fails: never the rotation's internals."""
+
+    async def test_every_instance_failing_is_a_plain_502(self):
+        from fastapi import HTTPException
+
+        from zephyrex.extensions.maps.BLL_Maps import MAP_SILENT, answered
+
+        async def failing():
+            raise HTTPException(
+                status_code=503,
+                detail={"message": "All provider instances failed for rotation r-1"},
+            )
+
+        with pytest.raises(HTTPException) as refused:
+            await answered(failing())
+        assert refused.value.status_code == 502
+        assert refused.value.detail == MAP_SILENT
+
+    async def test_a_refusal_the_caller_can_act_on_passes_through(self):
+        from fastapi import HTTPException
+
+        from zephyrex.extensions.maps.BLL_Maps import answered
+
+        async def refused():
+            raise HTTPException(status_code=422, detail="mode must be one of driving")
+
+        with pytest.raises(HTTPException) as caught:
+            await answered(refused())
+        assert caught.value.status_code == 422
+
+    async def test_an_address_the_map_does_not_know_is_422(self):
+        from fastapi import HTTPException
+
+        from zephyrex.extensions.maps.BLL_Maps import answered
+
+        async def unknown():
+            raise InvalidInputExternalError("No place found for 'Nowhere'")
+
+        with pytest.raises(HTTPException) as caught:
+            await answered(unknown())
+        assert caught.value.status_code == 422
