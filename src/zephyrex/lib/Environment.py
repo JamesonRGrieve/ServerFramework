@@ -96,7 +96,9 @@ class AppSettings(BaseModel):
     LOG_LEVEL: str = "INFO"
     EXPOSE_DOCS: str = "false"
     REGISTRATION_DISABLED: str = "false"
-    REGISTRATION_MODE: Literal["open", "invite", "closed"] = "open"
+    # open: anyone; invite: by invitation; sso: only through an external identity
+    # provider (OAuth, X.509, forward auth, LDAP), never by local sign-up; closed: nobody.
+    REGISTRATION_MODE: Literal["open", "invite", "sso", "closed"] = "open"
     SEED_DATA: str = "true"
     # Optimistic concurrency (zephyrex.lib.Preconditions): a save
     # (PUT/PATCH/DELETE) that names no If-Match is refused with 428; a

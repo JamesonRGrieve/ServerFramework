@@ -738,10 +738,10 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         return user
 
     def _assert_signup_allowed(self, email: str) -> None:
-        """``REGISTRATION_MODE``: open creates; invite needs a pending
+        """``REGISTRATION_MODE``: open and sso create; invite needs a pending
         invitation addressed to ``email``; closed refuses."""
         mode = Environment.settings.REGISTRATION_MODE
-        if mode == "open":
+        if mode in ("open", "sso"):
             return
         if mode == "invite":
             pending_for = _invitation_hooks["pending_invitations_for_user"]

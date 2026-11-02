@@ -94,6 +94,16 @@ class TestEntitlements(ExtensionServerMixin):
             0,
         )
 
+    def test_a_default_plan_is_everyones_without_paying(
+        self, server, user_b, monkeypatch
+    ):
+        # A test phase can give everyone the top plan: ENTITLEMENT_DEFAULT_PLAN.
+        monkeypatch.setenv("ENTITLEMENT_DEFAULT_PLAN", "plus")
+        assert self._plan(server, user_b)["plan"] == "plus"
+        # A name no plan has changes nothing.
+        monkeypatch.setenv("ENTITLEMENT_DEFAULT_PLAN", "gold")
+        assert self._plan(server, user_b)["plan"] == "basic"
+
     def test_a_subscription_buys_its_plan_and_shares_a_seat(
         self, server, admin_a, admin_b
     ):

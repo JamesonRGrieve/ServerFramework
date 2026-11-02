@@ -710,6 +710,14 @@ class TestAccounts(OAuthCase):
         assert (user.first_name, user.last_name) == ("Ada", "Lovelace")
         assert user.username == idp.account.preferred_username
 
+    def test_sso_registration_creates_a_new_user_through_the_provider(
+        self, flow, idp, set_env
+    ):
+        # sso: local sign-up is refused, but an identity provider may create accounts.
+        set_env("REGISTRATION_MODE", "sso")
+        created = flow.sign_in(idp, flow.oidc(idp))
+        assert created.status_code == 200 and created.json()["new_user"]
+
     def test_closed_registration_refuses_a_new_user(self, flow, idp, set_env):
         set_env("REGISTRATION_MODE", "closed")
         refused = flow.sign_in(idp, flow.oidc(idp))

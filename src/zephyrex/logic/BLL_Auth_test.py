@@ -288,6 +288,24 @@ class TestUserManager(AbstractBLLTest):
             # Reload settings to restore original state
             importlib.reload(Environment)
 
+    def test_create_sso_only(self, server, model_registry, monkeypatch):
+        """REGISTRATION_MODE=sso refuses local sign-up: accounts come through SSO."""
+        from fastapi import HTTPException
+
+        from zephyrex.lib import Environment
+
+        monkeypatch.setattr(Environment.settings, "REGISTRATION_MODE", "sso")
+        user_data = {
+            "email": f"test_sso_{faker.random_int()}@example.com",
+            "password": "Test1234!",
+            "first_name": faker.first_name(),
+            "last_name": faker.last_name(),
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            UserManager.register(user_data, model_registry)
+        assert exc_info.value.status_code == 403
+        assert "single sign-on" in exc_info.value.detail
+
     def test_create_invite_only(self, server, model_registry):
         """Test user registration fails when REGISTRATION_MODE is 'invite'."""
         from fastapi import HTTPException

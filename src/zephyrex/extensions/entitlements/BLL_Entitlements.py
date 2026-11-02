@@ -21,6 +21,7 @@ from pydantic import BaseModel as ResponseModel
 from pydantic import Field
 
 from zephyrex.extensions.entitlements.Plans import (
+    PLANS,
     Plan,
     best,
     plan_bought_by,
@@ -166,9 +167,17 @@ def _seats_held(user_id: str, model_registry: Any) -> List[Any]:
     )
 
 
+def _default_plans() -> List[Plan]:
+    """The plan everyone has without paying, when ENTITLEMENT_DEFAULT_PLAN names
+    one (e.g. the top plan for a test phase); none otherwise."""
+    named = (env("ENTITLEMENT_DEFAULT_PLAN") or "").strip()
+    plan = PLANS.get(named) if named else None
+    return [] if plan is None else [plan]
+
+
 def own_plan(user_id: str, model_registry: Any) -> Plan:
-    """The plan ``user_id`` pays for (the free plan when none)."""
-    return best(_subscription_plans(user_id, model_registry))
+    """The plan ``user_id`` pays for, or has by default (the free plan when none)."""
+    return best([*_subscription_plans(user_id, model_registry), *_default_plans()])
 
 
 def entitlement(user_id: str, model_registry: Any) -> EntitlementResponse:

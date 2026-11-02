@@ -1868,6 +1868,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User registration requires an invitation",
             )
+        elif settings.REGISTRATION_MODE == "sso":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Accounts are created by signing in with single sign-on",
+            )
 
         # Enhanced JSON validation
         # Check if registration_data is None (happens when JSON parsing fails completely)
