@@ -230,8 +230,10 @@ class AppSettings(BaseModel):
         # any ``import`` reference to ``SecretEncryption`` flags the
         # extension as dependent.
         encryption_dependent = _discover_encryption_dependent(loaded_extensions)
+        # These checks run while this module is first imported (the module-level
+        # ``settings``), before ``env()`` below is defined: read os.environ directly.
         if encryption_dependent:
-            fernet_key = (env("FRAMEWORK_FERNET_KEY") or "").strip()
+            fernet_key = (os.environ.get("FRAMEWORK_FERNET_KEY") or "").strip()
             if not fernet_key:
                 problems.append(
                     "FRAMEWORK_FERNET_KEY is unset but the loaded extensions "
@@ -247,7 +249,7 @@ class AppSettings(BaseModel):
         # ``ALLOW_PLAINTEXT_DATABASE=true``.
         ssl_mode = (self.DATABASE_SSL or "").strip().lower()
         if ssl_mode in ("", "disable", "allow", "prefer"):
-            if (env("ALLOW_PLAINTEXT_DATABASE") or "").lower() != "true":
+            if (os.environ.get("ALLOW_PLAINTEXT_DATABASE") or "").lower() != "true":
                 problems.append(
                     f"DATABASE_SSL={ssl_mode!r} is unsafe in production "
                     "(use 'require' or 'verify-full', or set "
@@ -257,7 +259,7 @@ class AppSettings(BaseModel):
         # egress oracle. It exists for unit tests; production/staging
         # must reject it loudly rather than silently boot with the guard
         # off because of one stray env variable in the deploy.
-        ssrf_disable = (env("DISABLE_SSRF_GUARD") or "").strip().lower()
+        ssrf_disable = (os.environ.get("DISABLE_SSRF_GUARD") or "").strip().lower()
         if ssrf_disable in ("1", "true", "yes", "on"):
             problems.append(
                 "DISABLE_SSRF_GUARD is truthy; outbound SSRF protection "

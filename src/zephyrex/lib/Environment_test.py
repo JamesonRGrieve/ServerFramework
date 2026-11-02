@@ -517,3 +517,33 @@ def test_generated_dev_secrets_are_never_logged(caplog):
     assert "ROOT_API_KEY" in caplog.text
     assert settings.ROOT_API_KEY not in caplog.text
     assert settings.JWT_SECRET not in caplog.text
+
+
+def test_a_production_environment_imports_cleanly(tmp_path):
+    """The production checks run while Environment is first imported, before env() exists:
+    a well-configured production process must start, not die with a NameError."""
+    import subprocess
+    import sys
+
+    production = {
+        "PATH": os.environ.get("PATH", ""),
+        "ENVIRONMENT": "production",
+        "ROOT_API_KEY": "k" * 40,
+        "JWT_SECRET": "s" * 40,
+        "DATABASE_TYPE": "postgresql",
+        "DATABASE_PASSWORD": "not-the-default",
+        "DATABASE_SSL": "disable",
+        "ALLOW_PLAINTEXT_DATABASE": "true",
+        "ALLOWED_DOMAINS": "https://example.app",
+        "FRAMEWORK_FERNET_KEY": "x" * 44,
+        "APP_EXTENSIONS": "genealogy",
+    }
+    started = subprocess.run(
+        [sys.executable, "-c", "import zephyrex.lib.Environment"],
+        env=production,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert started.returncode == 0, started.stderr
