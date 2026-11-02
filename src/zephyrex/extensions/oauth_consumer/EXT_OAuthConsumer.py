@@ -132,3 +132,45 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         manager = cls.as_requester(OAuthIdentityManager, requester_id)
         token = await current_access_token(manager, identity_id)
         return token.model_dump(mode="json")
+
+
+async def delegated_access_token(
+    user_id: str,
+    identity_provider: str,
+    required_scope: str,
+    service: str,
+    model_registry: Any,
+) -> str:
+    """A current access token at ``identity_provider`` (e.g. ``google``)
+    for ``user_id``, from the most recently used of their linked identities
+    there whose sign-in granted ``required_scope``: for extensions reaching a
+    user's own data at a service (their Drive, their calendar). 409 when
+    they never signed in with that provider; 403 when no sign-in granted
+    the scope (sign in again to grant it). ``service`` names it in the
+    message. Someone may have linked several accounts: the most recently
+    used one that grants it is chosen."""
+    from fastapi import HTTPException
+
+    if "oauth_consumer" not in model_registry.loaded_extension_names():
+        raise HTTPException(
+            status_code=409, detail=f"{service} needs sign-in through oauth_consumer"
+        )
+    identities = [
+        i
+        for i in await EXT_OAuthConsumer.list_oauth_identities(user_id)
+        if i["provider"] == identity_provider
+    ]
+    if not identities:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Sign in with {identity_provider} to reach your {service}",
+        )
+    identities.sort(key=lambda i: i.get("last_login_at") or "", reverse=True)
+    for identity in identities:
+        token = await EXT_OAuthConsumer.oauth_access_token(user_id, identity["id"])
+        if required_scope in (token.get("scopes") or "").split():
+            return str(token["access_token"])
+    raise HTTPException(
+        status_code=403,
+        detail=f"Your sign-in does not allow reading your {service}; sign in again to allow it",
+    )

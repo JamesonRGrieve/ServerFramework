@@ -41,7 +41,6 @@ from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 from zephyrex.pydantic2.fastapi import RouterMixin
 
 CLOUD_PREFIX = "/v1/cloud"
-OAUTH_CONSUMER = "oauth_consumer"
 MAX_SEARCH_LENGTH = 200
 
 
@@ -65,35 +64,16 @@ async def access_token(
 ) -> str:
     """The user's current access token at ``provider``'s identity provider,
     holding the scope its calls need."""
-    if OAUTH_CONSUMER not in model_registry.loaded_extension_names():
-        raise HTTPException(
-            status_code=409,
-            detail=f"{provider.friendly_name} needs sign-in through {OAUTH_CONSUMER}",
-        )
     from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
-        EXT_OAuthConsumer as consumer,
+        delegated_access_token,
     )
 
-    identities = [
-        i
-        for i in await consumer.list_oauth_identities(user_id)
-        if i["provider"] == provider.identity_provider
-    ]
-    if not identities:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Sign in with {provider.identity_provider} to reach your {provider.friendly_name}",
-        )
-    # Someone may have linked several accounts: use the most recently signed-in
-    # one whose sign-in granted the access this provider needs.
-    identities.sort(key=lambda i: i.get("last_login_at") or "", reverse=True)
-    for identity in identities:
-        token = await consumer.oauth_access_token(user_id, identity["id"])
-        if provider.required_scope in (token.get("scopes") or "").split():
-            return str(token["access_token"])
-    raise HTTPException(
-        status_code=403,
-        detail=f"Your sign-in does not allow reading your {provider.friendly_name}; sign in again to allow it",
+    return await delegated_access_token(
+        user_id,
+        provider.identity_provider,
+        provider.required_scope,
+        provider.friendly_name,
+        model_registry,
     )
 
 
