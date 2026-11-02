@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import stringcase
 from filelock import FileLock, Timeout
@@ -312,6 +312,36 @@ class MigrationManager:
         include = owner is None
         logger.debug(f"Table {name}: owner={owner!r} -> include for core? {include}")
         return include
+
+    # Alembic makes its version column VARCHAR(32), and several revision ids are longer
+    # (e.g. 003_ai_agents_pins_projects_event_sources). SQLite ignores the length;
+    # PostgreSQL refuses the update and the migration fails.
+    VERSION_NUM_LENGTH = 255
+
+    @staticmethod
+    def widen_version_table(connection: Any, version_table: str) -> None:
+        """On PostgreSQL, give ``version_table`` room for every revision id before
+        Alembic uses it: created wide when missing, widened when it exists. Alembic
+        adopts a version table that is already there. Elsewhere, nothing."""
+        if connection.dialect.name != "postgresql":
+            return
+        from sqlalchemy import text
+
+        quoted = connection.dialect.identifier_preparer.quote(version_table)
+        length = MigrationManager.VERSION_NUM_LENGTH
+        connection.execute(
+            text(
+                f"CREATE TABLE IF NOT EXISTS {quoted} (version_num VARCHAR({length}) "
+                f"NOT NULL, CONSTRAINT {connection.dialect.identifier_preparer.quote(version_table + '_pkc')} "
+                "PRIMARY KEY (version_num))"
+            )
+        )
+        connection.execute(
+            text(
+                f"ALTER TABLE {quoted} ALTER COLUMN version_num TYPE VARCHAR({length})"
+            )
+        )
+        connection.commit()
 
     @staticmethod
     def env_setup_alembic_config(config):

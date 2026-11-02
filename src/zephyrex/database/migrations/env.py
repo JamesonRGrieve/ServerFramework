@@ -317,6 +317,7 @@ def run_migrations():
     )
 
     with connectable.connect() as connection:
+        MigrationManager.widen_version_table(connection, version_table)
         context.configure(**get_alembic_context_config(connection=connection))
         with context.begin_transaction():
             context.run_migrations()

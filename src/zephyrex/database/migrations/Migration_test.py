@@ -783,3 +783,49 @@ def test_run_migrations_env_false_skips_migrations(tmp_path, monkeypatch):
     assert (
         "alembic_version" not in tables
     ), "alembic_version should not exist when RUN_MIGRATIONS=false"
+
+
+class _RecordingConnection:
+    """A connection that only records what it is asked to run, under a given dialect."""
+
+    def __init__(self, dialect_name: str) -> None:
+        from sqlalchemy.dialects import postgresql, sqlite
+
+        self.dialect = (
+            postgresql if dialect_name == "postgresql" else sqlite
+        ).dialect()
+        self.statements: list = []
+        self.committed = False
+
+    def execute(self, statement):
+        self.statements.append(str(statement))
+
+    def commit(self):
+        self.committed = True
+
+
+def test_postgres_version_tables_fit_every_revision_id():
+    from zephyrex.database.migrations.Migration import MigrationManager
+
+    connection = _RecordingConnection("postgresql")
+    MigrationManager.widen_version_table(connection, "alembic_version_ext_ai_agents")
+    assert connection.statements == [
+        "CREATE TABLE IF NOT EXISTS alembic_version_ext_ai_agents (version_num VARCHAR(255) NOT NULL, "
+        "CONSTRAINT alembic_version_ext_ai_agents_pkc PRIMARY KEY (version_num))",
+        "ALTER TABLE alembic_version_ext_ai_agents ALTER COLUMN version_num TYPE VARCHAR(255)",
+    ]
+    assert connection.committed
+    # The longest revision id the framework ships fits.
+    assert (
+        len("003_ai_agents_pins_projects_event_sources")
+        <= MigrationManager.VERSION_NUM_LENGTH
+    )
+
+
+def test_other_databases_keep_alembics_version_table():
+    from zephyrex.database.migrations.Migration import MigrationManager
+
+    connection = _RecordingConnection("sqlite")
+    MigrationManager.widen_version_table(connection, "alembic_version")
+    assert connection.statements == []
+    assert not connection.committed
