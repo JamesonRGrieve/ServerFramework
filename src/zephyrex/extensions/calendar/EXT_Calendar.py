@@ -12,11 +12,18 @@ times.
 
 Free time is computed here, from the busy intervals a provider reports,
 within working hours in the caller's timezone.
+
+The abilities run on the operator's instances. A user's own calendar
+accounts (``BLL_Calendar``) run the same providers through
+``connected_account``: for the length of the call, the provider reads that
+account's settings instead of an instance's.
 """
 
 from abc import abstractmethod
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
-from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
+from typing import Any, ClassVar, Dict, Iterator, List, Mapping, Optional, Set, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from zephyrex.extensions.AbstractExtensionProvider import (
@@ -40,6 +47,32 @@ MAX_SLOT_DAYS = 31
 MAX_DURATION_MINUTES = 24 * 60
 
 Interval = Tuple[datetime, datetime]
+
+# The settings of the user's own account a call runs on, when it runs on one.
+_connected: ContextVar[Optional[Dict[str, str]]] = ContextVar(
+    "calendar_connected_account", default=None
+)
+CONNECTED_INSTANCE_ID = "connected-account"
+
+
+@contextmanager
+def connected_account(settings: Mapping[str, str]) -> Iterator[ProviderInstanceModel]:
+    """An instance standing for one user's own calendar account, whose
+    ``settings`` (``api_key``, ``calendar_url``, ...) the providers read
+    while the block runs. It never reads the operator's environment: it is
+    the user's, not the deployment's."""
+    token = _connected.set(dict(settings))
+    try:
+        # Built without validation: it is never stored, only read by the provider.
+        values: Dict[str, Any] = {
+            "id": CONNECTED_INSTANCE_ID,
+            "name": CONNECTED_INSTANCE_ID,
+            "scope": "user",
+            "api_key": settings.get("api_key"),
+        }
+        yield ProviderInstanceModel.model_construct(**values)
+    finally:
+        _connected.reset(token)
 
 
 def aware(moment: datetime) -> datetime:
@@ -139,6 +172,18 @@ class AbstractCalendarProvider(AbstractStaticProvider):
     @classmethod
     def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         return AbstractProviderInstance(instance)
+
+    @classmethod
+    def setting(
+        cls, instance: Optional[ProviderInstanceModel], key: str
+    ) -> Optional[str]:
+        """A user's own account's setting while a call runs on one
+        (``connected_account``), else the instance's."""
+        connected = _connected.get()
+        if connected is not None:
+            declared = cls.instance_setting(key)
+            return connected.get(declared.key) or declared.default
+        return super().setting(instance, key)
 
     @classmethod
     def token(cls, instance: ProviderInstanceModel) -> str:
