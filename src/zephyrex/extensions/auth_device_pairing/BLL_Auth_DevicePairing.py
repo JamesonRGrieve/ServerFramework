@@ -21,20 +21,19 @@ any that knows only the pairing id, reports state and nothing else.
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, ClassVar, Dict, List, Optional, Tuple
-
-from zephyrex.lib.DateTimeUtils import ensure_utc
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+from typing import Any, ClassVar
 
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
+from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
+from zephyrex.lib.EventStream import event_stream
 from zephyrex.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
-from zephyrex.logic.BLL_Auth.user import issue_browser_session
-from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -51,6 +50,8 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     make_user_id_grant_validator,
 )
+from zephyrex.logic.BLL_Auth.user import issue_browser_session
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 
 PAIRING_PREFIX = "/v1/auth/pairing"
 # The requesting device's binding secret, sent only to the pairing routes.
@@ -62,7 +63,7 @@ def _binding_hash(binding: str) -> str:
     return hashlib.sha256(binding.encode()).hexdigest()
 
 
-def _pairing_cookie_scope() -> Dict[str, Any]:
+def _pairing_cookie_scope() -> dict[str, Any]:
     """Where the binding cookie lives: the pairing routes only, never
     readable by page scripts."""
     return {
@@ -83,7 +84,7 @@ class PairingRequest(BaseModel):
     requesting_device_type: str = Field(
         ..., description="mobile / desktop / web / unknown"
     )
-    requesting_device_name: Optional[str] = Field(
+    requesting_device_name: str | None = Field(
         None, description="Human-friendly device label, e.g. 'Office Chrome'"
     )
     token_in_body: bool = Field(
@@ -99,7 +100,7 @@ class PairingResponse(BaseModel):
     pairing_id: str
     qr_payload: str
     expires_in: int
-    binding: Optional[str] = Field(
+    binding: str | None = Field(
         None,
         description=(
             "Present it as the zx_pairing cookie on status reads; returned "
@@ -121,8 +122,8 @@ class PairingStatus(BaseModel):
     state: str  # pending / approved / denied / expired
     # Set only on the read that delivers the session to the requesting
     # device; ``token`` only for a token_in_body pairing.
-    user_id: Optional[str] = None
-    token: Optional[str] = None
+    user_id: str | None = None
+    token: str | None = None
 
 
 class PairingActionResponse(BaseModel):
@@ -152,24 +153,24 @@ class DevicePairingRequestModel(
     requesting_device_type: str = Field(
         ..., description="mobile / desktop / web / unknown"
     )
-    requesting_device_name: Optional[str] = Field(None)
-    requesting_ip: Optional[str] = Field(None)
-    requesting_user_agent: Optional[str] = Field(None)
-    approver_user_id: Optional[str] = Field(
+    requesting_device_name: str | None = Field(None)
+    requesting_ip: str | None = Field(None)
+    requesting_user_agent: str | None = Field(None)
+    approver_user_id: str | None = Field(
         None, description="User who approved this pairing, set on approval"
     )
-    approved_at: Optional[datetime] = Field(None)
-    denied_at: Optional[datetime] = Field(None)
-    pending_session_id: Optional[str] = Field(
+    approved_at: datetime | None = Field(None)
+    denied_at: datetime | None = Field(None)
+    pending_session_id: str | None = Field(
         None, description="Session row id created at approval time"
     )
-    binding_hash: Optional[str] = Field(
+    binding_hash: str | None = Field(
         None, description="SHA-256 of the requesting device's binding secret"
     )
     token_in_body: bool = Field(
         False, description="Deliver the session as a bearer token, not cookies"
     )
-    consumed_at: Optional[datetime] = Field(
+    consumed_at: datetime | None = Field(
         None, description="When the requesting device took delivery of its session"
     )
 
@@ -179,33 +180,33 @@ class DevicePairingRequestModel(
 
     class Create(BaseModel):
         requesting_device_type: str
-        requesting_device_name: Optional[str] = None
-        requesting_ip: Optional[str] = None
-        requesting_user_agent: Optional[str] = None
+        requesting_device_name: str | None = None
+        requesting_ip: str | None = None
+        requesting_user_agent: str | None = None
         code_hash: str
         code_salt: str
-        code_fingerprint: Optional[str] = None
+        code_fingerprint: str | None = None
         expires_at: datetime
         is_used: bool = False
-        used_at: Optional[datetime] = None
-        created_ip: Optional[str] = None
-        binding_hash: Optional[str] = None
+        used_at: datetime | None = None
+        created_ip: str | None = None
+        binding_hash: str | None = None
         token_in_body: bool = False
 
     class Update(BaseModel):
-        is_used: Optional[bool] = None
-        used_at: Optional[datetime] = None
-        approver_user_id: Optional[str] = None
-        approved_at: Optional[datetime] = None
-        denied_at: Optional[datetime] = None
-        pending_session_id: Optional[str] = None
-        consumed_at: Optional[datetime] = None
+        is_used: bool | None = None
+        used_at: datetime | None = None
+        approver_user_id: str | None = None
+        approved_at: datetime | None = None
+        denied_at: datetime | None = None
+        pending_session_id: str | None = None
+        consumed_at: datetime | None = None
 
     class Search(ApplicationModel.Search, UpdateMixinModel.Search):
-        requesting_device_type: Optional[StringSearchModel] = None
-        approver_user_id: Optional[StringSearchModel] = None
-        is_used: Optional[bool] = None
-        expires_at: Optional[DateSearchModel] = None
+        requesting_device_type: StringSearchModel | None = None
+        approver_user_id: StringSearchModel | None = None
+        is_used: bool | None = None
+        expires_at: DateSearchModel | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -216,10 +217,10 @@ class DevicePairingRequestModel(
 class DevicePairingManager(AbstractBLLManager, RouterMixin):
     _model = DevicePairingRequestModel
 
-    prefix: ClassVar[Optional[str]] = PAIRING_PREFIX
-    tags: ClassVar[Optional[List[str]]] = ["Device Pairing Authentication"]
+    prefix: ClassVar[str | None] = PAIRING_PREFIX
+    tags: ClassVar[list[str] | None] = ["Device Pairing Authentication"]
     auth_type: ClassVar[AuthType] = AuthType.NONE
-    routes_to_register: ClassVar[Optional[List]] = []
+    routes_to_register: ClassVar[list | None] = []
 
     def _ttl_seconds(self) -> int:
         return int(env("PAIRING_TTL_SECONDS") or 300)
@@ -239,11 +240,11 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         expires_at = row.expires_at
         if expires_at:
             expires_at = ensure_utc(expires_at)
-        if expires_at and expires_at < datetime.now(timezone.utc):
+        if expires_at and expires_at < datetime.now(UTC):
             return "expired"
         return "pending"
 
-    def _get_row_by_id(self, pairing_id: str) -> Optional[DevicePairingRequestModel]:
+    def _get_row_by_id(self, pairing_id: str) -> DevicePairingRequestModel | None:
         DB = DevicePairingRequestModel.DB(self.model_registry.DB.manager.Base)
         rows = DB.list(
             requester_id=env("ROOT_ID"),
@@ -254,7 +255,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         )
         return rows[0] if rows else None
 
-    def _resolve_token(self, raw_token: str) -> Optional[DevicePairingRequestModel]:
+    def _resolve_token(self, raw_token: str) -> DevicePairingRequestModel | None:
         # H-5 — indexed fingerprint lookup; bcrypt verifies the unique
         # candidate. The shared resolver owns the fingerprint-narrow ->
         # expiry gate -> constant-time bcrypt confirm.
@@ -278,9 +279,9 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
     def request_pairing(
         self,
         device_type: str,
-        device_name: Optional[str] = None,
-        client_ip: Optional[str] = None,
-        user_agent: Optional[str] = None,
+        device_name: str | None = None,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
         token_in_body: bool = False,
     ) -> PairingResponse:
         """A new pairing. The response always carries the binding; the route
@@ -289,7 +290,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         raw_code, token = OneTimeTokenMixin.generate(ttl_minutes=max(ttl // 60, 1))
         binding = secrets.token_urlsafe(_BINDING_BYTES)
         # Override the mixin's expiry with the seconds-precision TTL.
-        precise_expiry = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+        precise_expiry = datetime.now(UTC) + timedelta(seconds=ttl)
 
         DB = DevicePairingRequestModel.DB(self.model_registry.DB.manager.Base)
         created = DB.create(
@@ -333,7 +334,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         if row.approved_at is not None or row.denied_at is not None:
             raise InvalidGrantError(detail="Pairing already resolved")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         DB = DevicePairingRequestModel.DB(self.model_registry.DB.manager.Base)
         DB.update(
             requester_id=env("ROOT_ID"),
@@ -397,7 +398,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         if row.approved_at is not None or row.denied_at is not None:
             raise InvalidGrantError(detail="Pairing already resolved")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         DB = DevicePairingRequestModel.DB(self.model_registry.DB.manager.Base)
         DB.update(
             requester_id=env("ROOT_ID"),
@@ -413,7 +414,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         return PairingActionResponse(pairing_id=row.id, state="denied")
 
     def get_status(
-        self, pairing_id: str, binding: Optional[str] = None
+        self, pairing_id: str, binding: str | None = None
     ) -> PairingStatus:
         """The pairing's state. The one read that finds it approved and
         presents its binding also carries the session (``token``,
@@ -422,8 +423,8 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         return status
 
     def _read_status(
-        self, pairing_id: str, binding: Optional[str]
-    ) -> Tuple[PairingStatus, bool]:
+        self, pairing_id: str, binding: str | None
+    ) -> tuple[PairingStatus, bool]:
         """The status, and whether the session it carries goes in the body."""
         row = self._get_row_by_id(pairing_id)
         if row is None:
@@ -442,13 +443,13 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
 
     @staticmethod
     def _presents_binding(
-        row: DevicePairingRequestModel, binding: Optional[str]
+        row: DevicePairingRequestModel, binding: str | None
     ) -> bool:
         if row.consumed_at is not None or not row.binding_hash or not binding:
             return False
         return hmac.compare_digest(row.binding_hash, _binding_hash(binding))
 
-    def _deliver(self, row: DevicePairingRequestModel) -> Optional[Tuple[str, str]]:
+    def _deliver(self, row: DevicePairingRequestModel) -> tuple[str, str] | None:
         """Mark the pairing consumed and mint the approved session's token:
         ``(user_id, token)``, or None when the session is gone."""
         if row.pending_session_id is None:
@@ -458,7 +459,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=row.id,
-            new_properties={"consumed_at": datetime.now(timezone.utc)},
+            new_properties={"consumed_at": datetime.now(UTC)},
         )
         SessionDB_cls = __import__(
             "zephyrex.logic.BLL_Auth", fromlist=["SessionModel"]
@@ -488,8 +489,8 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
     ) -> AsyncIterator[str]:
         import asyncio
 
-        deadline = datetime.now(timezone.utc) + timedelta(seconds=self._ttl_seconds())
-        while datetime.now(timezone.utc) < deadline:
+        deadline = datetime.now(UTC) + timedelta(seconds=self._ttl_seconds())
+        while datetime.now(UTC) < deadline:
             row = self._get_row_by_id(pairing_id)
             if row is None:
                 yield "event: error\ndata: unknown_pairing_id\n\n"
@@ -603,9 +604,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
     )
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def stream_route(self, pairing_id: str) -> StreamingResponse:
-        return StreamingResponse(
-            self.stream_status(pairing_id), media_type="text/event-stream"
-        )
+        return event_stream(self.stream_status(pairing_id))
 
 
 # ---------------------------------------------------------------------------

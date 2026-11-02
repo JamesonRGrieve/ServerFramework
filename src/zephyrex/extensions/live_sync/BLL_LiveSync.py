@@ -42,6 +42,7 @@ from pydantic import Field, field_validator
 
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
+from zephyrex.lib.EventStream import event_stream
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -438,11 +439,7 @@ class LiveSyncManager(AbstractBLLManager, RouterMixin):
         except Exception:
             HUB.leave(self._user_id, channel, client_id, queue)
             raise
-        return StreamingResponse(
-            self._stream(request, channel, client_id, queue),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return event_stream(self._stream(request, channel, client_id, queue))
 
     @custom_route(
         method="POST",
