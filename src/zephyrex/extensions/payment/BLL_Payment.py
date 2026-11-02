@@ -178,6 +178,10 @@ class PaymentModel(
     amount_refunded: Optional[str] = Field(None, description="Refunded so far")
     customer_id: Optional[str] = Field(None, description="The provider's customer")
     description: Optional[str] = Field(None, description="What it is for")
+    product_id: Optional[str] = Field(
+        None,
+        description="The app product it buys (entitlements), set once by the server",
+    )
 
     table_comment: ClassVar[str] = (
         "Payments (a local mirror of each provider's payment)"
@@ -195,8 +199,10 @@ class PaymentModel(
         amount_refunded: Optional[str] = None
         customer_id: Optional[str] = None
         description: Optional[str] = None
+        product_id: Optional[str] = None
         refreshed_at: datetime
 
+    # product_id is absent: what a payment bought never changes after it is made.
     class Update(BaseModel):
         external_id: Optional[str] = None
         status: Optional[str] = None
@@ -216,6 +222,7 @@ class PaymentModel(
         external_id: Optional[StringSearchModel] = None
         status: Optional[StringSearchModel] = None
         currency: Optional[StringSearchModel] = None
+        product_id: Optional[StringSearchModel] = None
 
 
 class PaymentSubscriptionModel(

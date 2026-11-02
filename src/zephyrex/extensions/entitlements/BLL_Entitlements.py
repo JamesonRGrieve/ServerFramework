@@ -3,17 +3,22 @@
 seats others share with them, and the checks that refuse the rest (402).
 
 A user's plan is the best of: the default (free) plan; the plan each of
-their active subscriptions buys; and the plan of each subscriber who gave
+their active subscriptions buys; the plan of each product they bought once
+(a succeeded payment naming a registered product, while it is not fully
+refunded); and the plan of each subscriber who gave
 them a seat, while that subscriber's plan still has the seat to give
 (seats are honoured in the order they were given, so a downgrade drops the
 newest first). Seats do not chain: a seat holder cannot give seats on.
 
 Routes on ``/v1/entitlement``: ``GET`` the requester's plan, features,
 limits and seats; ``GET``/``POST`` ``/seats`` and ``DELETE
-/seats/{seat_id}`` for the seats they give.
+/seats/{seat_id}`` for the seats they give; ``GET /products`` (public) what
+is sold once and its price; ``POST /purchase`` to buy one, charged through
+the payment extension at the registered price.
 """
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar, Dict, List, Optional, Type
 
 from fastapi import HTTPException
@@ -22,9 +27,11 @@ from pydantic import Field
 
 from zephyrex.extensions.entitlements.Plans import (
     PLANS,
+    PRODUCTS,
     Plan,
     best,
     plan_bought_by,
+    plan_bought_with,
     plans_allowing,
     plans_with_feature,
 )
@@ -43,7 +50,13 @@ from zephyrex.pydantic2.fastapi.types import RouteType
 from zephyrex.pydantic2.registry import BaseModel
 
 PAYMENT_REQUIRED = 402
+CONFLICT = 409
+NOT_FOUND = 404
+SERVICE_UNAVAILABLE = 503
 ENTITLEMENT_PREFIX = "/v1/entitlement"
+# The payment status that grants a product's plan.
+SUCCEEDED = "succeeded"
+MAX_PAYMENT_METHOD_ID = 512
 
 
 class EntitlementSeatModel(
@@ -97,6 +110,31 @@ class SeatList(ResponseModel):
     seats: List[SeatEntry]
 
 
+class ProductEntry(ResponseModel):
+    id: str
+    plan: str
+    amount: str
+    currency: str
+    description: str
+    features: List[str]
+
+
+class ProductList(ResponseModel):
+    products: List[ProductEntry]
+
+
+class PurchaseRequest(ResponseModel):
+    product_id: str = Field(..., min_length=1, max_length=120)
+    # A card token or Square source from the provider's own browser SDK.
+    payment_method_id: Optional[str] = Field(None, max_length=MAX_PAYMENT_METHOD_ID)
+
+
+class PurchaseResult(ResponseModel):
+    payment_id: str
+    status: str
+    entitlement: EntitlementResponse
+
+
 def _seat_entry(seat: Any) -> SeatEntry:
     return SeatEntry(
         id=seat.id,
@@ -135,6 +173,44 @@ def _subscription_plans(user_id: str, model_registry: Any) -> List[Plan]:
     )
     return [
         plan for plan in (plan_bought_by(s.plan_id) for s in found) if plan is not None
+    ]
+
+
+def _not_fully_refunded(payment: Any) -> bool:
+    try:
+        return Decimal(payment.amount_refunded or "0") < Decimal(payment.amount)
+    except InvalidOperation:
+        return False
+
+
+def _purchase_plans(user_id: str, model_registry: Any) -> List[Plan]:
+    """The plans ``user_id``'s succeeded, not fully refunded product payments buy."""
+    try:
+        from zephyrex.extensions.payment.BLL_Payment import PaymentModel
+    except ImportError:
+        return []
+    db = PaymentModel.DB(model_registry.DB.manager.Base)
+    found = (
+        db.list(
+            requester_id=_root(),
+            model_registry=model_registry,
+            filters=[
+                db.user_id == user_id,
+                db.status == SUCCEEDED,
+                db.product_id.isnot(None),
+                db.deleted_at.is_(None),
+            ],
+            return_type="dto",
+            override_dto=PaymentModel,
+        )
+        or []
+    )
+    return [
+        plan
+        for plan in (
+            plan_bought_with(p.product_id) for p in found if _not_fully_refunded(p)
+        )
+        if plan is not None
     ]
 
 
@@ -177,7 +253,13 @@ def _default_plans() -> List[Plan]:
 
 def own_plan(user_id: str, model_registry: Any) -> Plan:
     """The plan ``user_id`` pays for, or has by default (the free plan when none)."""
-    return best([*_subscription_plans(user_id, model_registry), *_default_plans()])
+    return best(
+        [
+            *_subscription_plans(user_id, model_registry),
+            *_purchase_plans(user_id, model_registry),
+            *_default_plans(),
+        ]
+    )
 
 
 def entitlement(user_id: str, model_registry: Any) -> EntitlementResponse:
@@ -313,6 +395,70 @@ class EntitlementSeatManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(status_code=404, detail="Seat not found")
         self.delete(id=seat_id)
         return _seat_entry(seat)
+
+    @custom_route(
+        method="GET",
+        path="/products",
+        output_model=ProductList,
+        authentication_type="none",
+        openapi_tags=("Entitlements",),
+        summary="What is sold once, its price and what it unlocks",
+        expose_in=(ExposeIn.REST,),
+    )
+    def products_route(self) -> ProductList:
+        return ProductList(
+            products=[
+                ProductEntry(
+                    id=product.id,
+                    plan=product.plan,
+                    amount=product.amount,
+                    currency=product.currency,
+                    description=product.description,
+                    features=sorted(PLANS[product.plan].features),
+                )
+                for product in PRODUCTS.values()
+            ]
+        )
+
+    @custom_route(
+        method="POST",
+        path="/purchase",
+        input_model=PurchaseRequest,
+        output_model=PurchaseResult,
+        authentication_type="jwt",
+        openapi_tags=("Entitlements",),
+        summary="Buy a product at its registered price",
+        expose_in=(ExposeIn.REST,),
+    )
+    async def purchase_route(self, body: PurchaseRequest) -> PurchaseResult:
+        buyer = str(self.requester.id)
+        product = PRODUCTS.get(body.product_id)
+        if product is None:
+            raise HTTPException(status_code=NOT_FOUND, detail="No such product")
+        if own_plan(buyer, self.model_registry).rank >= PLANS[product.plan].rank:
+            raise HTTPException(
+                status_code=CONFLICT, detail="Your plan already includes this"
+            )
+        try:
+            from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
+        except ImportError as missing:
+            raise HTTPException(
+                status_code=SERVICE_UNAVAILABLE,
+                detail="Payments are not available here",
+            ) from missing
+        payment = await EXT_Payment.payment_create(
+            requester_id=buyer,
+            amount=product.amount,
+            currency=product.currency,
+            payment_method_id=body.payment_method_id,
+            description=product.description,
+            product_id=product.id,
+        )
+        return PurchaseResult(
+            payment_id=str(payment["id"]),
+            status=str(payment["status"]),
+            entitlement=entitlement(buyer, self.model_registry),
+        )
 
 
 EntitlementSeatModel.Manager = EntitlementSeatManager

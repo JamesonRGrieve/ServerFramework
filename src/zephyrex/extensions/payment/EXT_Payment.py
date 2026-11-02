@@ -705,6 +705,7 @@ class EXT_Payment(AbstractStaticExtension):
         metadata: Optional[Dict[str, Any]] = None,
         capture: bool = True,
         customer_ip: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Charge the requester ``amount`` (major units) of ``currency``,
         with their payment method (a card token, a Square source) where the
@@ -713,8 +714,10 @@ class EXT_Payment(AbstractStaticExtension):
         only authorizes. On the account holding the requester's customer
         record when they have one, else the first account that can.
 
-        The record (owned by the requester) is the answer, with the
-        provider's one-time ``client_secret``/``approval_url`` beside it."""
+        ``product_id`` names the app product the payment buys; entitlements
+        grants that product's plan once the payment has succeeded. The
+        record (owned by the requester) is the answer, with the provider's
+        one-time ``client_secret``/``approval_url`` beside it."""
         request = PaymentRequest(
             amount=checked_amount(amount),
             currency=checked_currency(currency),
@@ -739,7 +742,11 @@ class EXT_Payment(AbstractStaticExtension):
             answer = await cls.rotate_capable(
                 "payment_create", "create_payment", request
             )
-        record = payments.record(answer, description=request.description)
+        record = payments.record(
+            answer,
+            description=request.description,
+            product_id=checked_text(product_id, "product_id"),
+        )
         return {
             **_row(record),
             "client_secret": answer.get("client_secret"),

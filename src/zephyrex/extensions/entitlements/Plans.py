@@ -8,11 +8,17 @@ share it with. Which payment-provider plans (Stripe prices, Square plan
 variations, …) buy a plan is deployment configuration: the comma-separated
 ids in ``ENTITLEMENT_<PLAN>_PLAN_IDS``.
 
+A plan can also be sold once rather than by subscription: an app
+registers a :class:`Product` (:func:`register_product`) naming the plan it
+buys and its price. The price lives in code, never in the request, so a
+client cannot choose what it pays.
+
 The lowest-ranked plan is everyone's without paying for it (the free
 plan); with no plan registered, there is an empty one.
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Dict, FrozenSet, Iterable, List, Mapping, Optional
 
 from zephyrex.lib.Environment import env
@@ -37,7 +43,31 @@ class Plan:
         return self.limits.get(name, 0)
 
 
+@dataclass(frozen=True)
+class Product:
+    """Something sold once: a successful payment for it grants ``plan`` for good."""
+
+    id: str
+    plan: str
+    # Decimal major units, e.g. "19.00".
+    amount: str
+    # ISO 4217, e.g. "USD".
+    currency: str
+    description: str
+
+    def __post_init__(self) -> None:
+        try:
+            positive = Decimal(self.amount) > 0
+        except InvalidOperation:
+            positive = False
+        if not positive:
+            raise ValueError(f"Product {self.id!r} needs a positive decimal amount")
+        if len(self.currency) != 3 or not self.currency.isalpha():
+            raise ValueError(f"Product {self.id!r} needs an ISO 4217 currency code")
+
+
 PLANS: Dict[str, Plan] = {}
+PRODUCTS: Dict[str, Product] = {}
 
 
 def register_plan(plan: Plan) -> None:
@@ -47,6 +77,25 @@ def register_plan(plan: Plan) -> None:
     if existing is not None and existing != plan:
         raise ValueError(f"Plan {plan.name!r} is already registered differently")
     PLANS[plan.name] = plan
+
+
+def register_product(product: Product) -> None:
+    """Sell ``product``. Its plan must already be registered, and a product id
+    registered twice differently is a programming error."""
+    if product.plan not in PLANS:
+        raise ValueError(
+            f"Product {product.id!r} buys unregistered plan {product.plan!r}"
+        )
+    existing = PRODUCTS.get(product.id)
+    if existing is not None and existing != product:
+        raise ValueError(f"Product {product.id!r} is already registered differently")
+    PRODUCTS[product.id] = product
+
+
+def plan_bought_with(product_id: Optional[str]) -> Optional[Plan]:
+    """The plan a product buys, if ``product_id`` names a registered product."""
+    product = PRODUCTS.get(product_id or "")
+    return None if product is None else PLANS.get(product.plan)
 
 
 def default_plan() -> Plan:

@@ -53,6 +53,10 @@ account.
 - `users.external_payment_id`, `users.payment_instance_id`: the customer
   link, written by the server only (`UserManager.update` refuses both from
   a user, 403). A link counts only with both set.
+- `payments.product_id`: the app product a payment buys, set once by
+  `payment_create(..., product_id=...)` and never changed. Entitlements
+  grants that product's plan while the payment has succeeded and is not
+  fully refunded (see `entitlements/Plans.py` `register_product`).
 - `payments`, `payment_subscriptions`: owned by the user they were made for
   (the requester, whatever the caller names; ROOT and SYSTEM may name
   another), never moved by an update, read-only over REST, mirrored from
