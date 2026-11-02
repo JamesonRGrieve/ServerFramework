@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""OpenStreetMap: Nominatim for search and geocoding, OSRM for routing.
+"""OpenStreetMap: Nominatim for search and geocoding, OSRM for routing,
+Overpass for places of a kind nearby.
 
 The defaults are the public OSM Foundation Nominatim and the FOSSGIS OSRM
 servers, which hold one routing graph per travel mode (car, bike, foot);
@@ -9,19 +10,94 @@ public servers' usage policies allow light use from an identified client
 (every request carries this software's User-Agent).
 """
 
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
-from zephyrex.extensions.maps.EXT_Maps import AbstractMapsProvider, place, step
+from zephyrex.extensions.maps.EXT_Maps import (
+    NEARBY_SEARCH,
+    AbstractMapsProvider,
+    PlaceCategory,
+    distance_m,
+    place,
+    step,
+)
+from zephyrex.lib.ProviderHTTPClient import ClientPolicy, ProviderHTTPClient
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 DEFAULT_NOMINATIM_URL = "https://nominatim.openstreetmap.org"
+DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Overpass answers a radius search in seconds to tens of seconds; the server
+# is told to give up a little before the client does.
+OVERPASS_QUERY_SECONDS = 40
+OVERPASS_TIMEOUT_SECONDS = 50.0
+# Asked for more than the limit, as the nearest are chosen after the answer.
+OVERPASS_OVERFETCH = 4
 DEFAULT_OSRM_URLS = {
     "driving": "https://routing.openstreetmap.de/routed-car",
     "walking": "https://routing.openstreetmap.de/routed-foot",
     "bicycling": "https://routing.openstreetmap.de/routed-bike",
 }
+
+
+def overpass_query(
+    category: PlaceCategory, lat: float, lon: float, radius_m: int, limit: int
+) -> str:
+    """Overpass QL for named places matching any of ``category``'s filters
+    within ``radius_m`` of ``lat, lon``; ways and relations by their centre."""
+    around = f"(around:{radius_m},{lat},{lon})"
+    clauses = "".join(f'nwr{tags}["name"]{around};' for tags in category.osm)
+    return (
+        f"[out:json][timeout:{OVERPASS_QUERY_SECONDS}];"
+        f"({clauses});out center {limit * OVERPASS_OVERFETCH};"
+    )
+
+
+def overpass_address(tags: Mapping[str, Any]) -> str:
+    street = " ".join(
+        str(tags[key]) for key in ("addr:housenumber", "addr:street") if tags.get(key)
+    )
+    parts = [street] + [
+        str(tags[key]) for key in ("addr:city", "addr:postcode") if tags.get(key)
+    ]
+    return ", ".join(part for part in parts if part)
+
+
+def overpass_places(
+    answer: Mapping[str, Any],
+    provider: str,
+    category: PlaceCategory,
+    origin: Tuple[float, float],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Overpass ``elements`` as places, nearest first, at most ``limit``."""
+    found: Dict[str, Dict[str, Any]] = {}
+    for element in answer.get("elements") or []:
+        tags = element.get("tags") or {}
+        centre = element.get("center") or element
+        if "lat" not in centre or "lon" not in centre or not tags.get("name"):
+            continue
+        place_id = f"{element.get('type', '')}/{element.get('id', '')}"
+        # A place several filters match comes back once for each.
+        if place_id in found:
+            continue
+        point = (float(centre["lat"]), float(centre["lon"]))
+        found[place_id] = {
+            **place(
+                provider,
+                name=str(tags["name"]),
+                address=overpass_address(tags),
+                lat=point[0],
+                lon=point[1],
+                place_id=place_id,
+            ),
+            "distance_m": round(distance_m(origin, point)),
+            "category": category.name,
+            "website": tags.get("website") or tags.get("contact:website"),
+            "phone": tags.get("phone") or tags.get("contact:phone"),
+            "opening_hours": tags.get("opening_hours"),
+        }
+    return sorted(found.values(), key=lambda p: p["distance_m"])[:limit]
 
 
 def osrm_instruction(maneuver: Mapping[str, Any], road: str) -> str:
@@ -54,9 +130,13 @@ def osrm_instruction(maneuver: Mapping[str, Any], road: str) -> str:
 class PRV_OpenStreetMap_Maps(AbstractMapsProvider):
     name: ClassVar[str] = "openstreetmap"
     friendly_name: ClassVar[str] = "OpenStreetMap"
-    description: ClassVar[str] = "Nominatim geocoding and OSRM routing"
+    description: ClassVar[str] = (
+        "Nominatim geocoding, OSRM routing and Overpass place search"
+    )
+    _abilities: ClassVar[Set[str]] = AbstractMapsProvider._abilities | {NEARBY_SEARCH}
     _env: ClassVar[Dict[str, Any]] = {
         "OSM_NOMINATIM_URL": DEFAULT_NOMINATIM_URL,
+        "OSM_OVERPASS_URL": DEFAULT_OVERPASS_URL,
         "OSM_OSRM_DRIVING_URL": DEFAULT_OSRM_URLS["driving"],
         "OSM_OSRM_WALKING_URL": DEFAULT_OSRM_URLS["walking"],
         "OSM_OSRM_BICYCLING_URL": DEFAULT_OSRM_URLS["bicycling"],
@@ -67,6 +147,12 @@ class PRV_OpenStreetMap_Maps(AbstractMapsProvider):
             "Nominatim server",
             env="OSM_NOMINATIM_URL",
             default=DEFAULT_NOMINATIM_URL,
+        ),
+        InstanceSetting(
+            "overpass_url",
+            "Overpass server",
+            env="OSM_OVERPASS_URL",
+            default=DEFAULT_OVERPASS_URL,
         ),
         InstanceSetting(
             "osrm_driving_url",
@@ -146,6 +232,29 @@ class PRV_OpenStreetMap_Maps(AbstractMapsProvider):
         if not result or "error" in result:
             return None
         return cls._place(result)
+
+    @classmethod
+    async def nearby(
+        cls,
+        instance: ProviderInstanceModel,
+        lat: float,
+        lon: float,
+        category: PlaceCategory,
+        radius_m: int,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        # Its own client: a radius search outlasts the geocoder's timeout,
+        # and one retry is enough for a server that may be busy.
+        overpass = ProviderHTTPClient(
+            policy=ClientPolicy(timeout=OVERPASS_TIMEOUT_SECONDS, max_retries=1),
+            provider_name=cls.name,
+            provider=cls,
+        )
+        answer = await overpass.post(
+            cls._url(instance, "overpass_url"),
+            data={"data": overpass_query(category, lat, lon, radius_m, limit)},
+        )
+        return overpass_places(answer, cls.name, category, (lat, lon), limit)
 
     @classmethod
     async def directions(
