@@ -1226,6 +1226,13 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     rate_limit: ClassVar[Optional[Any]] = None
     concurrency_limit: ClassVar[Optional[Any]] = None
 
+    # Whether the provider works on its default settings alone (a public
+    # service needing no credentials, such as OpenStreetMap): its seeded
+    # Root_ instance is then linked into its extension's root rotation even
+    # when the environment sets none of its variables. Otherwise an instance
+    # joins the rotation only once the operator configures it.
+    usable_with_defaults: ClassVar[bool] = False
+
     # Item 2 — per-provider rotation policy. Concrete providers set this
     # to a `RotationPolicy` (from `extensions.ExternalErrors`); the
     # rotation system reads it via `RotationManager._resolve_rotation_policy`.

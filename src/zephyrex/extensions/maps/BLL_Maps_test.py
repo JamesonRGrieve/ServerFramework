@@ -264,3 +264,31 @@ class TestRoutes(ExtensionServerMixin):
         )
         assert all(leg["duration_s"] for leg in body["legs"])
         assert body["places"] == []
+
+
+class TestSeeding(ExtensionServerMixin):
+    """A fresh deployment searches with OpenStreetMap before anything is configured: its seeded
+    instance joins the maps rotation though no OSM variable is set, while Google, which needs a
+    key, stays out until the operator gives it one (on Cule, the clinic finder answered 503).
+    """
+
+    extension_class = EXT_Maps
+
+    def test_openstreetmap_joins_the_rotation_on_its_defaults(
+        self, server, monkeypatch
+    ):
+        from zephyrex.logic.BLL_Providers import (
+            RotationProviderInstanceModel,
+            root_instance_name,
+        )
+
+        for name in (*PRV_OpenStreetMap_Maps._env, "GOOGLE_MAPS_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        links = RotationProviderInstanceModel.seed_data(server.app.state.model_registry)
+        linked = {
+            link["_provider_instance_name"]
+            for link in links
+            if link["_rotation_name"] == "Root_Maps"
+        }
+        assert root_instance_name(PRV_OpenStreetMap_Maps.name) in linked
+        assert root_instance_name("google_maps") not in linked

@@ -2855,7 +2855,9 @@ class RotationProviderInstanceModel(
                                     has_required_vars = True
                                     break
 
-                            if not has_required_vars:
+                            if not has_required_vars and not getattr(
+                                prv_class, "usable_with_defaults", False
+                            ):
                                 # No instance created for this provider, skip linking
                                 logger.debug(
                                     f"Provider '{provider_name}' has no environment variables set, skipping rotation links"

@@ -134,6 +134,9 @@ class PRV_OpenStreetMap_Maps(AbstractMapsProvider):
         "Nominatim geocoding, OSRM routing and Overpass place search"
     )
     _abilities: ClassVar[Set[str]] = AbstractMapsProvider._abilities | {NEARBY_SEARCH}
+    # The public OSM servers need no account: a fresh deployment searches and
+    # routes with them before anything is configured.
+    usable_with_defaults: ClassVar[bool] = True
     _env: ClassVar[Dict[str, Any]] = {
         "OSM_NOMINATIM_URL": DEFAULT_NOMINATIM_URL,
         "OSM_OVERPASS_URL": DEFAULT_OVERPASS_URL,
