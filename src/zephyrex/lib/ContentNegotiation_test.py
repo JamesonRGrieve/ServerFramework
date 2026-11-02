@@ -18,12 +18,10 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-
 from toon_format import decode as toon_decode
 from toon_format import encode as toon_encode
 
 from zephyrex.lib.ContentNegotiation import (
-    DEFAULT_FORMAT,
     MIME_JSON,
     MIME_TOML,
     MIME_TOON,
@@ -178,6 +176,40 @@ class TestSkipNegotiation:
         assert suffixed.json() == {"rest": "page.json"}
 
 
+class TestEventStreams:
+    def test_a_browser_event_source_is_not_refused(self) -> None:
+        """EventSource sends Accept: text/event-stream; negotiating it answered 406,
+        so no browser could open a server-sent event stream (live_sync, pairing)."""
+        from fastapi import HTTPException
+        from fastapi.responses import StreamingResponse
+
+        app = FastAPI()
+        app.add_middleware(ContentNegotiationMiddleware)
+
+        @app.get("/events")
+        def events() -> StreamingResponse:
+            return StreamingResponse(
+                iter([": connected\n\n", "data: {}\n\n"]),
+                media_type="text/event-stream",
+            )
+
+        @app.get("/refused")
+        def refused() -> None:
+            raise HTTPException(status_code=401, detail="No authentication provided.")
+
+        client = TestClient(app)
+        stream = {"Accept": "text/event-stream"}
+        answer = client.get("/events", headers=stream)
+        assert answer.status_code == 200
+        assert answer.text == ": connected\n\ndata: {}\n\n"
+        # The route's own refusal still reaches the caller, as JSON.
+        refusal = client.get("/refused", headers=stream)
+        assert refusal.status_code == 401
+        assert refusal.json() == {"detail": "No authentication provided."}
+        # Only a GET is a stream request; anything else is negotiated as before.
+        assert client.post("/events", headers=stream).status_code in (405, 406)
+
+
 class TestFormBodies:
     def test_one_string_per_field(self) -> None:
         body = "grant_type=authorization_code&code=a%2Bb&redirect_uri=&scope=x+y"
@@ -310,7 +342,7 @@ class TestSerializeDeserialize:
 
     @pytest.mark.parametrize("fmt", ["json", "toon", "yaml", "xml"])
     def test_dict_round_trip(self, fmt: str) -> None:
-        body, mime = serialize(SAMPLE_DICT, fmt)
+        body, _mime = serialize(SAMPLE_DICT, fmt)
         assert isinstance(body, str)
         assert len(body) > 0
         restored = deserialize(body, fmt)
@@ -318,7 +350,7 @@ class TestSerializeDeserialize:
 
     @pytest.mark.parametrize("fmt", ["json", "toon", "yaml", "xml"])
     def test_list_round_trip(self, fmt: str) -> None:
-        body, mime = serialize(SAMPLE_LIST, fmt)
+        body, _mime = serialize(SAMPLE_LIST, fmt)
         restored = deserialize(body, fmt)
         assert restored == SAMPLE_LIST
 
@@ -326,7 +358,7 @@ class TestSerializeDeserialize:
         """TOML requires a top-level table, so only dicts round-trip cleanly."""
         # TOML serializes all values as strings by default; use int-safe data.
         data = {"name": "Alice", "age": 30, "active": True}
-        body, mime = serialize(data, "toml")
+        body, _mime = serialize(data, "toml")
         restored = deserialize(body, "toml")
         assert restored == data
 

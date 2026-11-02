@@ -32,14 +32,11 @@ from typing import Any
 from urllib.parse import parse_qsl
 from xml.etree.ElementTree import Element, indent, tostring
 
-from defusedxml.ElementTree import fromstring as xml_fromstring
-
 import tomli_w
 import yaml
-from starlette.requests import Request
+from defusedxml.ElementTree import fromstring as xml_fromstring
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-
 from toon_format import decode as toon_decode
 from toon_format import encode as toon_encode
 
@@ -100,6 +97,22 @@ def skip_negotiation(path_pattern: str) -> None:
     expression matched against the whole path) out of content negotiation:
     no suffix rewrite, no transcoding, no 406 or 415."""
     _PASS_THROUGH_PATHS.append(re.compile(path_pattern))
+
+
+# A browser's EventSource sends ``Accept: text/event-stream``. The route answers with
+# the stream or a JSON refusal itself; negotiating it would refuse every stream (406).
+EVENT_STREAM = "text/event-stream"
+
+
+def asks_for_a_stream(scope: Scope) -> bool:
+    """Whether the request is a GET that accepts server-sent events."""
+    if scope.get("method", "GET") != "GET":
+        return False
+    for key, value in scope.get("headers", []):
+        if key.lower() == b"accept":
+            accepted = value.decode("latin-1").lower().split(",")
+            return any(part.split(";")[0].strip() == EVENT_STREAM for part in accepted)
+    return False
 
 
 # Paths that take form-encoded bodies. Elsewhere a form body is refused: an
@@ -398,8 +411,13 @@ class ContentNegotiationMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or any(
-            pattern.fullmatch(scope.get("path", "")) for pattern in _PASS_THROUGH_PATHS
+        if (
+            scope["type"] != "http"
+            or any(
+                pattern.fullmatch(scope.get("path", ""))
+                for pattern in _PASS_THROUGH_PATHS
+            )
+            or asks_for_a_stream(scope)
         ):
             await self.app(scope, receive, send)
             return
@@ -440,7 +458,6 @@ class ContentNegotiationMiddleware:
             req_fmt = None
 
         if req_fmt is None and method in ("POST", "PUT", "PATCH"):
-            supported = ", ".join(sorted(set(_MEDIA_TYPE_MAP.values())))
             response = Response(
                 content=json.dumps(
                     {
@@ -537,8 +554,6 @@ class ContentNegotiationMiddleware:
 
         async def _flush_response(real_send: Send) -> None:
             body = b"".join(response_body_parts)
-            status = initial_message.get("status", 200)
-
             if not body:
                 await real_send(initial_message)
                 await real_send(
