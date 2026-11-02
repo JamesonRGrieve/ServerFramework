@@ -69,6 +69,7 @@ class PRV_YouTube_Media(AbstractMediaProvider):
             "overview": snippet.get("description", ""),
             "channel": snippet.get("channelTitle", ""),
             "url": f"https://www.youtube.com/watch?v={video_id}",
+            "image": (snippet.get("thumbnails") or {}).get("medium", {}).get("url"),
         }
 
     @classmethod

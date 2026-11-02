@@ -18,6 +18,8 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 TMDB_API = "https://api.themoviedb.org/3"
 TMDB_SITE = "https://www.themoviedb.org"
+# Posters at a list's width (TMDb's image sizes: w92, w154, w185, w342, ...).
+TMDB_POSTERS = "https://image.tmdb.org/t/p/w185"
 TMDB_KINDS = ("movie", "tv")
 # A v4 read access token is a JWT; a v3 key is 32 hex digits.
 _JWT_PREFIX = "eyJ"
@@ -72,6 +74,11 @@ class PRV_TMDb_Media(AbstractMediaProvider):
             "year": int(date[:4]) if date[:4].isdigit() else None,
             "overview": item.get("overview", ""),
             "url": f"{TMDB_SITE}/{kind}/{item['id']}",
+            "image": (
+                f"{TMDB_POSTERS}{item['poster_path']}"
+                if item.get("poster_path")
+                else None
+            ),
         }
 
     @classmethod

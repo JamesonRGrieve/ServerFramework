@@ -68,7 +68,8 @@ class AbstractMediaProvider(AbstractStaticProvider):
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """Matches for ``query``, each an ``id``, ``title``, ``kind``,
-        ``year``, ``overview`` and ``url``. An empty list when ``kind`` is
+        ``year``, ``overview``, ``url`` and ``image`` (a poster or
+        thumbnail, when there is one). An empty list when ``kind`` is
         one this catalogue does not hold."""
 
     @classmethod
