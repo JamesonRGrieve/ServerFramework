@@ -599,6 +599,34 @@ class TestUnsignedAndSymmetricTokens:
 
 
 class TestAccounts(OAuthCase):
+    def test_a_deleted_account_takes_its_identities_and_tokens(self, flow, idp):
+        """Erasing an account (privacy's eraser, run as the account deletes
+        itself) unlinks its provider accounts and keeps no token that could
+        reach the provider, not even in the deleted rows. Safe to run twice."""
+        from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
+            erase_oauth_identities,
+        )
+
+        name = flow.oidc(idp)
+        user_id = flow.sign_in(idp, name).json()["user_id"]
+        assert any(row.access_token for row in flow.identities(user_id))
+
+        erase_oauth_identities(user_id, flow.registry)
+        erase_oauth_identities(user_id, flow.registry)
+
+        assert flow.identities(user_id) == []
+        IdentityDB = OAuthIdentityModel.DB(flow.registry.DB.manager.Base)
+        kept = IdentityDB.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=flow.registry,
+            filters=[IdentityDB.user_id == user_id],
+            return_type="dto",
+            override_dto=OAuthIdentityModel,
+        )
+        assert kept and all(
+            row.access_token is None and row.refresh_token is None for row in kept
+        )
+
     def test_identity_is_the_subject_not_the_email(self, flow, idp, admin_a):
         """A later token naming another user's email still signs in the
         account its subject is linked to."""

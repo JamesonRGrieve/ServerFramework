@@ -70,6 +70,7 @@ from zephyrex.extensions.oauth_consumer.IdentityProvider import (
     Identity,
     TokenSet,
 )
+from zephyrex.extensions.privacy.Erasure import register_eraser
 from zephyrex.lib import Environment
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.DateTimeUtils import ensure_utc
@@ -1112,6 +1113,42 @@ def _merge_handler(ctx: Any) -> None:
                 id=row.id,
                 new_properties={"user_id": ctx.initiating_user_id},
             )
+
+
+def erase_oauth_identities(user_id: str, model_registry: Any) -> None:
+    """A deleted account's provider accounts are unlinked: each identity's
+    tokens are wiped, then the identity is deleted, so no copy that could
+    reach the provider is kept even in the deleted row. Registered with the
+    privacy extension's erasers; safe to run twice."""
+    root_id = env("ROOT_ID")
+    IdentityDB = OAuthIdentityModel.DB(model_registry.DB.manager.Base)
+    rows: List[OAuthIdentityModel] = (
+        IdentityDB.list(
+            requester_id=root_id,
+            model_registry=model_registry,
+            filters=[IdentityDB.user_id == user_id, IdentityDB.deleted_at.is_(None)],
+            return_type="dto",
+            override_dto=OAuthIdentityModel,
+        )
+        or []
+    )
+    for row in rows:
+        IdentityDB.update(
+            requester_id=root_id,
+            model_registry=model_registry,
+            id=row.id,
+            new_properties={
+                "access_token": None,
+                "refresh_token": None,
+                "token_expires_at": None,
+            },
+        )
+        IdentityDB.delete(
+            requester_id=root_id, model_registry=model_registry, id=row.id
+        )
+
+
+register_eraser("oauth_consumer", erase_oauth_identities)
 
 
 def register_merge_participation() -> None:
