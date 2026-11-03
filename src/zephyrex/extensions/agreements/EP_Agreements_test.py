@@ -9,9 +9,27 @@ from typing import Any, Dict
 import pytest
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.extensions.agreements.BLL_Agreements import in_effect
+from zephyrex.extensions.agreements.BLL_Agreements import (
+    DEFAULT_TERM_KINDS,
+    in_effect,
+    register_term_kinds,
+    term_kinds,
+)
 from zephyrex.extensions.agreements.EXT_Agreements import EXT_Agreements
 from zephyrex.testing.factories import create_user
+
+
+@pytest.fixture
+def house_rules():
+    register_term_kinds(("clause", "rule", "rule", " "))
+    yield
+    register_term_kinds(DEFAULT_TERM_KINDS)
+
+
+def test_an_app_names_its_kinds_of_term(house_rules):
+    assert term_kinds() == ("clause", "rule")
+    with pytest.raises(ValueError):
+        register_term_kinds([" "])
 
 
 def test_in_effect_needs_everyone_on_this_version():
@@ -67,16 +85,32 @@ class TestAgreements(ExtensionServerMixin):
         )
         assert sneak.status_code == 404, sneak.text
 
-    def test_a_change_asks_everyone_to_confirm_again(self, server, people):
+    def test_a_term_is_of_a_kind_the_app_names(self, server, people, house_rules):
+        made = self._start(server, people["owner"])
+        plain = server.post(
+            f"/v1/agreements/{made['id']}/terms",
+            json={"text": "Quiet after ten"},
+            headers=self._headers(people["owner"]),
+        )
+        assert plain.status_code == 200, plain.text
+        assert plain.json()["terms"][0]["kind"] == "clause"
+        stray = server.post(
+            f"/v1/agreements/{made['id']}/terms",
+            json={"kind": "limit", "text": "Quiet after ten"},
+            headers=self._headers(people["owner"]),
+        )
+        assert stray.status_code == 422, stray.text
+
+    def test_a_change_asks_everyone_to_confirm_again(self, server, people, house_rules):
         made = self._start(server, people["owner"], people["alex"])
         added = server.post(
             f"/v1/agreements/{made['id']}/terms",
-            json={"kind": "limit", "text": "No sleepovers on school nights"},
+            json={"kind": "rule", "text": "Dishes done before bed"},
             headers=self._headers(people["alex"]),
         )
         assert added.status_code == 200, added.text
         term = added.json()["terms"][0]
-        assert (term["kind"], term["written_by"]) == ("limit", people["alex"].id)
+        assert (term["kind"], term["written_by"]) == ("rule", people["alex"].id)
         version = added.json()["version"]
         for who in ("owner", "alex"):
             confirmed = server.post(
@@ -88,19 +122,19 @@ class TestAgreements(ExtensionServerMixin):
         assert confirmed.json()["in_effect"] is True
         reworded = server.post(
             f"/v1/agreements/terms/{term['id']}",
-            json={"text": "No sleepovers on work nights"},
+            json={"text": "Dishes done by morning"},
             headers=self._headers(people["owner"]),
         )
         assert reworded.status_code == 200, reworded.text
         body = reworded.json()
         assert body["version"] == version + 1
         assert body["in_effect"] is False
-        assert body["terms"][0]["text"] == "No sleepovers on work nights"
+        assert body["terms"][0]["text"] == "Dishes done by morning"
         assert body["terms"][0]["written_by"] == people["owner"].id
         assert [p["confirmed"] for p in body["parties"]] == [False, False]
         same = server.post(
             f"/v1/agreements/terms/{term['id']}",
-            json={"text": "No sleepovers on work nights"},
+            json={"text": "Dishes done by morning"},
             headers=self._headers(people["owner"]),
         )
         assert same.json()["version"] == version + 1

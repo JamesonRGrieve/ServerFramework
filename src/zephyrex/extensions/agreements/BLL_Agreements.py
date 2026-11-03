@@ -4,7 +4,8 @@
 An agreement is started by one account (its owner), who names the other
 accounts in it (its parties; the owner is one too). Every party reads it and
 writes it: its title, when to revisit it, and its terms. A term is one thing
-agreed, a like or a limit.
+agreed; its kind is one the app names with ``register_term_kinds`` (a house
+agreement's clauses, a couple's likes and limits), ``"term"`` by default.
 
 Each party confirms the agreement as it stands. Any change to its terms
 moves it to a new version, and everyone confirms again; until they all
@@ -18,8 +19,9 @@ one); ``POST /{id}/details``; ``POST /{id}/remove``; ``POST /{id}/parties`` and
 /{id}/confirm``.
 """
 
+from collections.abc import Sequence
 from datetime import date, datetime
-from typing import Any, ClassVar, List, Literal, Optional, Type
+from typing import Any, ClassVar, List, Optional, Type
 
 from fastapi import HTTPException
 from pydantic import BaseModel as ResponseModel
@@ -39,7 +41,35 @@ from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.pydantic2.fastapi.types import RouteType
 from zephyrex.pydantic2.registry import BaseModel
 
-TermKind = Literal["agreement", "like", "limit"]
+DEFAULT_TERM_KINDS: tuple[str, ...] = ("term",)
+_term_kinds: tuple[str, ...] = DEFAULT_TERM_KINDS
+
+
+def register_term_kinds(kinds: Sequence[str]) -> None:
+    """The kinds of term this app's agreements hold; the first is the default."""
+    global _term_kinds
+    named = tuple(dict.fromkeys(k.strip() for k in kinds if k.strip()))
+    if not named:
+        raise ValueError("register_term_kinds needs at least one kind")
+    _term_kinds = named
+
+
+def term_kinds() -> tuple[str, ...]:
+    """The kinds registered, the default first."""
+    return _term_kinds
+
+
+def _kind(kind: str | None) -> str:
+    if kind is None:
+        return _term_kinds[0]
+    if kind not in _term_kinds:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A term's kind is one of: {', '.join(_term_kinds)}",
+        )
+    return kind
+
+
 MAX_PARTIES = 12
 MAX_TERMS = 200
 MAX_TITLE = 200
@@ -95,7 +125,7 @@ class AgreementPartyModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMet
 class AgreementTermModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["AgreementTermManager"]]
     agreement_id: str = Field(..., description="The agreement")
-    kind: str = Field("agreement", description="agreement, like or limit")
+    kind: str = Field("term", description="What kind of term; the app names the kinds")
     text: str = Field(..., description="The term, in the parties' own words")
     position: int = Field(0, description="Its place in the agreement")
     written_by: str = Field(..., description="The party who last wrote it")
@@ -106,7 +136,7 @@ class AgreementTermModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta
 
     class Create(BaseModel):
         agreement_id: str
-        kind: str = "agreement"
+        kind: str = "term"
         text: str
         position: int = 0
         written_by: str
@@ -173,12 +203,14 @@ class PartyRequest(ResponseModel):
 
 
 class TermRequest(ResponseModel):
-    kind: TermKind = "agreement"
+    kind: Optional[str] = Field(
+        None, max_length=40, description="Its kind; the default when left out"
+    )
     text: str = Field(..., min_length=1, max_length=MAX_TERM)
 
 
 class TermChange(ResponseModel):
-    kind: Optional[TermKind] = None
+    kind: Optional[str] = Field(None, max_length=40)
     text: Optional[str] = Field(None, min_length=1, max_length=MAX_TERM)
 
 
@@ -541,7 +573,7 @@ class AgreementManager(AbstractBLLManager, RouterMixin):
             self.model_registry,
             self._me,
             agreement_id=agreement.id,
-            kind=body.kind,
+            kind=_kind(body.kind),
             text=body.text.strip(),
             position=max((t.position for t in terms), default=-1) + 1,
             written_by=self._me,
@@ -561,7 +593,7 @@ class AgreementManager(AbstractBLLManager, RouterMixin):
     def change_term_route(self, term_id: str, body: TermChange) -> AgreementEntry:
         agreement, term = self._term(term_id)
         fields: dict[str, Any] = {}
-        if body.kind is not None and body.kind != term.kind:
+        if body.kind is not None and _kind(body.kind) != term.kind:
             fields["kind"] = body.kind
         if body.text is not None and body.text.strip() != term.text:
             fields["text"] = body.text.strip()

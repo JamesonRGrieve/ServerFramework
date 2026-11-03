@@ -80,7 +80,10 @@ def upgrade() -> None:
         "The terms of each agreement: things agreed, likes and limits",
         sa.Column("agreement_id", sa.String(), nullable=False, comment="The agreement"),
         sa.Column(
-            "kind", sa.String(), nullable=False, comment="agreement, like or limit"
+            "kind",
+            sa.String(),
+            nullable=False,
+            comment="What kind of term; the app names the kinds",
         ),
         sa.Column(
             "text",
