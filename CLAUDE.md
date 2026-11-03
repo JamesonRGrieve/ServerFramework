@@ -55,8 +55,9 @@ Run mypy by package name rooted at `src`. `mypy src/zephyrex/` names the
 files by bare module (the package directories have no `__init__.py`), so
 every `zephyrex.*` import resolves to `Any` and real errors disappear.
 
-Memory-heavy commands (the full suite, whole-package mypy) go through the
-shared queue: `/home/jameson/Source/mem-queuer/memq run -m <GB> -- <cmd>`.
+Builds (the full suite, whole-package mypy, a hooked commit) run on the
+backup build runner, never on the desktop: SOP *Agent Session Tooling →
+Build runner for heavy gates*.
 
 ## Quality Gates
 
