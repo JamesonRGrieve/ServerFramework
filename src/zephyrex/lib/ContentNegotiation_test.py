@@ -175,6 +175,31 @@ class TestSkipNegotiation:
         assert refused_before.status_code == 200
         assert suffixed.json() == {"rest": "page.json"}
 
+    def test_a_declared_path_passes_through_under_a_root_path(self) -> None:
+        """Served under a root path (uvicorn --root-path /api behind a proxy),
+        the request's path carries the prefix; the declared pattern names the
+        route's own path, so a raw upload was refused 415 only when deployed."""
+        from zephyrex.lib import ContentNegotiation
+
+        app = FastAPI(root_path="/api")
+        app.add_middleware(ContentNegotiationMiddleware)
+
+        @app.put("/upload")
+        async def upload(request: Request) -> dict:
+            return {"size": len(await request.body())}
+
+        skip_negotiation("/upload")
+        try:
+            answer = TestClient(app).put(
+                "/api/upload",
+                content=b"\x1aE\xdf\xa3",
+                headers={"Content-Type": "video/webm"},
+            )
+        finally:
+            ContentNegotiation._PASS_THROUGH_PATHS.pop()
+        assert answer.status_code == 200, answer.text
+        assert answer.json() == {"size": 4}
+
 
 class TestEventStreams:
     def test_a_browser_event_source_is_not_refused(self) -> None:

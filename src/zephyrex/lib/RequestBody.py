@@ -12,6 +12,8 @@ from typing import Any, Iterable, List, Mapping, Optional
 
 from fastapi import HTTPException, Request
 
+from zephyrex.lib.RoutePath import route_path
+
 # Set on a route's endpoint by ``register_custom_routes`` when its
 # ``@custom_route`` declares ``max_body_bytes``: the most that route accepts.
 ROUTE_BODY_LIMIT_ATTRIBUTE = "__zephyrex_max_body_bytes__"
@@ -39,16 +41,6 @@ async def capped_body(request: Request, limit: int, too_large_detail: str) -> by
     return b"".join(chunks)
 
 
-def _route_path(scope: Mapping[str, Any]) -> str:
-    """The path routes are matched against: the request's, less the root path
-    it was served under (as Starlette routes it)."""
-    path = str(scope.get("path", ""))
-    root = str(scope.get("root_path", ""))
-    if root and (path == root or path.startswith(root + "/")):
-        return path[len(root) :] or "/"
-    return path
-
-
 def route_body_limit(scope: Mapping[str, Any]) -> Optional[int]:
     """The body cap the route this request is for declares (its
     ``@custom_route`` ``max_body_bytes``), or None: matched by method and
@@ -63,7 +55,7 @@ def route_body_limit(scope: Mapping[str, Any]) -> Optional[int]:
     except ImportError:  # FastAPI before route contexts: included routes are flat.
         candidates = routes
     method = str(scope.get("method", ""))
-    path = _route_path(scope)
+    path = route_path(scope)
     for route in candidates:
         cap = getattr(
             getattr(route, "endpoint", None), ROUTE_BODY_LIMIT_ATTRIBUTE, None

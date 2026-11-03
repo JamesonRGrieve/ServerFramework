@@ -39,6 +39,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from toon_format import decode as toon_decode
 from toon_format import encode as toon_encode
+from zephyrex.lib.RoutePath import route_path
 
 # ---------------------------------------------------------------------------
 # Media-type constants
@@ -414,8 +415,7 @@ class ContentNegotiationMiddleware:
         if (
             scope["type"] != "http"
             or any(
-                pattern.fullmatch(scope.get("path", ""))
-                for pattern in _PASS_THROUGH_PATHS
+                pattern.fullmatch(route_path(scope)) for pattern in _PASS_THROUGH_PATHS
             )
             or asks_for_a_stream(scope)
         ):
@@ -453,7 +453,7 @@ class ContentNegotiationMiddleware:
         req_fmt = resolve_request_format(content_type_value or None)
         method = scope.get("method", "GET")
         if req_fmt == "form" and not any(
-            pattern.fullmatch(scope.get("path", "")) for pattern in _FORM_PATHS
+            pattern.fullmatch(route_path(scope)) for pattern in _FORM_PATHS
         ):
             req_fmt = None
 
