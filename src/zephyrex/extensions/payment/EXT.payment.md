@@ -62,6 +62,17 @@ account.
   another), never moved by an update, read-only over REST, mirrored from
   the provider on every read.
 
+## Account deletion
+
+With the privacy extension loaded, an account deleting itself is billed no
+more: `BLL_Payment.end_billing` (its eraser) cancels each of the account's
+subscriptions still running, at the end of the period paid for where the
+provider can and now where it cannot (each provider's `subscription_ends`:
+Square ends one only at the period's end, PayPal only now, Stripe either).
+A provider that cannot be reached keeps the account, to try again. The
+`payments` and `payment_subscriptions` rows are kept: they are the
+business's payment records.
+
 ## Login check
 
 `BLL_Payment.require_active_subscription(user_id, model_registry)` refuses

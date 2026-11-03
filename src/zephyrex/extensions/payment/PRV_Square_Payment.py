@@ -73,6 +73,8 @@ class PRV_Square_Payment(AbstractPaymentProvider):
     name: ClassVar[str] = "square"
     friendly_name: ClassVar[str] = "Square"
     description: ClassVar[str] = "A Square seller account"
+    # Square cancels on the date the period paid for ends, never sooner.
+    subscription_ends = "period_end"
     external_api_version: ClassVar[Optional[str]] = API_VERSION
     external_api_version_header: ClassVar[Optional[str]] = "Square-Version"
     _abilities: ClassVar[Set[str]] = {

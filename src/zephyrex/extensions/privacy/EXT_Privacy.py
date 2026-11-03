@@ -21,7 +21,9 @@ class EXT_Privacy(AbstractStaticExtension):
         "and data-export orchestration for GDPR/CCPA compliance"
     )
 
-    _env: ClassVar[Dict[str, Any]] = {}
+    # Days a deleted row is kept before the daily purge removes it for good;
+    # unset, deletions stay soft for ever (see Purge).
+    _env: ClassVar[Dict[str, Any]] = {"PRIVACY_PURGE_DELETED_AFTER_DAYS": ""}
     _abilities: ClassVar[Set[str]] = {
         "pii_classify",
         "pii_redact",
@@ -29,6 +31,13 @@ class EXT_Privacy(AbstractStaticExtension):
         "data_export",
     }
     _providers: ClassVar[List] = []
+
+    @classmethod
+    def register_services(cls, model_registry: Any, requester_id: str) -> List[Any]:
+        """The daily purge of what was deleted, when the app turned it on."""
+        from zephyrex.extensions.privacy.Purge import purge_services
+
+        return purge_services(model_registry, requester_id)
 
     @classmethod
     def on_initialize(cls) -> bool:

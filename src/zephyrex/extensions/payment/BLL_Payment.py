@@ -40,6 +40,7 @@ from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
 from zephyrex.extensions.ExternalErrors import BaseExternalError
+from zephyrex.extensions.privacy.Erasure import register_eraser
 from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -417,3 +418,43 @@ def require_active_subscription(user_id: str, model_registry: Any) -> None:
 
 
 register_login_check("payment", require_active_subscription)
+
+
+# What a subscription's provider reports once it has ended for good.
+ENDED_STATUSES = frozenset(
+    {"canceled", "cancelled", "deactivated", "expired", "incomplete_expired"}
+)
+
+
+def end_billing(user_id: str, model_registry: Any) -> None:
+    """A deleted account is billed no more: each of its subscriptions still
+    running is cancelled at its provider, at the end of the period paid for
+    where the provider can (``subscription_ends``), now where it cannot.
+    Its payments and subscriptions are kept: they are the business's payment
+    records. Registered with the privacy extension's erasers; safe to run
+    twice."""
+    from zephyrex.extensions.payment.EXT_Payment import (
+        AbstractPaymentProvider,
+        EXT_Payment,
+    )
+
+    subscriptions = PaymentSubscriptionManager(
+        model_registry=model_registry, requester_id=str(env("ROOT_ID"))
+    )
+    ends = {
+        provider.name: provider.subscription_ends
+        for provider in EXT_Payment.providers
+        if issubclass(provider, AbstractPaymentProvider)
+    }
+    for record in subscriptions.list(user_id=user_id):
+        if record.cancel_at_period_end or record.status in ENDED_STATUSES:
+            continue
+        _cache_sync_run(
+            EXT_Payment.subscription_cancel(
+                user_id, record.id, at_period_end=ends.get(record.provider) != "now"
+            ),
+            timeout=None,
+        )
+
+
+register_eraser("payment", end_billing)

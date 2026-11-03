@@ -9,8 +9,11 @@ from typing import Any, Dict, List
 import pytest
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.auth_session.BLL_Session import SessionModel
 from zephyrex.extensions.privacy import Erasure
 from zephyrex.extensions.privacy.EXT_Privacy import EXT_Privacy
+from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Auth.user import UserCredentialModel
 from zephyrex.testing.factories import create_user, current_if_match
 
 
@@ -73,6 +76,36 @@ class TestErasureOnAccountDeletion(ExtensionServerMixin):
         response = server.delete("/v1/user", headers=headers)
         assert response.status_code in (200, 204), response.text
         assert calls == [user.id]
+
+    def test_deleting_an_account_erases_its_sign_in_records(self, server, erased):
+        """Its sessions are revoked, so a token stops working at once, and
+        deleted with its credentials: nothing of them stays live to keep the
+        account's row from being purged."""
+        user = create_user(server)
+        headers = {
+            **self._headers(user),
+            **current_if_match(server, "/v1/user", self._headers(user)),
+        }
+        assert server.delete("/v1/user", headers=headers).status_code in (200, 204)
+
+        registry = server.app.state.model_registry
+        base = registry.DB.manager.Base
+        for model in (SessionModel, UserCredentialModel):
+            db = model.DB(base)
+            # ROOT sees deleted rows too: count only the live ones.
+            live = db.list(
+                requester_id=env("ROOT_ID"),
+                model_registry=registry,
+                filters=[db.user_id == user.id, db.deleted_at.is_(None)],
+            )
+            assert not live, model.__name__
+        SessionDB = SessionModel.DB(base)
+        sessions = SessionDB.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry,
+            filters=[SessionDB.user_id == user.id],
+        )
+        assert sessions and all(row["revoked"] for row in sessions)
 
     def test_an_extension_the_app_did_not_load_erases_nothing(self, server, erased):
         calls, _ = erased

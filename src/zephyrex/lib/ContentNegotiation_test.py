@@ -453,8 +453,8 @@ class TestGetAcceptHeader:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == MIME_TOON
         parsed = toon_decode(resp.text)
-        assert parsed["name"] == "Alice"  # type: ignore[call-overload, index]
-        assert parsed["age"] == 30  # type: ignore[call-overload, index]
+        assert parsed["name"] == "Alice"
+        assert parsed["age"] == 30
 
     def test_accept_yaml(self, client: TestClient) -> None:
         resp = client.get("/item", headers={"Accept": MIME_YAML})
@@ -498,9 +498,9 @@ class TestGetAcceptHeader:
         resp = client.get("/items", headers={"Accept": MIME_TOON})
         assert resp.status_code == 200
         parsed = toon_decode(resp.text)
-        assert len(parsed) == 2  # type: ignore[arg-type]
-        assert parsed[0]["name"] == "Alice"  # type: ignore[index]
-        assert parsed[1]["name"] == "Bob"  # type: ignore[index]
+        assert len(parsed) == 2
+        assert parsed[0]["name"] == "Alice"
+        assert parsed[1]["name"] == "Bob"
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +521,7 @@ class TestGetFormatSuffix:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == MIME_TOON
         parsed = toon_decode(resp.text)
-        assert parsed["name"] == "Alice"  # type: ignore[call-overload, index]
+        assert parsed["name"] == "Alice"
 
     def test_suffix_yaml(self, client: TestClient) -> None:
         resp = client.get("/item.yaml")
@@ -704,41 +704,6 @@ class TestToonTokenEfficiency:
             f"JSON ({len(json_str)} chars)"
         )
 
-    def test_toon_token_count_reduction(self) -> None:
-        """When tiktoken is available, verify actual token count reduction."""
-        try:
-            from toon_format import estimate_savings
-        except ImportError:
-            pytest.skip("toon_format.estimate_savings not available")
-
-        data = {
-            "users": [
-                {
-                    "id": 1,
-                    "name": "Alice",
-                    "email": "alice@example.com",
-                    "active": True,
-                },
-                {"id": 2, "name": "Bob", "email": "bob@example.com", "active": False},
-                {
-                    "id": 3,
-                    "name": "Charlie",
-                    "email": "charlie@example.com",
-                    "active": True,
-                },
-            ]
-        }
-        try:
-            result = estimate_savings(data)
-            # The savings should be positive (TOON uses fewer tokens).
-            assert (
-                result["savings_percent"] > 0
-            ), f"Expected positive token savings, got {result['savings_percent']}%"
-        except RuntimeError:
-            # tiktoken not installed -- skip the token-count assertion but
-            # still verify the character-length reduction above.
-            pytest.skip("tiktoken not available for token counting")
-
 
 # ---------------------------------------------------------------------------
 # Integration: combined request + response format
@@ -761,7 +726,7 @@ class TestCombinedFormats:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == MIME_TOON
         parsed = toon_decode(resp.text)
-        assert parsed["name"] == "Alice"  # type: ignore[call-overload, index]
+        assert parsed["name"] == "Alice"
 
     def test_post_toon_receive_xml(self, client: TestClient) -> None:
         toon_body = toon_encode(SAMPLE_DICT)

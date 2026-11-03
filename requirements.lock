@@ -3704,6 +3704,7 @@ python-dateutil==2.9.0.post0 \
     #   matplotlib
     #   pysaml2
     #   strawberry-graphql
+    #   vobject
 python-dotenv==1.2.4 \
     --hash=sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc \
     --hash=sha256:f0d53e69935a851c0dcc78f3ab7aaccd8cabef0b92382b576b824212902873c0
@@ -3721,7 +3722,9 @@ python-multipart==0.0.32 \
 pytz==2026.4 \
     --hash=sha256:464303645bafafd72418898368b2429458f709cf1eb6a15372fbcc396b64da63 \
     --hash=sha256:9d514388fbc89ca0833203464272ac485b8828568ab73532f5020f17e892a0ff
-    # via influxdb
+    # via
+    #   influxdb
+    #   vobject
 pyunormalize==18.0.0 \
     --hash=sha256:2b2e65201e688bb38c66ab66ef1071cc07b32e9840e5ae07aab716db6ede7d6d \
     --hash=sha256:cdc571ab761c2bd905275c9f3e3cf386d10b4f9bc8d55b32d410cc635e684ba8
@@ -4171,6 +4174,7 @@ six==1.17.0 \
     #   ebooklib
     #   influxdb
     #   python-dateutil
+    #   vobject
 solana==0.41.0 \
     --hash=sha256:7b8efcef938d75b94a62e995383f59f68b566b0a01ad1694ca62591560da7e47 \
     --hash=sha256:a8f3b31789256c69c2c0e260f00a4d540627cc3e860f0c4462342ead3390eaf5
@@ -4333,9 +4337,9 @@ toolz==1.2.0 \
     --hash=sha256:890f820b1cb8152785aaf9386d8707770110809035800985ca65cb24ce1120ef \
     --hash=sha256:9667a038e9d6ecba37995e26cb2f59ec6420b6ad8dd9677de59db9b956b08490
     # via cytoolz
-toon-format==0.1.0 \
-    --hash=sha256:77303c9b06956fe8b0066d2bca52dfdc63e2b3abba439c3c3545dbbd43a97d48 \
-    --hash=sha256:f0c7bf3f63f1fc08739127ca895a55922617193f942f84474489770d7cd1ffc2
+toon-format==1.2.0 \
+    --hash=sha256:d94db4b088a281a7bbc85e75d7fbd24e6a0ec7bc110edb129285259eca6522c0 \
+    --hash=sha256:ed09c0cb8ba58f17372f876df1e43400d2d916aef67c641f152d8a28c5898669
     # via zephyrex (pyproject.toml)
 torch==2.15.0 \
     --hash=sha256:02ac0b22211c1984e5dc002d2e57fdbc13d32116537ea6ae1a0c9d07cafce0c9 \
@@ -4469,6 +4473,10 @@ uvicorn==0.54.0 \
     # via
     #   zephyrex (pyproject.toml)
     #   mcp
+vobject==0.9.9 \
+    --hash=sha256:0fbdb982065cf4d1843a5d5950c88510041c6de026bda49c3502721de1c6ac3d \
+    --hash=sha256:ac44e5d7e2079d84c1d52c50a615b9bec4b1ba958608c4c7fe40cbf33247b38e
+    # via zephyrex (pyproject.toml)
 web3==8.0.0 \
     --hash=sha256:2276762aa5d86807eabad5af5c585a84bd6d9a706a613f8456c645a9669ffeb5 \
     --hash=sha256:8d898fe1909037d6269c998d27c1806ce201cf6d7e49514ad6f3e4dcc64e6e9a

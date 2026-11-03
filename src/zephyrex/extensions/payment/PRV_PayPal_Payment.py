@@ -88,6 +88,8 @@ class PRV_PayPal_Payment(AbstractPaymentProvider):
     friendly_name: ClassVar[str] = "PayPal"
     description: ClassVar[str] = "A PayPal business account (a REST app)"
     subscriptions_need_customer: ClassVar[bool] = False
+    # PayPal cancels a subscription at once; it has no end-of-period cancel.
+    subscription_ends = "now"
     _abilities: ClassVar[Set[str]] = {
         "payment_create",
         "payment_get",

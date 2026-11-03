@@ -3,6 +3,7 @@
 and its abilities end to end: real app, real database, providers answered
 by local servers speaking Stripe's and PayPal's APIs."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -29,6 +30,7 @@ from zephyrex.extensions.payment.EXT_Payment import (
     checked_metadata,
     checked_trial,
 )
+from zephyrex.extensions.payment.BLL_Payment import end_billing
 from zephyrex.extensions.payment.PRV_PayPal_Payment import PRV_PayPal_Payment
 from zephyrex.extensions.payment.PRV_Stripe_Payment import PRV_Stripe_Payment
 from zephyrex.lib.Environment import env
@@ -321,6 +323,22 @@ class TestContract:
         }
         assert decorated == EXT_Payment._abilities
 
+    async def test_each_provider_ends_a_subscription_as_it_declares(
+        self, provider_instance
+    ):
+        """``subscription_ends`` says how cancelling can end a subscription:
+        the mode it leaves out is refused before anything is sent."""
+        for provider in EXT_Payment.providers:
+            if "subscription_cancel" not in provider._abilities:
+                continue
+            instance = provider_instance(provider)
+            refused = {"period_end": False, "now": True}.get(provider.subscription_ends)
+            if refused is None:
+                assert provider.subscription_ends == "either", provider.name
+                continue
+            with pytest.raises(PermanentExternalError, match="API cannot"):
+                await provider.cancel_subscription(instance, "s1", refused)
+
     async def test_a_refused_operation_names_the_provider(self, provider_instance):
         moneris = EXT_Payment.providers[
             [p.name for p in EXT_Payment.providers].index("moneris")
@@ -508,6 +526,31 @@ class TestAbilities(ExtensionServerMixin):
         assert ending["cancel_at_period_end"] and ending["active"]
         account.subscriptions[made["external_id"]]["status"] = "canceled"
         assert not (await EXT_Payment.subscription_status(fresh_user.id))["active"]
+
+    async def test_a_deleted_account_is_billed_no_more(
+        self, stripe, fresh_user, registry
+    ):
+        """Deleting an account cancels its subscriptions at their provider, at
+        the end of the period paid for where the provider can, and keeps
+        their records: they are the business's payment records."""
+        account, _, _ = stripe
+        await EXT_Payment.customer_create(fresh_user.id)
+        made = await EXT_Payment.subscription_create(fresh_user.id, "price_1")
+
+        await asyncio.to_thread(end_billing, fresh_user.id, registry)
+
+        at_provider = account.subscriptions[made["external_id"]]
+        assert at_provider["cancel_at_period_end"]
+        [kept] = [
+            row
+            for row in await EXT_Payment.subscription_list(fresh_user.id)
+            if row["id"] == made["id"]
+        ]
+        assert kept["cancel_at_period_end"]
+        # Safe to run twice: a subscription already ending is not cancelled again.
+        at_provider["cancel_at_period_end"] = False
+        await asyncio.to_thread(end_billing, fresh_user.id, registry)
+        assert not at_provider["cancel_at_period_end"]
 
     async def test_a_paypal_subscription_needs_no_customer(
         self, server, registry, local_http_server, monkeypatch, fresh_user

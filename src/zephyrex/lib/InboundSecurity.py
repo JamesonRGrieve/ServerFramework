@@ -917,10 +917,12 @@ def rate_limit(spec: str, scope: RateLimitScope = "ip") -> Callable[[F], F]:
     count, window_seconds = parse_rate_spec(spec)
 
     def _decorator(fn: F) -> F:
-        fn._rate_limit_spec = spec
-        fn._rate_limit_count = count
-        fn._rate_limit_window_seconds = window_seconds
-        fn._rate_limit_scope = scope
+        # A function takes any attribute; its declared type knows none of these.
+        stamped: Any = fn
+        stamped._rate_limit_spec = spec
+        stamped._rate_limit_count = count
+        stamped._rate_limit_window_seconds = window_seconds
+        stamped._rate_limit_scope = scope
         return fn
 
     return _decorator

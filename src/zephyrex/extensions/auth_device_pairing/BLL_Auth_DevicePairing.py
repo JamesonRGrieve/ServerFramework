@@ -413,9 +413,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         )
         return PairingActionResponse(pairing_id=row.id, state="denied")
 
-    def get_status(
-        self, pairing_id: str, binding: str | None = None
-    ) -> PairingStatus:
+    def get_status(self, pairing_id: str, binding: str | None = None) -> PairingStatus:
         """The pairing's state. The one read that finds it approved and
         presents its binding also carries the session (``token``,
         ``user_id``); the pairing id alone never does."""
@@ -442,9 +440,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         )
 
     @staticmethod
-    def _presents_binding(
-        row: DevicePairingRequestModel, binding: str | None
-    ) -> bool:
+    def _presents_binding(row: DevicePairingRequestModel, binding: str | None) -> bool:
         if row.consumed_at is not None or not row.binding_hash or not binding:
             return False
         return hmac.compare_digest(row.binding_hash, _binding_hash(binding))

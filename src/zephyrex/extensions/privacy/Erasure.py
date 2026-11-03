@@ -9,7 +9,7 @@ erases nothing, and before the account goes, so a failed eraser stops the
 deletion and the user can simply try again (erasers are idempotent).
 """
 
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Set
 
 from fastapi import HTTPException
 
@@ -18,31 +18,81 @@ from zephyrex.lib.Logging import logger
 
 # name -> eraser(user_id, model_registry), in registration order.
 _ERASERS: Dict[str, Callable[[str, Any], None]] = {}
+# The erasers that sign the account out (its sessions): they run only once
+# every other has succeeded, so an account kept after a failed erasure stays
+# signed in to try again.
+_SIGNING_OUT: Set[str] = set()
 
 _HOOKED = False
 
 
-def register_eraser(name: str, fn: Callable[[str, Any], None]) -> None:
+def register_eraser(
+    name: str, fn: Callable[[str, Any], None], *, signs_out: bool = False
+) -> None:
     """Erase extension ``name``'s data about a user when their account is
     deleted, in an app that loaded ``name``.
 
     ``fn(user_id, model_registry)`` must be idempotent and runs as part of
     the deletion; erasers run in reverse registration order, so an
     extension that depends on another (and so registers after it) erases
-    first."""
+    first. One that ``signs_out`` (ends the account's sessions) runs after
+    all the others, and only when they all succeeded."""
     _ERASERS[name] = fn
+    if signs_out:
+        _SIGNING_OUT.add(name)
+    else:
+        _SIGNING_OUT.discard(name)
+
+
+def erase_credentials(user_id: str, model_registry: Any) -> None:
+    """The account's own credentials (its password hash), which the core
+    keeps and no extension owns: deleted with the account. Safe to run twice."""
+    from zephyrex.lib.Environment import env
+    from zephyrex.logic.BLL_Auth.user import UserCredentialModel
+
+    root_id = env("ROOT_ID")
+    CredentialDB = UserCredentialModel.DB(model_registry.DB.manager.Base)
+    rows = (
+        CredentialDB.list(
+            requester_id=root_id,
+            model_registry=model_registry,
+            filters=[
+                CredentialDB.user_id == user_id,
+                CredentialDB.deleted_at.is_(None),
+            ],
+            return_type="dto",
+            override_dto=UserCredentialModel,
+        )
+        or []
+    )
+    for row in rows:
+        CredentialDB.delete(
+            requester_id=root_id, model_registry=model_registry, id=row.id
+        )
 
 
 def erase_user(user_id: str, model_registry: Any) -> ErasureReport:
     """Run, for ``user_id``, the erasers of the extensions loaded into
     ``model_registry``'s app (a registration is process-wide; another app in
-    the process may not have loaded the extension)."""
+    the process may not have loaded the extension). When they all succeed,
+    the account's sign-in records go last: the erasers that sign it out,
+    then its credentials."""
     loaded = model_registry.loaded_extension_names()
-    run = ErasureOrchestrator()
+    data, sign_in = ErasureOrchestrator(), ErasureOrchestrator()
+    sign_in.register_extension_eraser(
+        "credentials", _bound(erase_credentials, model_registry)
+    )
     for name, fn in _ERASERS.items():
         if name in loaded:
+            run = sign_in if name in _SIGNING_OUT else data
             run.register_extension_eraser(name, _bound(fn, model_registry))
-    return run.erase_user(user_id)
+    report = data.erase_user(user_id)
+    if not report.succeeded:
+        return report
+    last = sign_in.erase_user(user_id)
+    report.erased_extensions.extend(last.erased_extensions)
+    report.failed_extensions.update(last.failed_extensions)
+    return report
 
 
 def _bound(

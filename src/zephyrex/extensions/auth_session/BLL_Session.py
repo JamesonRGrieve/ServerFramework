@@ -22,6 +22,7 @@ from zephyrex.lib.DateTimeUtils import ensure_utc
 from fastapi import HTTPException
 from pydantic import Field
 
+from zephyrex.extensions.privacy.Erasure import register_eraser
 from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import (
@@ -608,6 +609,37 @@ def revoke_user_sessions(
         return 0
     mgr = SessionManager(requester_id=requester_id, model_registry=model_registry)
     return mgr.revoke_sessions(user_id)
+
+
+def erase_sessions(user_id: str, model_registry: Any) -> None:
+    """A deleted account's sign-in records: each session is revoked, so a
+    token it issued stops working at once, then deleted with the account
+    (and so purged with it, where the app purges). Registered with the
+    privacy extension's erasers; safe to run twice."""
+    root_id = env("ROOT_ID")
+    SessionDB = SessionModel.DB(model_registry.DB.manager.Base)
+    rows: List[SessionModel] = (
+        SessionDB.list(
+            requester_id=root_id,
+            model_registry=model_registry,
+            filters=[SessionDB.user_id == user_id, SessionDB.deleted_at.is_(None)],
+            return_type="dto",
+            override_dto=SessionModel,
+        )
+        or []
+    )
+    for row in rows:
+        SessionDB.update(
+            requester_id=root_id,
+            model_registry=model_registry,
+            id=row.id,
+            new_properties={"revoked": True, "is_active": False},
+        )
+        SessionDB.delete(requester_id=root_id, model_registry=model_registry, id=row.id)
+        _invalidate_session_cache(row.session_key)
+
+
+register_eraser("auth_session", erase_sessions, signs_out=True)
 
 
 __all__ = [

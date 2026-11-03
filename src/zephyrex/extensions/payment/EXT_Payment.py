@@ -42,6 +42,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Literal,
     Mapping,
     Optional,
     Set,
@@ -247,6 +248,9 @@ class AbstractPaymentProvider(AbstractStaticProvider):
     http_timeout_seconds: ClassVar[float] = PAYMENT_REQUEST_TIMEOUT_SECONDS
     # Whether a subscription here belongs to a customer record made first.
     subscriptions_need_customer: ClassVar[bool] = True
+    # How cancel_subscription can end one: at the end of the period paid for,
+    # now, or either (as at_period_end asks).
+    subscription_ends: ClassVar[Literal["period_end", "now", "either"]] = "either"
 
     # ISO 4217 currencies whose minor-unit exponent is NOT the default of 2.
     # Everything not listed here has 2 decimal places. Used by the money

@@ -27,6 +27,9 @@ from zephyrex.extensions.math.Symbolic import (
 
 # SymPy spends well over the test timeout on this integral.
 SLOW_INTEGRAND = "exp(x^x)*sin(x)^7/(1+x^9)"
+# The worker started after a kill imports SymPy before it answers: past 2 s on
+# the build runner while the suite fills its cores. This limit only stops a hang.
+RECOVERY_TIMEOUT_SECONDS = 120.0
 x = sympy.Symbol("x")
 
 
@@ -165,6 +168,7 @@ class TestWorker:
             with pytest.raises(SymbolicTimeout):
                 worker.run("integrate", SLOW_INTEGRAND, "x", None, None)
             assert time.monotonic() - started < 5
+            worker.timeout_seconds = RECOVERY_TIMEOUT_SECONDS
             assert worker.run("calculate", "1+1")[0] == "ok"
         finally:
             worker.stop()

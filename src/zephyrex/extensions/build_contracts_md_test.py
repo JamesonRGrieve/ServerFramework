@@ -61,7 +61,10 @@ def test_markdown_is_in_sync():
         cwd=Path(__file__).resolve().parents[2],
         capture_output=True,
         text=True,
-        timeout=30,
+        # The check imports every extension: about 22s alone on the build
+        # runner, and past 30s while the suite's own workers fill its cores.
+        # The limit only stops a hang.
+        timeout=300,
     )
     assert result.returncode == 0, (
         "EXT.Contracts.md is stale; rerun build_contracts_md to regenerate.\n"
