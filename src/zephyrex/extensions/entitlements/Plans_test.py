@@ -127,3 +127,36 @@ def test_a_product_needs_a_positive_amount_and_a_currency_code(amount, currency)
         Product(
             id="bad", plan="plus", amount=amount, currency=currency, description="Bad"
         )
+
+
+def test_a_unit_product_grants_no_plan_and_needs_none_registered(plans):
+    seats = Product(
+        id="seat",
+        plan=None,
+        amount="2.00",
+        currency="USD",
+        description="A seat",
+        max_quantity=500,
+        authorize_subject=lambda user_id, subject_id, registry: True,
+    )
+    register_product(seats)
+    assert Plans.plan_bought_with("seat") is None
+
+
+@pytest.mark.parametrize(
+    ("plan", "max_quantity", "with_subject"),
+    [(None, 0, False), ("plus", 2, False), ("plus", 1, True)],
+)
+def test_units_and_plans_do_not_mix(plans, plan, max_quantity, with_subject):
+    """A plan is granted to its buyer one at a time; only unit products have a
+    quantity or a subject."""
+    with pytest.raises(ValueError):
+        Product(
+            id="mixed",
+            plan=plan,
+            amount="2.00",
+            currency="USD",
+            description="Mixed",
+            max_quantity=max_quantity,
+            authorize_subject=(lambda u, s, r: True) if with_subject else None,
+        )

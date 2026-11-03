@@ -4,7 +4,10 @@ active subscription, seats shared and taken back, a seat holder unable to
 give seats on, a lapsed subscription dropping its seats, the 402 checks,
 and products sold once: listed publicly, their plan granted by a succeeded
 payment and withdrawn by a full refund, and purchases refused for unknown
-products, plans already held and deployments without a payment account."""
+products, plans already held and deployments without a payment account;
+and units (seats) bought in a quantity for a subject the buyer may buy for,
+charged at the unit price times the quantity and counted while their
+payment stands, a partial refund withdrawing its share."""
 
 import uuid
 from datetime import UTC, datetime
@@ -18,6 +21,7 @@ from zephyrex.extensions.entitlements import Plans
 from zephyrex.extensions.entitlements.BLL_Entitlements import (
     require_feature,
     require_within_limit,
+    units_bought,
 )
 from zephyrex.extensions.entitlements.EXT_Entitlements import EXT_Entitlements
 from zephyrex.extensions.entitlements.Plans import Plan
@@ -41,6 +45,22 @@ PLUS_FOREVER = Plans.Product(
 )
 
 
+def _owns_team(user_id: str, subject_id: str, model_registry: Any) -> bool:
+    """A stand-in for an app's ownership check: team ``team-<user id>`` is theirs."""
+    return subject_id == f"team-{user_id}"
+
+
+TEAM_SEAT = Plans.Product(
+    id="team_seat",
+    plan=None,
+    amount="2.00",
+    currency="USD",
+    description="A team seat",
+    max_quantity=50,
+    authorize_subject=_owns_team,
+)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def plans():
     saved = dict(Plans.PLANS)
@@ -50,6 +70,7 @@ def plans():
     Plans.register_plan(BASIC)
     Plans.register_plan(PLUS)
     Plans.register_product(PLUS_FOREVER)
+    Plans.register_product(TEAM_SEAT)
     mp = pytest.MonkeyPatch()
     mp.setenv(PLUS.plan_ids_setting, PLUS_PRICE)
     yield
@@ -252,7 +273,19 @@ class TestEntitlements(ExtensionServerMixin):
                 "currency": "USD",
                 "description": "Plus, for good",
                 "features": ["calendar_sync", "map"],
-            }
+                "max_quantity": 1,
+                "needs_subject": False,
+            },
+            {
+                "id": "team_seat",
+                "plan": None,
+                "amount": "2.00",
+                "currency": "USD",
+                "description": "A team seat",
+                "features": [],
+                "max_quantity": 50,
+                "needs_subject": True,
+            },
         ]
 
     def test_a_succeeded_payment_for_a_product_buys_its_plan_until_fully_refunded(
@@ -316,3 +349,118 @@ class TestEntitlements(ExtensionServerMixin):
         )
         assert response.status_code >= 400, response.text
         assert self._plan(server, buyer)["plan"] == "basic"
+
+    @staticmethod
+    def _charge_succeeds(server, monkeypatch) -> list:
+        """Payments succeed at once, as a card charge does: the payment row is
+        the one payment_create would record. Returns the charges asked for."""
+        from zephyrex.extensions.payment.BLL_Payment import PaymentManager
+        from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
+
+        charges: list = []
+
+        async def charge(**kwargs: Any) -> Dict[str, Any]:
+            charges.append(kwargs)
+            created = PaymentManager(
+                model_registry=server.app.state.model_registry,
+                requester_id=env("ROOT_ID"),
+            ).create(
+                user_id=kwargs["requester_id"],
+                provider="square",
+                provider_instance_id=str(uuid.uuid4()),
+                external_id=f"pay_{uuid.uuid4().hex}",
+                status="succeeded",
+                amount=kwargs["amount"],
+                currency=kwargs["currency"],
+                product_id=kwargs["product_id"],
+                refreshed_at=datetime.now(UTC),
+            )
+            return {"id": created.id, "status": "succeeded"}
+
+        monkeypatch.setattr(EXT_Payment, "payment_create", staticmethod(charge))
+        return charges
+
+    def _buy_seats(self, server, buyer, quantity: int, subject_id=None):
+        return server.post(
+            "/v1/entitlement/purchase",
+            json={
+                "product_id": TEAM_SEAT.id,
+                "payment_method_id": "cnon:card-nonce-ok",
+                "quantity": quantity,
+                "subject_id": subject_id or f"team-{buyer.id}",
+            },
+            headers=self._headers(buyer),
+        )
+
+    def test_units_are_charged_per_unit_and_counted_for_their_subject(
+        self, server, monkeypatch
+    ):
+        from zephyrex.extensions.payment.BLL_Payment import PaymentManager
+
+        charges = self._charge_succeeds(server, monkeypatch)
+        registry = server.app.state.model_registry
+        buyer = self._new_user(server)
+        team = f"team-{buyer.id}"
+
+        bought = self._buy_seats(server, buyer, 3)
+        assert bought.status_code == 200, bought.text
+        assert charges[-1]["amount"] == "6.00"
+        assert charges[-1]["description"] == "A team seat x 3"
+        assert self._buy_seats(server, buyer, 2).status_code == 200
+        assert units_bought(TEAM_SEAT.id, team, registry) == 5
+        # Units buy no plan, and another subject has none.
+        assert self._plan(server, buyer)["plan"] == "basic"
+        assert units_bought(TEAM_SEAT.id, "team-someone-else", registry) == 0
+
+        payments = PaymentManager(model_registry=registry, requester_id=env("ROOT_ID"))
+        first = bought.json()["payment_id"]
+        payments.update(id=first, amount_refunded="2.00")
+        assert units_bought(TEAM_SEAT.id, team, registry) == 4
+        payments.update(id=first, amount_refunded="6.00")
+        assert units_bought(TEAM_SEAT.id, team, registry) == 2
+
+    def test_units_need_a_subject_the_buyer_may_buy_for(self, server, monkeypatch):
+        charges = self._charge_succeeds(server, monkeypatch)
+        buyer = self._new_user(server)
+        theirs = self._buy_seats(server, buyer, 1, subject_id="team-another-user")
+        assert theirs.status_code == 404, theirs.text
+        unnamed = server.post(
+            "/v1/entitlement/purchase",
+            json={"product_id": TEAM_SEAT.id, "quantity": 1},
+            headers=self._headers(buyer),
+        )
+        assert unnamed.status_code == 422, unnamed.text
+        too_many = self._buy_seats(server, buyer, TEAM_SEAT.max_quantity + 1)
+        assert too_many.status_code == 422, too_many.text
+        assert charges == []
+
+    def test_a_plan_is_bought_once_and_for_no_subject(self, server, monkeypatch):
+        charges = self._charge_succeeds(server, monkeypatch)
+        buyer = self._new_user(server)
+        for extra in ({"quantity": 2}, {"subject_id": f"team-{buyer.id}"}):
+            response = server.post(
+                "/v1/entitlement/purchase",
+                json={"product_id": PLUS_FOREVER.id, **extra},
+                headers=self._headers(buyer),
+            )
+            assert response.status_code == 422, response.text
+        assert charges == []
+
+    def test_a_pending_payment_pays_for_no_units_yet(self, server):
+        from zephyrex.extensions.entitlements.BLL_Entitlements import (
+            EntitlementPurchaseManager,
+        )
+
+        registry = server.app.state.model_registry
+        buyer = self._new_user(server)
+        pending = self._paid(server, buyer.id, TEAM_SEAT.id, status="pending")
+        EntitlementPurchaseManager(
+            model_registry=registry, requester_id=env("ROOT_ID")
+        ).create(
+            user_id=buyer.id,
+            payment_id=pending,
+            product_id=TEAM_SEAT.id,
+            quantity=4,
+            subject_id=f"team-{buyer.id}",
+        )
+        assert units_bought(TEAM_SEAT.id, f"team-{buyer.id}", registry) == 0

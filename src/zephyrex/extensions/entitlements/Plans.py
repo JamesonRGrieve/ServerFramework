@@ -13,13 +13,20 @@ registers a :class:`Product` (:func:`register_product`) naming the plan it
 buys and its price. The price lives in code, never in the request, so a
 client cannot choose what it pays.
 
+A product can instead sell units of something the app counts (seats in a
+group, credits) rather than a plan: it names no plan, a ``max_quantity``
+above one, and usually a subject the units are bought for, which
+``authorize_subject`` checks the buyer may buy for (the group's owner,
+say). The app asks :func:`~zephyrex.extensions.entitlements.BLL_Entitlements.units_bought`
+how many units are paid for.
+
 The lowest-ranked plan is everyone's without paying for it (the free
 plan); with no plan registered, there is an empty one.
 """
 
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Dict, FrozenSet, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional
 
 from zephyrex.lib.Environment import env
 
@@ -43,17 +50,32 @@ class Plan:
         return self.limits.get(name, 0)
 
 
+# Whether buyer ``user_id`` may buy units for ``subject_id``:
+# (user_id, subject_id, model_registry) -> bool.
+SubjectCheck = Callable[[str, str, Any], bool]
+
+
 @dataclass(frozen=True)
 class Product:
-    """Something sold once: a successful payment for it grants ``plan`` for good."""
+    """Something sold once: a successful payment for it grants ``plan`` for
+    good, or, with no plan, buys units the app counts."""
 
     id: str
-    plan: str
-    # Decimal major units, e.g. "19.00".
+    # The plan it grants; None for a product that sells units.
+    plan: Optional[str]
+    # Decimal major units, e.g. "19.00": the price of one unit.
     amount: str
     # ISO 4217, e.g. "USD".
     currency: str
     description: str
+    # How many units one purchase may buy; a plan is bought one at a time.
+    max_quantity: int = 1
+    # Units bought for a subject (a group, a project) need it named, and
+    # this check passed, at purchase; None sells them for nothing in
+    # particular.
+    authorize_subject: Optional[SubjectCheck] = field(
+        default=None, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         try:
@@ -64,6 +86,16 @@ class Product:
             raise ValueError(f"Product {self.id!r} needs a positive decimal amount")
         if len(self.currency) != 3 or not self.currency.isalpha():
             raise ValueError(f"Product {self.id!r} needs an ISO 4217 currency code")
+        if self.max_quantity < 1:
+            raise ValueError(f"Product {self.id!r} needs a max_quantity of at least 1")
+        if self.plan is not None and self.max_quantity != 1:
+            raise ValueError(
+                f"Product {self.id!r} grants a plan, so sells one at a time"
+            )
+        if self.plan is not None and self.authorize_subject is not None:
+            raise ValueError(
+                f"Product {self.id!r} grants a plan to its buyer, not a subject"
+            )
 
 
 PLANS: Dict[str, Plan] = {}
@@ -80,9 +112,9 @@ def register_plan(plan: Plan) -> None:
 
 
 def register_product(product: Product) -> None:
-    """Sell ``product``. Its plan must already be registered, and a product id
-    registered twice differently is a programming error."""
-    if product.plan not in PLANS:
+    """Sell ``product``. Its plan, if it names one, must already be registered,
+    and a product id registered twice differently is a programming error."""
+    if product.plan is not None and product.plan not in PLANS:
         raise ValueError(
             f"Product {product.id!r} buys unregistered plan {product.plan!r}"
         )
@@ -93,9 +125,12 @@ def register_product(product: Product) -> None:
 
 
 def plan_bought_with(product_id: Optional[str]) -> Optional[Plan]:
-    """The plan a product buys, if ``product_id`` names a registered product."""
+    """The plan a product buys, if ``product_id`` names a registered product
+    that grants one."""
     product = PRODUCTS.get(product_id or "")
-    return None if product is None else PLANS.get(product.plan)
+    if product is None or product.plan is None:
+        return None
+    return PLANS.get(product.plan)
 
 
 def default_plan() -> Plan:
