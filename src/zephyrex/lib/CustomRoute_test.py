@@ -1046,3 +1046,116 @@ def test_registered_route_openapi_builds_and_treats_request_as_the_request():
     documented = [p["name"] for p in operation.get("parameters", [])]
     assert "request" not in documented
     assert "requestBody" not in operation
+
+
+# A raw_body route may declare a larger body cap than the app's global one
+# (BodySizeLimitMiddleware): a file upload, without loosening every other route.
+_GLOBAL_CAP = 100
+_UPLOAD_CAP = 1000
+
+
+class _UploadManager:
+    """An upload route with its own cap, and a raw route without one."""
+
+    def __init__(self, requester_id=None, **_):
+        self.requester_id = requester_id
+
+    @custom_route(
+        method="PUT",
+        path="/upload",
+        output_model=FetchOut,
+        authentication_type="none",
+        raw_body=True,
+        expose_in=(ExposeIn.REST,),
+        max_body_bytes=_UPLOAD_CAP,
+    )
+    async def upload(self, request):
+        from zephyrex.lib.RequestBody import capped_body
+
+        body = await capped_body(request, _UPLOAD_CAP, "Upload too large")
+        return FetchOut(items=[str(len(body))])
+
+    @custom_route(
+        method="PUT",
+        path="/plain",
+        output_model=FetchOut,
+        authentication_type="none",
+        raw_body=True,
+        expose_in=(ExposeIn.REST,),
+    )
+    async def plain(self, request):
+        return FetchOut(items=[str(len(await request.body()))])
+
+
+def _upload_client():
+    from fastapi import APIRouter, FastAPI
+    from fastapi.testclient import TestClient
+
+    from zephyrex.lib.InboundSecurity import BodySizeLimitMiddleware
+
+    router = APIRouter()
+    register_custom_routes(router, _UploadManager)
+    app = FastAPI()
+    app.include_router(router)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=_GLOBAL_CAP)
+    return TestClient(app)
+
+
+def test_a_route_takes_a_body_past_the_global_cap_up_to_its_own():
+    client = _upload_client()
+    taken = client.put("/upload", content=b"x" * 500)
+    assert taken.status_code == 200, taken.text
+    assert taken.json() == {"items": ["500"]}
+    assert client.put("/upload", content=b"x" * (_UPLOAD_CAP + 1)).status_code == 413
+    # Every other route keeps the global cap.
+    assert client.put("/plain", content=b"x" * 500).status_code == 413
+
+
+def test_the_route_cap_holds_for_a_body_sent_without_a_length():
+    client = _upload_client()
+
+    def chunks(total):
+        for _ in range(total // 50):
+            yield b"x" * 50
+
+    assert client.put("/upload", content=chunks(500)).status_code == 200
+    assert client.put("/upload", content=chunks(_UPLOAD_CAP + 50)).status_code == 413
+    assert client.put("/plain", content=chunks(500)).status_code == 413
+
+
+@pytest.mark.parametrize(
+    "options", [{"raw_body": False, "input_model": PromoteIn}, {"max_body_bytes": 0}]
+)
+def test_a_body_cap_is_a_positive_size_on_a_raw_body_route(options):
+    settings = {"raw_body": True, "max_body_bytes": _UPLOAD_CAP, **options}
+    with pytest.raises(ValueError, match="max_body_bytes"):
+
+        @custom_route(
+            method="PUT",
+            path="/upload",
+            output_model=FetchOut,
+            expose_in=(ExposeIn.REST,),
+            **settings,
+        )
+        def bad(self, request):
+            return None
+
+
+@pytest.mark.parametrize(
+    "path", ["/upload", "/api/upload"], ids=["proxy-stripped", "full-path"]
+)
+def test_the_route_cap_is_found_under_a_root_path(path):
+    """An app served under a root path (a proxy forwarding /api/... to it) is
+    sent the path with or without the prefix; either finds the route's cap."""
+    from fastapi import APIRouter, FastAPI
+    from fastapi.testclient import TestClient
+
+    from zephyrex.lib.InboundSecurity import BodySizeLimitMiddleware
+
+    router = APIRouter()
+    register_custom_routes(router, _UploadManager)
+    app = FastAPI(root_path="/api")
+    app.include_router(router)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=_GLOBAL_CAP)
+    taken = TestClient(app).put(path, content=b"x" * 500)
+    assert taken.status_code == 200, taken.text

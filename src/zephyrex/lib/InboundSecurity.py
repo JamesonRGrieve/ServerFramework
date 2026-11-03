@@ -93,6 +93,7 @@ def _peer_is_trusted_proxy(peer_host: str | None) -> bool:
 
 
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.RequestBody import route_body_limit
 
 __all__ = [
     "DEFAULT_AUTH_RATE_LIMIT",
@@ -269,6 +270,10 @@ class BodySizeLimitMiddleware:
     is the escape hatch for routes that intentionally stream very large
     objects (object-storage providers, federation mirrors). The default
     is ``DEFAULT_MAX_BODY_BYTES``.
+
+    A route that declares a larger cap (``@custom_route(max_body_bytes=)``,
+    a file upload) is held to its own instead, looked up only for a body
+    that passes the global cap, so every other route keeps it.
     """
 
     def __init__(self, app: Any, max_bytes: int | None = None) -> None:
@@ -292,31 +297,49 @@ class BodySizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        max_bytes = self.max_bytes
+        global_cap = self.max_bytes
+        # The cap this request is held to: the global one, raised for a route
+        # that declares more, looked up once and only past the global cap.
+        allowed: dict[str, int] = {}
+
+        def cap() -> int:
+            if "bytes" not in allowed:
+                declared_by_route = route_body_limit(scope) or 0
+                allowed["bytes"] = max(global_cap, declared_by_route)
+            return allowed["bytes"]
+
         for raw_name, raw_value in scope.get("headers") or []:
             if raw_name.decode("latin-1").lower() == "content-length":
                 try:
                     declared = int(raw_value.decode("latin-1"))
                 except ValueError:
                     declared = -1
-                if declared > max_bytes:
+                if declared > global_cap and declared > cap():
                     await self._send_413(send)
                     return
                 break
 
-        running = {"total": 0}
+        running = {"total": 0, "refused": False}
 
         async def receive_wrapper():
             message = await receive()
             if message.get("type") == "http.request":
                 body = message.get("body") or b""
                 running["total"] += len(body)
-                if running["total"] > max_bytes:
-                    await self._send_413(send)
+                if running["total"] > global_cap and running["total"] > cap():
+                    if not running["refused"]:
+                        running["refused"] = True
+                        await self._send_413(send)
                     return {"type": "http.disconnect"}
             return message
 
-        await self.app(scope, receive_wrapper, send)
+        async def send_wrapper(message):
+            # Once refused mid-stream, the 413 is the response: what the app
+            # sends after its read fails (an error page) would be a second.
+            if not running["refused"]:
+                await send(message)
+
+        await self.app(scope, receive_wrapper, send_wrapper)
 
     @staticmethod
     async def _send_413(send) -> None:

@@ -41,6 +41,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from zephyrex.lib.InboundSecurity import carry_rate_limit
 from zephyrex.lib.Preconditions import IF_MATCH_HEADER, expect_route_version
+from zephyrex.lib.RequestBody import ROUTE_BODY_LIMIT_ATTRIBUTE
 from zephyrex.pydantic2.fastapi.resource import (
     create_manager_factory,
     handle_resource_operation_error,
@@ -106,6 +107,10 @@ class CustomRouteSpec:
     # message, a file): it has no ``input_model``, and the method reads the
     # body from its ``request`` itself, bounding it as it reads.
     raw_body: bool = False
+    # A raw_body route that takes bodies larger than the app's global cap (a
+    # file upload): the most it accepts. BodySizeLimitMiddleware lets this
+    # route's requests through up to it; the method reads with capped_body.
+    max_body_bytes: Optional[int] = None
 
     @property
     def auth_type(self) -> AuthType:
@@ -127,13 +132,15 @@ def custom_route(
     description: Optional[str] | None = None,
     response_class: Optional[Type[Response]] = None,
     raw_body: bool = False,
+    max_body_bytes: Optional[int] = None,
 ) -> Callable:
     """Decorator: tag a method with its route/SDK/GraphQL contract.
 
     A route answers with an ``output_model`` body, or, REST only, with an
     instance of ``response_class`` the method builds itself. A ``raw_body``
     write route (REST only, no ``input_model``) takes a body that is not
-    JSON, which the method reads from its ``request``.
+    JSON, which the method reads from its ``request``. A raw_body route may
+    declare ``max_body_bytes``, a cap above the app's global one (an upload).
     """
 
     def deco(func):
@@ -150,7 +157,15 @@ def custom_route(
             description=description,
             response_class=response_class,
             raw_body=raw_body,
+            max_body_bytes=max_body_bytes,
         )
+        if spec.max_body_bytes is not None and (
+            not spec.raw_body or spec.max_body_bytes <= 0
+        ):
+            raise ValueError(
+                f"@custom_route on {func.__qualname__}: max_body_bytes is a "
+                f"positive size, on a raw_body route"
+            )
         if spec.raw_body:
             if (
                 spec.method not in _BODY_METHODS
@@ -436,6 +451,8 @@ def register_custom_routes(router, manager_cls) -> int:
             continue
 
         endpoint = _make_rest_endpoint(manager_cls, method_name, spec)
+        if spec.max_body_bytes is not None:
+            setattr(endpoint, ROUTE_BODY_LIMIT_ATTRIBUTE, spec.max_body_bytes)
         route_method = getattr(router, spec.method.lower())
         options: Dict[str, Any] = {}
         if spec.response_class is not None:
