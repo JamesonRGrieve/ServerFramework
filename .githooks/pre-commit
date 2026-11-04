@@ -2,15 +2,37 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Pre-commit gate — blocks commit on any regression.
 # Install: git config core.hooksPath .githooks
+#
+# The suite and the ratchet run on the working tree, not on a snapshot of the
+# index: the package is installed editable from this tree's src/, and several
+# sessions may share the tree, so the hook never moves anyone's unstaged work
+# aside. It refuses instead to commit a file whose staged content differs from
+# the content it would test.
 set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
+cd "$REPO"
 VENV_PYTHON="$REPO/.venv/bin/python"
 [ -x "$VENV_PYTHON" ] || VENV_PYTHON=python3
 # The whole run, kept so a failure can be read after the fact.
 SUITE_LOG="$(git rev-parse --absolute-git-dir)/pre-commit-last.log"
 # Lines of the suite's own summary echoed when it passes.
 SUMMARY_LINES=3
+RATCHET_BASELINE=".ratchet-baseline.json"
+
+# A file staged with more edits left unstaged would be tested as the working
+# tree has it and committed as the index has it. (Git points GIT_INDEX_FILE
+# at the index being committed, so these diffs compare against that.)
+partially_staged=$(comm -12 \
+  <(git diff --cached --name-only --no-renames | sort) \
+  <(git diff --name-only --no-renames | sort))
+if [ -n "$partially_staged" ]; then
+  echo "$partially_staged" | sed 's/^/  /'
+  echo "[pre-commit] FAIL: these files have unstaged changes beyond what is staged;"
+  echo "[pre-commit]       the gate would test content this commit does not hold."
+  echo "[pre-commit]       Stage them fully (or set the extra edits aside) and commit again."
+  exit 1
+fi
 
 echo "[pre-commit] Running test suite..."
 # Every test path pytest.ini names (the package, the SDK, scripts/).
@@ -23,9 +45,31 @@ fi
 tail -n "$SUMMARY_LINES" "$SUITE_LOG"
 
 echo "[pre-commit] Running ratchet checks..."
+baseline_before=$(git hash-object "$RATCHET_BASELINE")
 if ! "$VENV_PYTHON" scripts/ratchet-check.py; then
   echo "[pre-commit] FAIL: ratchet regression detected"
   exit 1
+fi
+
+# An improvement moved the baseline: it belongs in this commit, or the
+# ratchet never moves forward.
+if [ "$(git hash-object "$RATCHET_BASELINE")" != "$baseline_before" ]; then
+  case "$(basename "${GIT_INDEX_FILE:-index}")" in
+    index | index.lock)
+      git add -- "$RATCHET_BASELINE"
+      echo "[pre-commit] Staged the improved $RATCHET_BASELINE"
+      ;;
+    *)
+      # `git commit -- <paths>` commits a temporary index; staging into it
+      # would leave the real index holding the old baseline, which the next
+      # commit would then put back.
+      echo "[pre-commit] FAIL: the ratchet improved $RATCHET_BASELINE, and a commit"
+      echo "[pre-commit]       with a pathspec cannot take it. Stage your changes and it,"
+      echo "[pre-commit]       then commit without paths:"
+      echo "[pre-commit]       git add -- $RATCHET_BASELINE <paths> && git commit"
+      exit 1
+      ;;
+  esac
 fi
 
 echo "[pre-commit] All checks passed."

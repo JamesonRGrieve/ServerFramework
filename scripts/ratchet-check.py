@@ -28,6 +28,29 @@ IGNORES = []
 COLLECT_TIMEOUT_SECONDS = 600
 MYPY_TIMEOUT_SECONDS = 300
 BLACK_TIMEOUT_SECONDS = 60
+# The exit statuses mypy and black give a finished check: 0 found nothing,
+# 1 found something. Anything else (black's 123 for a file it cannot parse,
+# mypy's 2 for a crash) is the tool failing, and so is a 1 that found nothing
+# (``python -m mypy`` without mypy installed exits 1 with empty output).
+STATUS_CLEAN = 0
+STATUS_FOUND = 1
+# How much of a failed tool's output to quote.
+FAILURE_OUTPUT_CHARS = 500
+
+
+class ToolFailed(RuntimeError):
+    """A checker did not run to completion, so its count measures nothing."""
+
+
+def counted(tool: str, result: subprocess.CompletedProcess[str], count: int) -> int:
+    """``count`` findings from ``result``, if its exit status agrees: a clean
+    status with none, or a found status with some."""
+    if (result.returncode, count > 0) in ((STATUS_CLEAN, False), (STATUS_FOUND, True)):
+        return count
+    output = (result.stderr or result.stdout or "").strip()[-FAILURE_OUTPUT_CHARS:]
+    raise ToolFailed(
+        f"{tool} exited {result.returncode} with {count} findings: {output}"
+    )
 
 
 def _load_baseline() -> dict:
@@ -96,7 +119,8 @@ def _count_mypy_errors() -> int:
         cwd=str(REPO_ROOT),
         env={**os.environ, "MYPYPATH": str(REPO_ROOT / "src")},
     )
-    return sum(1 for line in result.stdout.splitlines() if "error:" in line)
+    errors = sum(1 for line in result.stdout.splitlines() if "error:" in line)
+    return counted("mypy", result, errors)
 
 
 def _count_black_violations() -> int:
@@ -108,7 +132,10 @@ def _count_black_violations() -> int:
         text=True,
         timeout=BLACK_TIMEOUT_SECONDS,
     )
-    return sum(1 for line in result.stderr.splitlines() if "would reformat" in line)
+    violations = sum(
+        1 for line in result.stderr.splitlines() if "would reformat" in line
+    )
+    return counted("black", result, violations)
 
 
 CHECKS: list[tuple[str, Callable[[], int], str, str]] = [
