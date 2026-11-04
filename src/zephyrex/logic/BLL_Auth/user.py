@@ -59,6 +59,7 @@ from zephyrex.logic.BLL_Auth.password_policy import (
     PASSWORD_POLICY,
     PasswordPolicy,
     enforce_password_policy,
+    password_matches,
 )
 from zephyrex.lib.SingleUseToken import (
     issue_single_use_token,
@@ -1222,12 +1223,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         if not credentials or not credentials[0]["password_hash"]:
             return False
 
-        try:
-            return bcrypt.checkpw(
-                password.encode(), credentials[0]["password_hash"].encode()
-            )
-        except Exception:
-            return False
+        return password_matches(password, credentials[0]["password_hash"])
 
     def get_metadata(self) -> Dict[str, str]:
         """Get all metadata for the target user (via metadata extension)."""
@@ -1484,7 +1480,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             UserManager._lockout_tracker.record_failure(lockout_key, "password_login")
             # Burn the same bcrypt time as a real password check to
             # prevent timing-based username enumeration.
-            bcrypt.checkpw((login_model.password or "x").encode(), _DUMMY_BCRYPT_HASH)
+            password_matches(login_model.password or "x", _DUMMY_BCRYPT_HASH)
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         user = user[0]
@@ -1517,12 +1513,22 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         model_registry.DB.manager.Base
                     ).password_changed_at
                     == None,
+                    UserCredentialModel.DB(model_registry.DB.manager.Base).deleted_at
+                    == None,
                 ],
+                allow_nonexistent=True,
+            )
+            # A user with no password (one created by single sign-on) is
+            # checked against the dummy hash, so the refusal takes as long.
+            current_hash = credential["password_hash"] if credential else None
+            password_ok = (
+                password_matches(
+                    login_model.password, current_hash or _DUMMY_BCRYPT_HASH
+                )
+                and current_hash is not None
             )
 
-            if not bcrypt.checkpw(
-                login_model.password.encode(), credential["password_hash"].encode()
-            ):
+            if not password_ok:
                 # Check if there is an older password that matches
                 Credential = UserCredentialModel.DB(model_registry.DB.manager.Base)
                 with model_registry.DB.manager._get_db_session(
@@ -1538,9 +1544,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         .first()
                     )
 
-                if old_credentials and bcrypt.checkpw(
-                    login_model.password.encode(),
-                    old_credentials.password_hash.encode(),
+                if old_credentials and password_matches(
+                    login_model.password, old_credentials.password_hash
                 ):
                     logger.info(
                         "Login attempt used a previously valid password "
@@ -2342,7 +2347,7 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
         )
 
         # Verify current password
-        if not bcrypt.checkpw(current_password.encode(), password_hash.encode()):
+        if not password_matches(current_password, password_hash):
             raise HTTPException(status_code=401, detail="Current password is incorrect")
 
         # Mark the current password as changed

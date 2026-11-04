@@ -4099,3 +4099,87 @@ class TestADeletedAccountsTokensAreVoid:
         assert unverified.value.status_code == 401
         assert server.get("/v1/user", headers=bearer).status_code == 401
         assert server.get("/v1/team", headers=bearer).status_code == 401
+
+
+def _login(model_registry: Any, identifier: str, password: str) -> Dict[str, Any]:
+    """A password login from an address no other test shares."""
+    return UserManager.login(
+        {"email": identifier, "password": password},
+        ip_address=f"login-probe-{uuid.uuid4().hex}",
+        model_registry=model_registry,
+        response=Response(),
+    )
+
+
+class TestOverlongPasswords:
+    """bcrypt 5 raises on a password past 72 bytes. Every password input
+    reads one as a wrong password instead of a 500 (#254)."""
+
+    OVERLONG = "a1" + "x" * 98  # 100 bytes
+
+    def test_an_overlong_password_is_invalid_credentials(self, server, model_registry):
+        user = create_user(server)
+        for identifier in (user.email, generate_test_email("nobody")):
+            with pytest.raises(HTTPException) as refused:
+                _login(model_registry, identifier, self.OVERLONG)
+            assert refused.value.status_code == 401
+            assert refused.value.detail == "Invalid credentials"
+
+    def test_overlong_attempts_count_toward_the_lockout(self, server, model_registry):
+        user = create_user(server)
+        address = f"overlong-probe-{uuid.uuid4().hex}"
+        tracker = UserManager._lockout_tracker
+        try:
+            for _ in range(tracker.policy.failures_per_window):
+                with pytest.raises(HTTPException) as refused:
+                    UserManager.login(
+                        {"email": user.email, "password": self.OVERLONG},
+                        ip_address=address,
+                        model_registry=model_registry,
+                        response=Response(),
+                    )
+                assert refused.value.status_code == 401
+            assert tracker.is_locked(address, "password_login")
+        finally:
+            tracker.clear(address, "password_login")
+
+    def test_a_user_without_a_password_gets_invalid_credentials(self, model_registry):
+        email = generate_test_email("passwordless")
+        UserModel.DB(model_registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"), model_registry=model_registry, email=email
+        )
+        with pytest.raises(HTTPException) as refused:
+            _login(model_registry, email, TEST_PASSWORD)
+        assert refused.value.status_code == 401
+        assert refused.value.detail == "Invalid credentials"
+
+    def test_change_password_refuses_an_overlong_password(self, server, model_registry):
+        user = create_user(server)
+        manager = UserCredentialManager(
+            requester_id=user.id, model_registry=model_registry
+        )
+        with pytest.raises(HTTPException) as wrong:
+            manager.change_password(
+                user_id=user.id,
+                current_password=self.OVERLONG,
+                new_password="Changed-1234",
+            )
+        assert wrong.value.status_code == 401
+        with pytest.raises(HTTPException) as refused:
+            manager.change_password(
+                user_id=user.id,
+                current_password=TEST_PASSWORD,
+                new_password=self.OVERLONG,
+            )
+        assert refused.value.status_code == 422
+        assert "max_bytes" in refused.value.detail["failed"]
+        signed_in = _login(model_registry, user.email, TEST_PASSWORD)
+        assert signed_in["user"]["id"] == str(user.id)
+
+    def test_verify_password_reads_an_overlong_password_as_wrong(
+        self, server, model_registry
+    ):
+        user = create_user(server)
+        manager = UserManager(requester_id=user.id, model_registry=model_registry)
+        assert manager.verify_password(user.id, self.OVERLONG) is False
+        assert manager.verify_password(user.id, TEST_PASSWORD) is True

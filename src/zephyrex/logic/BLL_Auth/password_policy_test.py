@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The password rule: which passwords break which rules."""
 
+import bcrypt
 import pytest
 from fastapi import HTTPException
 
@@ -9,6 +10,7 @@ from zephyrex.logic.BLL_Auth.password_policy import (
     PASSWORD_POLICY,
     enforce_password_policy,
     failed_rules,
+    password_matches,
 )
 
 
@@ -55,3 +57,20 @@ def test_enforce_names_the_broken_rules():
         "message": "Password does not meet the policy",
         "failed": ["min_length", "require_digit"],
     }
+
+
+def test_password_matches_its_hash_only():
+    hashed = bcrypt.hashpw(b"correcthorse9", bcrypt.gensalt(rounds=4))
+    assert password_matches("correcthorse9", hashed) is True
+    assert password_matches("correcthorse9", hashed.decode()) is True
+    assert password_matches("wronghorse9", hashed) is False
+
+
+def test_an_overlong_password_matches_nothing_rather_than_raising():
+    """bcrypt 5 raises ValueError past 72 bytes; the check reads it as a
+    wrong password, even one whose first 72 bytes are the right one."""
+    password = "a1" + "x" * 70
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=4))
+    assert password_matches(password, hashed) is True
+    assert password_matches(password + "x", hashed) is False
+    assert password_matches("é" * 37, hashed) is False  # 74 bytes, 37 characters
