@@ -9,11 +9,18 @@ refreshed or cancelled. Over REST the table is read-only (get, list,
 search), with routes that act on the provider:
 
 - ``POST /v1/tuning_job/submit``: check and upload the dataset(s) to an
-  account the caller can see, start a job, and record it;
-- ``POST /v1/tuning_job/{job_id}/refresh`` and ``/cancel``;
+  account the caller may spend, start a job, and record it;
+- ``POST /v1/tuning_job/{job_id}/refresh`` and ``/cancel``, for a caller
+  who may edit the job;
 - ``GET /v1/tuning_job/{job_id}/events`` and ``/checkpoints``;
 - ``GET /v1/tuning_job/account/{provider_instance_id}/jobs``: the
-  account's jobs as the provider lists them.
+  account's jobs as the provider lists them, for a caller who may spend it.
+
+Seeing an account is not leave to spend it: submitting a job on it, or
+listing every job on it, takes edit or execute (use) access to the
+provider instance. Seeing a job is not leave to change it: a refresh or
+cancel takes edit access to the job, checked before the provider is
+called.
 """
 
 import logging
@@ -34,6 +41,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
+from zephyrex.database.StaticPermissions import PermissionType, user_has_permission
 from zephyrex.extensions.ai_tuning.TuningProvider import (
     AbstractTuningProvider,
     checked_dataset,
@@ -62,6 +70,7 @@ from zephyrex.logic.AbstractLogicManager.ownership import (
     OWNERSHIP_FIELDS,
     each_created,
     owned_by,
+    server_side,
     without,
 )
 from zephyrex.logic.BLL_Auth import UserModel
@@ -255,14 +264,56 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
         """An update never moves a job to another owner or team."""
         return super().update(id, **without(kwargs, OWNERSHIP_FIELDS))
 
+    def _holds(self, record_cls: Any, record_id: str, *levels: PermissionType) -> bool:
+        """Whether the requester holds any of ``levels`` on the record."""
+        if server_side(self.requester.id):
+            return True
+        base = self.model_registry.DB.manager.Base
+        session = self.model_registry.DB.session()
+        try:
+            return any(
+                user_has_permission(
+                    self.requester.id,
+                    record_cls.DB(base),
+                    record_id,
+                    session,
+                    level,
+                    declarative_base=base,
+                )
+                for level in levels
+            )
+        finally:
+            session.close()
+
+    def editable(self, job_id: str) -> Any:
+        """The job ``job_id`` (404 when the requester cannot see it), once
+        the requester may edit it (403 otherwise)."""
+        record = self.get(id=job_id)
+        if not self._holds(TuningJobModel, job_id, PermissionType.EDIT):
+            raise HTTPException(
+                status_code=403, detail="Not authorized to change this job"
+            )
+        return record
+
     def account(
-        self, provider_instance_id: str
+        self, provider_instance_id: str, spend: bool = False
     ) -> Tuple[Type[AbstractTuningProvider], ProviderInstanceModel]:
         """The fine-tuning provider and instance for an account the
-        requester can see (404 for one they cannot)."""
+        requester can see (404 for one they cannot). With ``spend``, the
+        requester must also hold edit or execute (use) access to it (403
+        otherwise): seeing an account is not leave to run jobs on it."""
         ProviderInstanceManager(
             model_registry=self.model_registry, requester_id=self.requester.id
         ).get(id=provider_instance_id)
+        if spend and not self._holds(
+            ProviderInstanceModel,
+            provider_instance_id,
+            PermissionType.EDIT,
+            PermissionType.EXECUTE,
+        ):
+            raise HTTPException(
+                status_code=403, detail="Not authorized to use this account"
+            )
         root = env("ROOT_ID")
         instance = ProviderInstanceModel.model_validate(
             ProviderInstanceManager(
@@ -312,7 +363,7 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
             if validation_data is None
             else checked_dataset(validation_data, "validation_data")
         )
-        provider, instance = self.account(provider_instance_id)
+        provider, instance = self.account(provider_instance_id, spend=True)
         uploaded = await provider.upload_dataset(instance, training, "training.jsonl")
         validation_file_id = None
         if validation is not None:
@@ -345,14 +396,14 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
         )
 
     async def refresh(self, job_id: str) -> Any:
-        record = self.get(id=job_id)
+        record = self.editable(job_id)
         provider, instance = self.account(record.provider_instance_id)
         return self.mirror(
             record, await provider.get_job(instance, record.provider_job_id)
         )
 
     async def cancel(self, job_id: str) -> Any:
-        record = self.get(id=job_id)
+        record = self.editable(job_id)
         provider, instance = self.account(record.provider_instance_id)
         return self.mirror(
             record, await provider.cancel_job(instance, record.provider_job_id)
@@ -381,7 +432,7 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
     async def provider_jobs(
         self, provider_instance_id: str, after: Optional[str], limit: int
     ) -> ProviderJobsPage:
-        provider, instance = self.account(provider_instance_id)
+        provider, instance = self.account(provider_instance_id, spend=True)
         page = await provider.list_jobs(instance, after, checked_limit(limit))
         return ProviderJobsPage.model_validate(page)
 

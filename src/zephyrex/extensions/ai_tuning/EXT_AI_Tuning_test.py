@@ -16,7 +16,11 @@ import pytest
 from fastapi import HTTPException
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.extensions.ai_tuning.BLL_AI_Tuning import TuningJobManager
+from zephyrex.extensions.acl_rbac.BLL_ACL import PermissionManager
+from zephyrex.extensions.ai_tuning.BLL_AI_Tuning import (
+    TuningJobManager,
+    TuningJobModel,
+)
 from zephyrex.extensions.ai_tuning.EXT_AI_Tuning import EXT_AI_Tuning
 from zephyrex.extensions.ai_tuning.PRV_OpenAI_Tuning import PRV_OpenAI_Tuning
 from zephyrex.extensions.ai_tuning.TuningProvider import (
@@ -650,6 +654,73 @@ class TestTuning(ExtensionServerMixin):
         events = server.get(f"/v1/tuning_job/{job['id']}/events", headers=auth(admin_b))
         assert events.status_code == 404
         assert len(upstream.requests) == made
+
+    def grant(self, server, model, resource_id: str, user, **levels: bool) -> None:
+        """ROOT grants ``user`` the ``levels`` on one record."""
+        registry = server.app.state.model_registry
+        table = model.DB(registry.DB.manager.Base).__tablename__
+        PermissionManager(model_registry=registry, requester_id=env("ROOT_ID")).create(
+            resource_type=table, resource_id=resource_id, user_id=user.id, **levels
+        )
+
+    def test_a_viewer_changes_and_spends_nothing(
+        self, server, openai, admin_a, admin_b
+    ):
+        upstream, account = openai
+        job = self.submit(server, admin_a, account["id"]).json()
+        self.grant(server, TuningJobModel, job["id"], admin_b, can_view=True)
+        self.grant(server, ProviderInstanceModel, account["id"], admin_b, can_view=True)
+        made = len(upstream.requests)
+
+        # Seeing the job still shows it and its provider-side history.
+        seen = server.get(f"/v1/tuning_job/{job['id']}", headers=auth(admin_b))
+        assert seen.status_code == 200, seen.text
+        events = server.get(f"/v1/tuning_job/{job['id']}/events", headers=auth(admin_b))
+        assert events.status_code == 200, events.text
+        made += 1
+
+        # Changing it is refused before the provider is reached.
+        for action in ("cancel", "refresh"):
+            response = server.post(
+                f"/v1/tuning_job/{job['id']}/{action}", json={}, headers=auth(admin_b)
+            )
+            assert response.status_code == 403, response.text
+        # So is spending, or listing, the account it can only see.
+        assert self.submit(server, admin_b, account["id"]).status_code == 403
+        listed = server.get(
+            f"/v1/tuning_job/account/{account['id']}/jobs", headers=auth(admin_b)
+        )
+        assert listed.status_code == 403, listed.text
+        assert len(upstream.requests) == made
+        stored = server.get(f"/v1/tuning_job/{job['id']}", headers=auth(admin_a))
+        assert stored.json()["tuning_job"]["status"] == "validating_files"
+
+    def test_use_of_an_account_lets_a_user_train_on_it(
+        self, server, openai, admin_a, admin_b
+    ):
+        upstream, account = openai
+        self.grant(
+            server,
+            ProviderInstanceModel,
+            account["id"],
+            admin_b,
+            can_view=True,
+            can_execute=True,
+        )
+        response = self.submit(server, admin_b, account["id"])
+        assert response.status_code == 200, response.text
+        assert response.json()["user_id"] == admin_b.id
+        listed = server.get(
+            f"/v1/tuning_job/account/{account['id']}/jobs", headers=auth(admin_b)
+        )
+        assert listed.status_code == 200, listed.text
+        # The job is the user's own, so they may cancel it.
+        cancelled = server.post(
+            f"/v1/tuning_job/{response.json()['id']}/cancel",
+            json={},
+            headers=auth(admin_b),
+        )
+        assert cancelled.status_code == 200, cancelled.text
 
     def test_the_table_is_read_only_over_rest(self, server):
         paths = server.app.openapi()["paths"]

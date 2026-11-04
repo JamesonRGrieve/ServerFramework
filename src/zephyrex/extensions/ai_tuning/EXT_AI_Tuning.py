@@ -16,7 +16,8 @@ API key and that name as its model (the instance's ``model_name``); the
 checkpoint's ``model`` works the same way.
 
 Abilities act for the user named by ``requester_id``, on the accounts
-that user can see and the jobs that user owns.
+that user may use and the jobs that user may see (or, to refresh or
+cancel one, edit).
 """
 
 from typing import Any, ClassVar, Dict, List, Optional, Set
@@ -169,7 +170,7 @@ class EXT_AI_Tuning(AbstractStaticExtension):
         after: Optional[str] = None,
         limit: int = 20,
     ) -> Dict[str, Any]:
-        """Every job on an account the user can see, as the provider lists
+        """Every job on an account the user may use, as the provider lists
         them, jobs not made here included."""
         return _row(
             await cls.jobs(requester_id).provider_jobs(
