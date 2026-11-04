@@ -8,7 +8,7 @@ from fastapi import HTTPException, Header, Request, Response, status
 
 from pydantic import Field, ValidationError, model_validator
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 import jwt
 from zephyrex.lib.Environment import env, extract_base_domain
@@ -700,21 +700,21 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 detail=f"Only root may set {', '.join(administrative)}",
             )
 
-        # The stored email is the normalized one: login and registration
-        # match it so, and the database holds it unique among live users.
+        # The stored email and username are the normalized ones: login
+        # matches them so. Neither may be another live user's email or
+        # username, or login would match two users.
         if kwargs.get("email"):
             kwargs["email"] = UserManager._normalize_identifier(kwargs["email"])
-            UserDB = self.DB
-            if UserDB.exists(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                filters=[
-                    UserDB.email == kwargs["email"],
-                    UserDB.id != id,
-                    UserDB.deleted_at.is_(None),
-                ],
-            ):
+            if UserManager._identifier_taken(kwargs["email"], self.model_registry, id):
                 raise HTTPException(status_code=409, detail="Email already in use")
+        if isinstance(kwargs.get("username"), str):
+            kwargs["username"] = (
+                UserManager._normalize_identifier(kwargs["username"]) or None
+            )
+            if kwargs["username"] and UserManager._identifier_taken(
+                kwargs["username"], self.model_registry, id
+            ):
+                raise HTTPException(status_code=409, detail="Username already in use")
 
         # Extract metadata fields (non-model fields)
         metadata_fields = {}
@@ -1018,6 +1018,41 @@ class UserManager(AbstractBLLManager, RouterMixin):
         import unicodedata
 
         return unicodedata.normalize("NFKC", identifier).lower().strip()
+
+    @staticmethod
+    def _signs_in_as(UserDB: Any, identifier: str) -> Any:
+        """The filter for users whom the normalized ``identifier`` signs in
+        as: their email or their username. Emails and usernames are one
+        namespace because login matches either. A username compares
+        lowercased, so one stored as entered, before usernames were
+        normalized on write, still matches."""
+        return or_(
+            UserDB.email == identifier,
+            func.lower(UserDB.username) == identifier,
+        )
+
+    @staticmethod
+    def _identifier_taken(
+        identifier: str, model_registry: Any, exclude_user_id: Optional[str] = None
+    ) -> bool:
+        """Whether a live user other than ``exclude_user_id`` signs in by the
+        normalized ``identifier``. Register and update refuse such an email or
+        username: a second holder would make login match two users and so
+        lock out the first. A deleted user's identifiers are free."""
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        filters = [
+            UserManager._signs_in_as(UserDB, identifier),
+            UserDB.deleted_at.is_(None),
+        ]
+        if exclude_user_id is not None:
+            filters.append(UserDB.id != exclude_user_id)
+        return bool(
+            UserDB.exists(
+                requester_id=env("ROOT_ID"),
+                model_registry=model_registry,
+                filters=filters,
+            )
+        )
 
     @staticmethod
     def user_id_for_verified_email(
@@ -1462,21 +1497,19 @@ class UserManager(AbstractBLLManager, RouterMixin):
         login_model = UserManager.UserLoginModel(**login_data)
         normalized_identifier = UserManager._normalize_identifier(login_model.email)
 
-        # Try to find user by email or username
-        user = UserModel.DB(model_registry.DB.manager.Base).list(
+        # The one live user signing in by this email or username.
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        user = UserDB.list(
             requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             filters=[
-                or_(
-                    UserModel.DB(model_registry.DB.manager.Base).email
-                    == normalized_identifier,
-                    UserModel.DB(model_registry.DB.manager.Base).username
-                    == normalized_identifier,
-                )
+                UserManager._signs_in_as(UserDB, normalized_identifier),
+                UserDB.deleted_at.is_(None),
             ],
         )
         if len(user) != 1:
-            logger.warning("This should never have multiple users!")
+            if user:
+                logger.warning("Login identifier names %s live users", len(user))
             UserManager._lockout_tracker.record_failure(lockout_key, "password_login")
             # Burn the same bcrypt time as a real password check to
             # prevent timing-based username enumeration.
@@ -1492,12 +1525,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         # Check if user account is active
         if not user["active"]:
-            if _lockout_hooks["record_failure"] is not None:
-                _lockout_hooks["record_failure"](user["id"], ip_address, model_registry)
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-
-        # Check if user account was deleted
-        if user["deleted_at"]:
             if _lockout_hooks["record_failure"] is not None:
                 _lockout_hooks["record_failure"](user["id"], ip_address, model_registry)
             raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -1960,6 +1987,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
         if email:
             email = UserManager._normalize_identifier(email)
             registration_data["email"] = email
+        # Stored normalized, as login matches it.
+        if isinstance(registration_data.get("username"), str):
+            registration_data["username"] = (
+                UserManager._normalize_identifier(registration_data["username"]) or None
+            )
 
         # Extract invitation fields
         invitation_code = registration_data.pop("invitation_code", None)
@@ -1978,12 +2010,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 detail={"message": "Validation error", "details": e.errors()},
             )
 
-        # Validation - check if email already exists
-        if UserModel.DB(model_registry.DB.manager.Base).exists(
-            requester_id=root_id,
-            model_registry=model_registry,
-            email=temp_entity.email,
-        ):
+        # The email and username must not be a live user's email or
+        # username: login matches either (``_identifier_taken``).
+        if UserManager._identifier_taken(temp_entity.email, model_registry):
             raise HTTPException(status_code=409, detail="Email already in use")
 
         if not email or not password:
@@ -1994,11 +2023,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
         # account with no credential behind.
         enforce_password_policy(password)
 
-        # Validation - check if username already exists (if provided)
-        if temp_entity.username and UserModel.DB(model_registry.DB.manager.Base).exists(
-            requester_id=root_id,
-            model_registry=model_registry,
-            username=temp_entity.username,
+        if temp_entity.username and UserManager._identifier_taken(
+            temp_entity.username, model_registry
         ):
             raise HTTPException(status_code=409, detail="Username already in use")
 

@@ -4111,6 +4111,130 @@ def _login(model_registry: Any, identifier: str, password: str) -> Dict[str, Any
     )
 
 
+def _soft_delete_user(model_registry: Any, user_id: str) -> None:
+    UserDB = UserModel.DB(model_registry.DB.manager.Base)
+    with model_registry.DB.manager._get_db_session() as session:
+        session.query(UserDB).filter(UserDB.id == user_id).update(
+            {UserDB.deleted_at: datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
+
+
+class TestOneIdentifierNamespace:
+    """Login matches an email or a username, so the two form one namespace
+    of live identifiers: no user may hold another live user's email or
+    username as either (#252), and a deleted user holds none (#253)."""
+
+    PASSWORD = "Namespace-1234"
+
+    def register(self, model_registry: Any, **fields: Any) -> Any:
+        fields.setdefault("email", generate_test_email("namespace"))
+        return UserManager.register(
+            {"password": self.PASSWORD, **fields}, model_registry
+        )
+
+    def test_a_username_cannot_be_set_to_another_users_email(self, model_registry):
+        victim = self.register(model_registry)
+        attacker = self.register(model_registry)
+        manager = UserManager(requester_id=attacker.id, model_registry=model_registry)
+        with pytest.raises(HTTPException) as refused:
+            manager.update(id=attacker.id, username=f" {victim.email.upper()} ")
+        assert refused.value.status_code == 409
+        assert refused.value.detail == "Username already in use"
+        signed_in = _login(model_registry, victim.email, self.PASSWORD)
+        assert signed_in["user"]["id"] == str(victim.id)
+
+    def test_an_email_cannot_be_set_to_another_users_username(self, model_registry):
+        address = generate_test_email("held_as_username")
+        self.register(model_registry, username=address)
+        other = self.register(model_registry)
+        manager = UserManager(requester_id=other.id, model_registry=model_registry)
+        with pytest.raises(HTTPException) as refused:
+            manager.update(id=other.id, email=address.upper())
+        assert refused.value.status_code == 409
+        assert refused.value.detail == "Email already in use"
+
+    def test_registration_refuses_a_username_that_is_a_live_email(self, model_registry):
+        victim = self.register(model_registry)
+        with pytest.raises(HTTPException) as refused:
+            self.register(model_registry, username=victim.email.upper())
+        assert refused.value.status_code == 409
+        assert refused.value.detail == "Username already in use"
+
+    def test_registration_refuses_an_email_that_is_a_live_username(
+        self, model_registry
+    ):
+        address = generate_test_email("taken_as_username")
+        self.register(model_registry, username=address)
+        with pytest.raises(HTTPException) as refused:
+            self.register(model_registry, email=address)
+        assert refused.value.status_code == 409
+        assert refused.value.detail == "Email already in use"
+
+    def test_registration_refuses_a_live_username_in_another_case(self, model_registry):
+        username = f"taken_{uuid.uuid4().hex[:8]}"
+        self.register(model_registry, username=username)
+        with pytest.raises(HTTPException) as refused:
+            self.register(model_registry, username=username.upper())
+        assert refused.value.status_code == 409
+
+    def test_a_username_is_stored_normalized_and_signs_in_in_any_case(
+        self, model_registry
+    ):
+        username = f"Bob_{uuid.uuid4().hex[:8]}"
+        user = self.register(model_registry, username=f"  {username} ")
+        assert _user_row(model_registry, user.id)["username"] == username.lower()
+        signed_in = _login(model_registry, username.upper(), self.PASSWORD)
+        assert signed_in["user"]["id"] == str(user.id)
+
+    def test_an_update_stores_the_username_normalized(self, model_registry):
+        user = self.register(model_registry)
+        username = f"Renamed_{uuid.uuid4().hex[:8]}"
+        UserManager(requester_id=user.id, model_registry=model_registry).update(
+            id=user.id, username=username
+        )
+        assert _user_row(model_registry, user.id)["username"] == username.lower()
+
+    def test_a_username_stored_before_normalization_still_signs_in(
+        self, model_registry
+    ):
+        """Rows written before usernames were normalized keep their case;
+        login compares the username lowercased, so they are not locked out."""
+        user = self.register(model_registry)
+        legacy = f"Legacy_{uuid.uuid4().hex[:8]}"
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        with model_registry.DB.manager._get_db_session() as session:
+            session.query(UserDB).filter(UserDB.id == user.id).update(
+                {UserDB.username: legacy}, synchronize_session=False
+            )
+        signed_in = _login(model_registry, legacy, self.PASSWORD)
+        assert signed_in["user"]["id"] == str(user.id)
+
+    def test_a_deleted_users_email_and_username_are_free(self, model_registry):
+        email = generate_test_email("reused")
+        username = f"reused_{uuid.uuid4().hex[:8]}"
+        gone = self.register(model_registry, email=email, username=username)
+        _soft_delete_user(model_registry, gone.id)
+
+        successor = self.register(model_registry, email=email, username=username)
+        assert successor.id != gone.id
+        for identifier in (email, username):
+            signed_in = _login(model_registry, identifier, self.PASSWORD)
+            assert signed_in["user"]["id"] == str(successor.id)
+
+    def test_a_deleted_user_holding_an_identifier_locks_no_one_out(
+        self, model_registry
+    ):
+        gone = self.register(model_registry)
+        _soft_delete_user(model_registry, gone.id)
+        taker = self.register(model_registry)
+        UserManager(requester_id=taker.id, model_registry=model_registry).update(
+            id=taker.id, username=gone.email
+        )
+        signed_in = _login(model_registry, gone.email, self.PASSWORD)
+        assert signed_in["user"]["id"] == str(taker.id)
+
+
 class TestOverlongPasswords:
     """bcrypt 5 raises on a password past 72 bytes. Every password input
     reads one as a wrong password instead of a 500 (#254)."""
