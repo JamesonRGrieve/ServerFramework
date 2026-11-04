@@ -819,12 +819,25 @@ def _build_list_route(
             raw_qp = (
                 request.get("query_params", {}) if isinstance(request, dict) else {}
             )
+            # An operator filter names a model field; a reserved parameter
+            # (``limit__eq``) or an unknown name is refused here rather than
+            # reaching the manager as a clashing or meaningless argument.
+            filterable_fields = set(target_model.model_fields) - reserved_params
             for raw_key, raw_val in raw_qp.items():
                 if "__" not in raw_key:
                     continue
                 base, op = raw_key.rsplit("__", 1)
                 if op not in _FILTER_OPS:
                     continue
+                if base not in filterable_fields:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": f"Invalid filter field: {raw_key}",
+                            "invalid_fields": [base],
+                            "valid_fields": sorted(filterable_fields),
+                        },
+                    )
                 if base not in search_params:
                     search_params[base] = {}
                 elif not isinstance(search_params[base], dict):

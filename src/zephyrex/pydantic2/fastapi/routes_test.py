@@ -438,3 +438,38 @@ def test_nested_list_filter_cannot_widen_the_parent_scope(two_owners):
 
     assert response.status_code == 200, response.text
     assert [w["id"] for w in response.json()["widgets"]] == [mine.id]
+
+
+# ---------------------------------------------------------------------------
+# LIST operator filters name model fields only (#266)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw_filter",
+    [
+        "limit__eq=5",
+        "offset__gt=1",
+        "include__eq=x",
+        "fields__eq=x",
+        "sort_by__eq=name",
+        "sort_order__eq=asc",
+        "no_such_field__eq=1",
+    ],
+)
+def test_list_refuses_operator_filter_on_a_non_field(raw_filter):
+    """A reserved parameter or unknown name with an operator suffix is a
+    422, never a clashing keyword argument (500) at the manager."""
+    _seed(name="first")
+    response = _client(WidgetManager).get(f"/v1/widget?{raw_filter}")
+
+    assert response.status_code == 422, response.text
+    assert raw_filter.split("=")[0] in response.text
+
+
+def test_list_accepts_operator_filter_on_a_model_field():
+    _seed(name="first")
+    response = _client(WidgetManager).get("/v1/widget?name__eq=first")
+
+    assert response.status_code == 200, response.text
+    assert [w["name"] for w in response.json()["widgets"]] == ["first"]
