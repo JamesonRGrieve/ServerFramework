@@ -146,10 +146,12 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         from zephyrex.logic.BLL_Auth.user_team import UserTeamModel, UserTeamManager
 
         ut_db = UserTeamModel.DB(self.model_registry.DB.manager.Base)
+        # Deleted memberships orphan nothing, and cannot be updated.
         affected = ut_db.list(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             role_id=id,
+            filters=[ut_db.deleted_at.is_(None)],
             return_type="dto",
             override_dto=UserTeamModel,
         )

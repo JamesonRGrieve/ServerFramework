@@ -194,18 +194,46 @@ class TestMakeUserIdGrantValidator:
             validator(UserIdGrantPayload(user_id="whatever", model_registry=None))
         assert "Device-pairing grant payload missing model_registry" in exc.value.detail
 
-    def test_unknown_user_id_raises_not_found_from_get(self, model_registry):
-        # Preserved behavior: ``UserDB.get`` (no allow_nonexistent) raises a 404
-        # HTTPException for a missing row — the ``if user is None`` branch is
-        # not reached. Both pre-consolidation validators did exactly this.
-        validator = make_user_id_grant_validator("Magic-link")
-        with pytest.raises(HTTPException) as exc:
+    def test_unknown_user_id_is_an_invalid_grant(self, model_registry):
+        validator = make_user_id_grant_validator("Device-pairing", subject="Approver")
+        with pytest.raises(InvalidGrantError) as exc:
             validator(
                 UserIdGrantPayload(
                     user_id=str(uuid.uuid4()), model_registry=model_registry
                 )
             )
-        assert exc.value.status_code == 404
+        assert exc.value.status_code == 401
+        assert exc.value.detail == "Approver user no longer exists"
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"deleted_at": datetime(2026, 1, 1, tzinfo=timezone.utc)},
+            {"active": False},
+        ],
+        ids=["deleted", "disabled"],
+    )
+    def test_a_gone_or_disabled_user_is_an_invalid_grant(
+        self, server, model_registry, change
+    ):
+        """An outstanding magic link or device pairing signs no one in once
+        its user is deleted or disabled (#253)."""
+        from zephyrex.testing.factories import create_user
+
+        user = create_user(server)
+        validator = make_user_id_grant_validator("Magic-link")
+        payload = UserIdGrantPayload(user_id=user.id, model_registry=model_registry)
+        assert validator(payload).id == user.id
+
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        with model_registry.DB.manager._get_db_session() as session:
+            session.query(UserDB).filter(UserDB.id == user.id).update(
+                {getattr(UserDB, key): value for key, value in change.items()},
+                synchronize_session=False,
+            )
+        with pytest.raises(InvalidGrantError) as exc:
+            validator(payload)
+        assert exc.value.detail == "Magic-link user no longer exists"
 
 
 # ---------------------------------------------------------------------------

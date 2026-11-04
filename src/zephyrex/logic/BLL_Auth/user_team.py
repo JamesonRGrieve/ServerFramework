@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, ClassVar, Dict, List, Optional, Set, Type, Union
 
 from fastapi import HTTPException
 
 from pydantic import Field
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Preconditions import expect_route_record
 from zephyrex.logic.BLL_Auth.team_authority import TeamAuthority
@@ -120,21 +121,23 @@ class UserTeamModel(
         if Base is None and db_manager:
             Base = db_manager.Base
 
-        record = (
-            db.query(cls.DB(Base))
+        # Only a live membership grants: enabled, not deleted, not expired.
+        UserTeamDB = cls.DB(Base)
+        memberships = (
+            db.query(UserTeamDB)
             .filter(
-                cls.DB(Base).user_id == user_id,
-                cls.DB(Base).team_id == team_id,
+                UserTeamDB.user_id == user_id,
+                UserTeamDB.team_id == team_id,
+                UserTeamDB.enabled == True,
+                UserTeamDB.deleted_at.is_(None),
             )
-            .first()
+            .all()
         )
-        if record is None:
-            return False
-
-        if hasattr(record, "deleted_at") and record.deleted_at is not None:
-            return is_root_id(user_id)
-
-        return True
+        now = datetime.now(timezone.utc)
+        return any(
+            membership.expires_at is None or ensure_utc(membership.expires_at) > now
+            for membership in memberships
+        )
 
 
 class UserTeamManager(AbstractBLLManager, RouterMixin):
@@ -380,11 +383,13 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
     def remove_member(self, team_id: str, user_id: str) -> None:
         """Take ``user_id`` off the team (or leave it, for the member
         themselves); see ``delete`` for who may."""
-        memberships = UserTeamModel.DB(self.model_registry.DB.manager.Base).list(
+        UserTeamDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
+        memberships = UserTeamDB.list(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             team_id=team_id,
             user_id=user_id,
+            filters=[UserTeamDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=UserTeamModel,
         )

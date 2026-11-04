@@ -4307,3 +4307,176 @@ class TestOverlongPasswords:
         manager = UserManager(requester_id=user.id, model_registry=model_registry)
         assert manager.verify_password(user.id, self.OVERLONG) is False
         assert manager.verify_password(user.id, TEST_PASSWORD) is True
+
+
+class TestOnlyLiveMembershipsCount:
+    """A deleted (or disabled, or expired) membership row neither grants nor
+    blocks (#253)."""
+
+    @staticmethod
+    def memberships(model_registry: Any, user_id: str, team_id: str) -> List[Any]:
+        from zephyrex.logic.BLL_Auth import UserTeamModel
+
+        rows: List[Any] = UserTeamModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            user_id=user_id,
+            team_id=team_id,
+            return_type="dto",
+            override_dto=UserTeamModel,
+        )
+        return rows
+
+    @staticmethod
+    def set_membership(model_registry: Any, membership_id: str, **values: Any) -> None:
+        from zephyrex.logic.BLL_Auth import UserTeamModel
+
+        UserTeamDB = UserTeamModel.DB(model_registry.DB.manager.Base)
+        with model_registry.DB.manager._get_db_session() as session:
+            session.query(UserTeamDB).filter(UserTeamDB.id == membership_id).update(
+                {getattr(UserTeamDB, key): value for key, value in values.items()},
+                synchronize_session=False,
+            )
+
+    @staticmethod
+    def join(model_registry: Any, user_id: str, team_id: str, role_id: str) -> str:
+        from zephyrex.logic.BLL_Auth import UserTeamModel
+
+        membership: Any = UserTeamModel.DB(model_registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            return_type="dto",
+            override_dto=UserTeamModel,
+            user_id=user_id,
+            team_id=team_id,
+            role_id=role_id,
+        )
+        return str(membership.id)
+
+    def leave(self, model_registry: Any, membership_id: str) -> None:
+        self.set_membership(
+            model_registry, membership_id, deleted_at=datetime.now(timezone.utc)
+        )
+
+    def test_remove_member_removes_a_rejoined_users_live_membership(
+        self, server, team_a, model_registry
+    ):
+        member = create_user(server)
+        first = self.join(model_registry, member.id, team_a.id, env("USER_ROLE_ID"))
+        self.leave(model_registry, first)
+        self.join(model_registry, member.id, team_a.id, env("USER_ROLE_ID"))
+
+        UserTeamManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        ).remove_member(team_id=team_a.id, user_id=member.id)
+
+        rows = self.memberships(model_registry, member.id, team_a.id)
+        assert len(rows) == 2
+        assert all(row.deleted_at is not None for row in rows)
+
+    def test_remove_member_of_a_user_who_left_is_not_found(
+        self, server, team_a, model_registry
+    ):
+        member = create_user(server)
+        self.leave(
+            model_registry,
+            self.join(model_registry, member.id, team_a.id, env("USER_ROLE_ID")),
+        )
+        with pytest.raises(HTTPException) as missing:
+            UserTeamManager(
+                requester_id=env("ROOT_ID"), model_registry=model_registry
+            ).remove_member(team_id=team_a.id, user_id=member.id)
+        assert missing.value.status_code == 404
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"enabled": False},
+            {"deleted_at": datetime(2026, 1, 1, tzinfo=timezone.utc)},
+            {"expires_at": datetime(2026, 1, 1, tzinfo=timezone.utc)},
+        ],
+        ids=["disabled", "deleted", "expired"],
+    )
+    def test_only_a_live_membership_grants_read(
+        self, server, team_a, model_registry, change
+    ):
+        from zephyrex.logic.BLL_Auth import UserTeamModel
+
+        member = create_user(server)
+        membership = self.join(
+            model_registry, member.id, team_a.id, env("USER_ROLE_ID")
+        )
+
+        def reads() -> bool:
+            with model_registry.DB.manager._get_db_session() as session:
+                return bool(
+                    UserTeamModel.user_has_read_access(
+                        member.id, team_a.id, session, model_registry=model_registry
+                    )
+                )
+
+        assert reads() is True
+        self.set_membership(model_registry, membership, **change)
+        assert reads() is False
+
+    def test_role_delete_reparents_only_live_memberships(
+        self, server, admin_a, team_a, model_registry
+    ):
+        role_manager = RoleManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        child = role_manager.create(
+            name=f"live_only_child_{uuid.uuid4().hex[:8]}",
+            friendly_name="Live Only Child",
+            parent_id=env("USER_ROLE_ID"),
+            team_id=team_a.id,
+        )
+        departed, staying = create_user(server), create_user(server)
+        gone = self.join(model_registry, departed.id, team_a.id, child.id)
+        self.leave(model_registry, gone)
+        live = self.join(model_registry, staying.id, team_a.id, child.id)
+
+        role_manager.delete(id=child.id)
+
+        [kept] = self.memberships(model_registry, staying.id, team_a.id)
+        assert str(kept.id) == live
+        assert kept.role_id == env("USER_ROLE_ID")
+
+    def test_a_root_role_with_only_deleted_memberships_deletes(
+        self, server, admin_a, team_a, model_registry
+    ):
+        role_manager = RoleManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        rootless = role_manager.create(
+            name=f"rootless_departed_{uuid.uuid4().hex[:8]}",
+            friendly_name="Rootless Departed",
+            parent_id=None,
+            team_id=team_a.id,
+        )
+        departed = create_user(server)
+        self.leave(
+            model_registry,
+            self.join(model_registry, departed.id, team_a.id, rootless.id),
+        )
+
+        role_manager.delete(id=rootless.id)
+
+        with pytest.raises(HTTPException) as gone:
+            role_manager.get(id=rootless.id)
+        assert gone.value.status_code in (404, 410)
+
+    def test_a_deleted_membership_is_not_team_membership(
+        self, server, team_a, model_registry
+    ):
+        from zephyrex.logic.BLL_Auth._shared import require_team_membership
+
+        member = create_user(server)
+        membership = self.join(
+            model_registry, member.id, team_a.id, env("USER_ROLE_ID")
+        )
+        require_team_membership(member.id, team_a.id, model_registry)
+        self.leave(model_registry, membership)
+        with pytest.raises(HTTPException) as refused:
+            require_team_membership(member.id, team_a.id, model_registry)
+        assert refused.value.status_code == 403

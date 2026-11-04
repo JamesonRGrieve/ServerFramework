@@ -274,7 +274,9 @@ def make_user_id_grant_validator(
     and byte-identical to the pre-consolidation messages.
 
     The returned validator raises ``InvalidGrantError`` when the registry is
-    absent or the ``user_id`` no longer resolves to a live user.
+    absent or the ``user_id`` no longer resolves to a live user: one not
+    deleted and not disabled, so an outstanding magic link or device pairing
+    signs no one in once its user is gone or switched off.
     """
     principal = subject or label
 
@@ -290,6 +292,8 @@ def make_user_id_grant_validator(
             requester_id=env("ROOT_ID"),
             model_registry=payload.model_registry,
             id=payload.user_id,
+            filters=[UserDB.deleted_at.is_(None), UserDB.active == True],
+            allow_nonexistent=True,
             return_type="dto",
             override_dto=UserModel,
         )
@@ -368,7 +372,8 @@ def require_team_membership(
     requester_id: str, team_id: str, model_registry: Any
 ) -> None:
     """Raise 403 unless ``requester_id`` is ROOT_ID or an enabled member of
-    ``team_id`` (a disabled membership grants nothing, as in StaticPermissions).
+    ``team_id`` (a disabled or deleted membership grants nothing, as in
+    StaticPermissions).
 
     The shared gate for managers that let a caller scope a record to a team:
     naming a team the caller does not belong to would plant data in (or mint
@@ -379,12 +384,14 @@ def require_team_membership(
 
     if is_root_id(requester_id):
         return
-    if not UserTeamModel.DB(model_registry.DB.manager.Base).exists(
+    UserTeamDB = UserTeamModel.DB(model_registry.DB.manager.Base)
+    if not UserTeamDB.exists(
         requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         user_id=requester_id,
         team_id=team_id,
         enabled=True,
+        filters=[UserTeamDB.deleted_at.is_(None)],
     ):
         raise HTTPException(
             status_code=403, detail="Caller is not a member of the target team"
