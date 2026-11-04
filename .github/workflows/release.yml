@@ -87,9 +87,13 @@ jobs:
             --output-format JSON --output-file release/bom.json
 
       - name: Audit dependencies (any known vulnerability fails)
+        # pip-audit exits 1 both for vulnerabilities found and on its own
+        # errors: the gate tells them apart from the report, and fails on a
+        # pip-audit error, an empty or malformed report, or any vulnerability.
         run: |
-          pip-audit -r requirements.lock --format json > audit-report.json || true
-          python scripts/audit_gate.py audit-report.json
+          status=0
+          pip-audit -r requirements.lock --format json > audit-report.json || status=$?
+          python scripts/audit_gate.py audit-report.json --pip-audit-status "$status"
 
       - name: Sign wheel and sdist (sigstore, keyless)
         run: |
