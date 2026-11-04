@@ -6,6 +6,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Tuple,
     Type,
     Union,
 )
@@ -371,32 +372,37 @@ def _populate_reverse_includes(
 ) -> None:
     """Resolve reverse-relationship includes (``invitation?include=invitees``)
     in place: one permission-filtered query per requested relation, children
-    grouped onto their parent by the foreign key. Children the requester may
-    not view are absent; without a requester (a public route) nothing is
-    resolved."""
+    grouped onto their parent by the foreign key. A relation named more than
+    once, or by both its singular and plural include, is queried once and the
+    result shared. Children the requester may not view are absent; without a
+    requester (a public route) nothing is resolved."""
     from zephyrex.pydantic2.fastapi.query import inverse_relations
 
     if requester_id is None:
         return
     relations = inverse_relations(model_class, model_registry)
     parent_ids = [item["id"] for item in items if item.get("id")]
-    for include_key in include_selection:
+    resolved: Dict[Tuple[Type[BaseModel], str], Dict[Any, List[Dict[str, Any]]]] = {}
+    for include_key in dict.fromkeys(include_selection):
         relation = relations.get(include_key)
         if relation is None:
             continue
         child_model, fk_field, is_collection = relation
-        children: List[Dict[str, Any]] = []
-        if parent_ids:
-            ChildDB = child_model.DB(model_registry.DB.manager.Base)  # type: ignore[attr-defined]
-            children = ChildDB.list(
-                requester_id=requester_id,
-                model_registry=model_registry,
-                filters=[getattr(ChildDB, fk_field).in_(parent_ids)],
-                return_type="dict",
-            )
-        by_parent: Dict[Any, List[Dict[str, Any]]] = {}
-        for child in children:
-            by_parent.setdefault(child.get(fk_field), []).append(child)
+        by_parent = resolved.get((child_model, fk_field))
+        if by_parent is None:
+            children: List[Dict[str, Any]] = []
+            if parent_ids:
+                ChildDB = child_model.DB(model_registry.DB.manager.Base)  # type: ignore[attr-defined]
+                children = ChildDB.list(
+                    requester_id=requester_id,
+                    model_registry=model_registry,
+                    filters=[getattr(ChildDB, fk_field).in_(parent_ids)],
+                    return_type="dict",
+                )
+            by_parent = {}
+            for child in children:
+                by_parent.setdefault(child.get(fk_field), []).append(child)
+            resolved[(child_model, fk_field)] = by_parent
         for item in items:
             grouped = by_parent.get(item.get("id"), [])
             item[include_key] = (

@@ -33,6 +33,11 @@ from zephyrex.pydantic2.util import (
     reference_relationship_name,
 )
 
+# The most distinct include tokens one request may ask for. Each reverse
+# relationship include runs a child query over every parent on the page, so an
+# unbounded list multiplies the work; above this the request is a 422.
+MAX_INCLUDE_TOKENS = 32
+
 # ---------------------------------------------------------------------------
 # Multi-format OpenAPI helpers — content negotiation advertisement
 # ---------------------------------------------------------------------------
@@ -180,22 +185,18 @@ def _coerce_sequence_values(raw_values: List[str]) -> List[str]:
 
 
 def _normalize_projection_values(value: Optional[Union[List[str], str]]) -> List[str]:
-    """Normalize projection parameters (fields/includes) into a clean list of strings."""
+    """Normalize projection parameters (fields/includes) into a clean list of
+    distinct strings, in first-occurrence order."""
     if not value:
         return []
 
     if isinstance(value, str):
-        return [segment.strip() for segment in value.split(",") if segment.strip()]
+        segments = (segment.strip() for segment in value.split(","))
+        return list(dict.fromkeys(segment for segment in segments if segment))
 
     if isinstance(value, (list, tuple, set, frozenset)):
-        normalized: List[str] = []
-        for item in value:
-            if item is None:
-                continue
-            item_str = str(item).strip()
-            if item_str:
-                normalized.append(item_str)
-        return normalized
+        items = (str(item).strip() for item in value if item is not None)
+        return list(dict.fromkeys(item for item in items if item))
 
     return []
 
@@ -338,10 +339,24 @@ def _validate_includes(
         model_registry: Optional ModelRegistry for discovering inverse relationships
 
     Raises:
-        HTTPException: 422 if any includes are invalid
+        HTTPException: 422 if any includes are invalid, or if more than
+            ``MAX_INCLUDE_TOKENS`` distinct includes are requested
     """
     if not include_param:
         return
+
+    distinct_includes = list(dict.fromkeys(include_param))
+    if len(distinct_includes) > MAX_INCLUDE_TOKENS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": (
+                    f"Too many includes requested: {len(distinct_includes)}"
+                    f" (at most {MAX_INCLUDE_TOKENS})"
+                ),
+                "max_includes": MAX_INCLUDE_TOKENS,
+            },
+        )
 
     valid_includes = _get_valid_includes_for_model(model_class, model_registry)
 
@@ -349,7 +364,7 @@ def _validate_includes(
     if not valid_includes:
         return
 
-    invalid_includes = [inc for inc in include_param if inc not in valid_includes]
+    invalid_includes = [inc for inc in distinct_includes if inc not in valid_includes]
 
     if invalid_includes:
         raise HTTPException(
@@ -533,25 +548,18 @@ def _normalize_query_list(value: Any) -> Optional[List[str]]:
     """
     if value is None:
         return None
-    # If FastAPI already parsed a list/tuple
-    if isinstance(value, (list, tuple)):
-        seen: list[str] = []
-        out: list[str] = []
-        for item in value:
-            if item is None:
-                continue
-            # Split each item on commas in case it's "provider,team" format
-            item_str = str(item)
-            parts = [p.strip() for p in item_str.split(",") if p.strip()]
-            for s in parts:
-                if s not in seen:
-                    seen.append(s)
-                    out.append(s)
+    # A list/tuple FastAPI already parsed, or one string; every item may itself
+    # be comma-separated ("provider,team").
+    if isinstance(value, (list, tuple, str)):
+        items = [value] if isinstance(value, str) else value
+        parts = (
+            part.strip()
+            for item in items
+            if item is not None
+            for part in str(item).split(",")
+        )
+        out = list(dict.fromkeys(part for part in parts if part))
         return out if out else None
-    # If it's a string, split on commas
-    if isinstance(value, str):
-        parts = [p.strip() for p in value.split(",") if p.strip()]
-        return parts if parts else None
     # Fallback: coerce to string
     s = str(value).strip()
     return [s] if s else None
