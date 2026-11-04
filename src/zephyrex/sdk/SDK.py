@@ -155,16 +155,21 @@ class SDK:
 
         return cast(Dict[str, Any], response)
 
-    def logout(self):
+    def logout(self) -> None:
         """Convenience method for user logout.
 
-        This method terminates the current session and clears
-        authentication credentials.
+        Revokes the server session the current JWT belongs to, then clears
+        the authentication credentials. An API key has no session to end, so
+        only a token is revoked. The credentials are cleared even when the
+        server refuses the logout; that refusal is raised so the caller
+        knows the session may still be live.
+
+        Raises:
+            AuthenticationError: If the server did not revoke the session
         """
         try:
-            self.auth.terminate_current_session()
-        except Exception as e:
-            self.logger.warning(f"Error terminating session: {e}")
+            if self.token:
+                self.auth.logout()
         finally:
             # Clear authentication credentials
             self.token = None
