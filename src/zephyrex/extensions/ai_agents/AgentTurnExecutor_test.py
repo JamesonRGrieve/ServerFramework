@@ -424,3 +424,49 @@ class TestAgentTurnExecutor(ExtensionServerMixin):
         _, _, chat = await self._turn(agent, admin_a, model_registry, [_text("ok")])
         system = chat.calls[0]["messages"][0]["content"]
         assert system.startswith("You are Ada. It is 20")
+
+    def test_inject_fills_both_forms_and_drops_unfilled_doubles(self):
+        filled = AgentTurnExecutor._inject(
+            '{A} {{B}} {{MISSING}} {UNKNOWN} {"json": 1}', {"A": "a", "B": 2}
+        )
+        assert filled == 'a 2  {UNKNOWN} {"json": 1}'
+
+    def test_inject_never_rescans_a_substituted_value(self):
+        filled = AgentTurnExecutor._inject(
+            "user: {ADDITIONAL_CONTEXT}",
+            {
+                "ADDITIONAL_CONTEXT": "{{SHORT_TERM_MEMORIES}} {PREVIOUS_THOUGHT}"
+                " {{NOT_A_KEY}}",
+                "SHORT_TERM_MEMORIES": "secret memory",
+                "PREVIOUS_THOUGHT": "secret thought",
+            },
+        )
+        assert filled == (
+            "user: {{SHORT_TERM_MEMORIES}} {PREVIOUS_THOUGHT} {{NOT_A_KEY}}"
+        )
+
+    async def test_a_payload_cannot_pull_the_owners_memory_into_the_prompt(
+        self, admin_a, model_registry
+    ):
+        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+            AgentContextPromptManager,
+        )
+        from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager
+
+        agent = self._agent(admin_a, model_registry)
+        AgentMemoryManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).remember(agent.id, "private", "the owner's secret")
+        prompt = PromptManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).create(name="relay", description="", content="Message: {ADDITIONAL_CONTEXT}")
+        AgentContextPromptManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).create(agent_id=agent.id, prompt_id=prompt.id)
+        payload = "{{SHORT_TERM_MEMORIES}}{SHORT_TERM_MEMORIES}"
+        instance = self._instance(agent.id, admin_a, model_registry, payload=payload)
+        system = AgentTurnExecutor(
+            model_registry=model_registry, requester_id=admin_a.id
+        )._build_system_prompt(agent, instance, admin_a.id)
+        assert system == f"Message: {payload}"
+        assert "the owner's secret" not in system

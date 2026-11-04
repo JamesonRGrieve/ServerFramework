@@ -108,7 +108,10 @@ SEARCHED_ABILITIES_KEY = "__searched_abilities__"
 NATIVE = "native"
 IN_BAND = "in_band"
 IN_BAND_CALL = re.compile(r"```tool\b\s*(.*?)```", re.DOTALL)
-UNFILLED_PLACEHOLDER = re.compile(r"\{\{[A-Za-z_][A-Za-z0-9_]*\}\}")
+# A ``{{KEY}}`` (tried first) or a ``{KEY}`` placeholder in a prompt template.
+PLACEHOLDER = re.compile(
+    r"\{\{(?P<double>[A-Za-z_][A-Za-z0-9_]*)\}\}|\{(?P<single>[A-Za-z_][A-Za-z0-9_]*)\}"
+)
 
 # Used when the agent has no context prompts; the same {VARIABLE}s as a
 # configured thinking-turn prompt, so state is filled in either way.
@@ -788,14 +791,21 @@ class AgentTurnExecutor:
 
     @staticmethod
     def _inject(template: str, substitutions: Mapping[str, Any]) -> str:
-        """Fill ``{KEY}`` and ``{{KEY}}``, then drop unfilled ``{{KEY}}``s so
+        """Fill ``{KEY}`` and ``{{KEY}}`` and drop unfilled ``{{KEY}}``s, so
         a raw template never reaches the model. Other braces (JSON in the
-        prompt) are left alone."""
-        result = template
-        for key, value in substitutions.items():
-            result = result.replace("{{" + key + "}}", str(value))
-            result = result.replace("{" + key + "}", str(value))
-        return UNFILLED_PLACEHOLDER.sub("", result)
+        prompt) are left alone.
+
+        One pass over the template: a substituted value is never rescanned,
+        so a placeholder inside one (the user's payload) stays literal text
+        instead of expanding to another key's value."""
+
+        def replace(match: re.Match[str]) -> str:
+            key = match.group("double") or match.group("single")
+            if key in substitutions:
+                return str(substitutions[key])
+            return "" if match.group("double") else match.group(0)
+
+        return PLACEHOLDER.sub(replace, template)
 
 
 def _speak_signature(message: str, conversation_id: str = "") -> None:
