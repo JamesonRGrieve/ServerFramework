@@ -2066,33 +2066,54 @@ class AbstractStaticExtension(
         )
 
     @classmethod
+    def _instances_for(cls, root: Any, requester_id: Optional[str]) -> Any:
+        """A provider-instance manager reading as ``requester_id`` (as ROOT
+        when ``None``, for the server's own calls). 400 for a blank one: an
+        ability acting for a user must name them."""
+        from zephyrex.logic.BLL_Providers import ProviderInstanceManager
+
+        if requester_id is None:
+            requester_id = env("ROOT_ID")
+        elif not str(requester_id).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{cls.name}: requester_id names the user acted for",
+            )
+        return ProviderInstanceManager(
+            model_registry=root.model_registry, requester_id=requester_id
+        )
+
+    @classmethod
     async def rotate_on_instance(
-        cls, instance_ref: str, method_name: str, *args: Any, **kwargs: Any
+        cls,
+        instance_ref: str,
+        method_name: str,
+        *args: Any,
+        requester_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> Any:
         """:meth:`rotate_provider` on one provider instance, named by its id
         or its name: for an operation on a device that instance is (a
         printer, a camera), which no other instance can stand in for. It is
         still retried as the rotation retries. 404 when no live instance of
-        this extension's providers in the rotation goes by ``instance_ref``:
-        a deleted instance is never found (ROOT's reads include deleted
-        rows, so they are filtered out)."""
+        this extension's providers in the rotation goes by ``instance_ref``.
+
+        With ``requester_id`` the instance is looked up as that user, so
+        only one they can see is found (an ability acting for a user passes
+        it); without it, as ROOT. A deleted instance is never found."""
         root = cls.root
         if root is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"No {cls.name} provider is configured",
             )
-        from zephyrex.logic.BLL_Providers import (
-            ProviderInstanceManager,
-            ProviderManager,
-        )
+        from zephyrex.logic.BLL_Providers import ProviderManager
 
-        registry, requester_id = root.model_registry, env("ROOT_ID")
-        providers = ProviderManager(model_registry=registry, requester_id=requester_id)
-        own = {providers.get(name=provider.name).id for provider in cls.providers}
-        instances = ProviderInstanceManager(
-            model_registry=registry, requester_id=requester_id
+        providers = ProviderManager(
+            model_registry=root.model_registry, requester_id=env("ROOT_ID")
         )
+        own = {providers.get(name=provider.name).id for provider in cls.providers}
+        instances = cls._instances_for(root, requester_id)
         live = [instances.DB.deleted_at.is_(None)]
         matches = [
             instance
@@ -2115,21 +2136,19 @@ class AbstractStaticExtension(
         )
 
     @classmethod
-    def instances_of(cls) -> List[Dict[str, Any]]:
-        """This extension's live provider instances: id, name, provider."""
+    def instances_of(cls, requester_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """This extension's live provider instances: id, name, provider.
+        With ``requester_id``, only those that user can see; without it,
+        all of them (read as ROOT)."""
         root = cls.root
         if root is None:
             return []
-        from zephyrex.logic.BLL_Providers import (
-            ProviderInstanceManager,
-            ProviderManager,
-        )
+        from zephyrex.logic.BLL_Providers import ProviderManager
 
-        registry, requester_id = root.model_registry, env("ROOT_ID")
-        providers = ProviderManager(model_registry=registry, requester_id=requester_id)
-        instances = ProviderInstanceManager(
-            model_registry=registry, requester_id=requester_id
+        providers = ProviderManager(
+            model_registry=root.model_registry, requester_id=env("ROOT_ID")
         )
+        instances = cls._instances_for(root, requester_id)
         live = [instances.DB.deleted_at.is_(None)]
         found = []
         for provider in cls.providers:

@@ -334,6 +334,8 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
     """The abilities a local model format's extension offers over its
     models. ``model`` names one model instance (its name or id); without
     it a call goes to the first model in the rotation that can answer.
+    Listing, downloading, loading and unloading models act for the user
+    named by ``requester_id``, on the model instances that user can see.
 
     Named for the base extension so that defining it inspects that
     extension's folder; it is never registered (the loader matches a
@@ -363,8 +365,8 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
 
     @classmethod
     @ability("list_local_models")
-    async def list_local_models(cls) -> List[Dict[str, Any]]:
-        """The models declared for this format, with whether each is
+    async def list_local_models(cls, requester_id: str) -> List[Dict[str, Any]]:
+        """The models of this format the user can see, with whether each is
         downloaded and loaded; one not (or wrongly) configured names why."""
         root = cls.root
         if root is None:
@@ -376,7 +378,7 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
             p.name: p for p in cls.providers if issubclass(p, AbstractLocalAIProvider)
         }
         found = []
-        for entry in cls.instances_of():
+        for entry in cls.instances_of(requester_id):
             provider = local.get(entry["provider"])
             if provider is None:
                 continue
@@ -391,23 +393,29 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
 
     @classmethod
     @ability("download_model")
-    async def download_model(cls, model: str) -> Dict[str, Any]:
+    async def download_model(cls, requester_id: str, model: str) -> Dict[str, Any]:
         """Download a model's files ahead of its first use."""
-        result: Dict[str, Any] = await cls.rotate_on_instance(model, "download")
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            model, "download", requester_id=requester_id
+        )
         return result
 
     @classmethod
     @ability("load_model")
-    async def load_model(cls, model: str) -> Dict[str, Any]:
+    async def load_model(cls, requester_id: str, model: str) -> Dict[str, Any]:
         """Load a model into memory ahead of its first use."""
-        result: Dict[str, Any] = await cls.rotate_on_instance(model, "load")
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            model, "load", requester_id=requester_id
+        )
         return result
 
     @classmethod
     @ability("unload_model")
-    async def unload_model(cls, model: str) -> Dict[str, Any]:
+    async def unload_model(cls, requester_id: str, model: str) -> Dict[str, Any]:
         """Release a model's memory; it loads again when next used."""
-        result: Dict[str, Any] = await cls.rotate_on_instance(model, "unload")
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            model, "unload", requester_id=requester_id
+        )
         return result
 
     @classmethod

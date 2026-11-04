@@ -11,6 +11,8 @@ Face is unreachable), checked against their SHA-256 and pinned commit.
 
 import json
 import math
+import uuid
+from typing import Any
 
 import httpx
 import pytest
@@ -30,6 +32,7 @@ from zephyrex.extensions.local_ai_gguf.GGUF import DeadlineStop
 from zephyrex.extensions.local_ai_gguf.PRV_GGUF_Chat import PRV_GGUF_Chat
 from zephyrex.extensions.local_ai_gguf.PRV_GGUF_Embedding import PRV_GGUF_Embedding
 from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.BLL_Providers import ProviderInstanceUsageManager
 
 STORIES = {
@@ -106,10 +109,13 @@ def models(provider_instance, rotation_over, monkeypatch):
 class TestModels:
     async def test_download_and_list(self, models):
         chat, embedder = models
-        downloaded = await EXT_Local_AI_GGUF.download_model(chat.name)
+        downloaded = await EXT_Local_AI_GGUF.download_model(env("ROOT_ID"), chat.name)
         assert downloaded["downloaded"] and not downloaded["loaded"]
         assert downloaded["files"] == ["tinyllamas/stories260K.gguf"]
-        listed = {m["id"]: m for m in await EXT_Local_AI_GGUF.list_local_models()}
+        listed = {
+            m["id"]: m
+            for m in await EXT_Local_AI_GGUF.list_local_models(env("ROOT_ID"))
+        }
         assert listed[str(chat.id)]["provider"] == "gguf_chat"
         assert listed[str(embedder.id)]["abilities"] == ["embeddings"]
         seeded = [m for m in listed.values() if m["name"] == "Root_GgufChat"]
@@ -197,9 +203,9 @@ class TestModels:
 
     async def test_unload_and_load_again(self, models):
         chat, _ = models
-        await EXT_Local_AI_GGUF.load_model(chat.name)
+        await EXT_Local_AI_GGUF.load_model(env("ROOT_ID"), chat.name)
         assert LOADED_MODELS.get(str(chat.id)) is not None
-        unloaded = await EXT_Local_AI_GGUF.unload_model(str(chat.id))
+        unloaded = await EXT_Local_AI_GGUF.unload_model(env("ROOT_ID"), str(chat.id))
         assert not unloaded["loaded"] and LOADED_MODELS.get(str(chat.id)) is None
         answer = await EXT_Local_AI_GGUF.generate_text("Hi", max_tokens=4)
         assert answer["model"] == "ggml-org/models-moved"
@@ -219,7 +225,7 @@ class TestModels:
     async def test_a_file_that_does_not_match_its_digest_is_never_loaded(
         self, models, provider_instance
     ):
-        await EXT_Local_AI_GGUF.download_model(models[0].name)
+        await EXT_Local_AI_GGUF.download_model(env("ROOT_ID"), models[0].name)
         forged = dict(STORIES, files={"tinyllamas/stories260K.gguf": "0" * 64})
         instance = provider_instance(PRV_GGUF_Chat, settings=settings(forged))
         with pytest.raises(PermanentExternalError, match="SHA-256"):
@@ -268,7 +274,7 @@ class TestRefusals:
 
     async def test_an_unknown_model(self, models):
         with pytest.raises(HTTPException) as raised:
-            await EXT_Local_AI_GGUF.unload_model("no-such-model")
+            await EXT_Local_AI_GGUF.unload_model(env("ROOT_ID"), "no-such-model")
         assert raised.value.status_code == 404
 
 
@@ -281,3 +287,48 @@ def test_the_deadline_leaves_only_the_end_of_text():
     patient = DeadlineStop(float("inf"), 2)
     same = np.ones(4, dtype=np.single)
     assert patient(np.zeros(1, dtype=np.intc), same) is same and not patient.fired
+
+
+async def test_a_user_manages_only_the_models_they_can_see(
+    provider_instance, rotation_over, monkeypatch, extension_app
+):
+    """A model the user cannot see is neither listed nor downloaded,
+    loaded or unloaded for them: an operator's model stays in memory
+    whatever another user's agent asks."""
+    registry = extension_app.state.model_registry
+    email = f"local-ai-{uuid.uuid4().hex}@example.com"
+    user: Any = UserModel.DB(registry.DB.manager.Base).create(
+        requester_id=env("SYSTEM_ID"),
+        model_registry=registry,
+        return_type="dto",
+        override_dto=UserModel,
+        email=email,
+        username=email.split("@")[0],
+        first_name="Test",
+        last_name="User",
+        display_name="Test User",
+    )
+    chat = provider_instance(PRV_GGUF_Chat, settings=settings(STORIES))
+    monkeypatch.setattr(EXT_Local_AI_GGUF, "_root_rotation_cache", rotation_over(chat))
+    closed: list[Any] = []
+    LOADED_MODELS.load(
+        str(chat.id), chat.name, "gguf_chat", lambda: "held", closed.append
+    )
+    try:
+        listed = await EXT_Local_AI_GGUF.list_local_models(str(user.id))
+        assert str(chat.id) not in [m["id"] for m in listed]
+        for ability in (
+            EXT_Local_AI_GGUF.unload_model,
+            EXT_Local_AI_GGUF.download_model,
+            EXT_Local_AI_GGUF.load_model,
+        ):
+            for ref in (chat.name, str(chat.id)):
+                with pytest.raises(HTTPException) as raised:
+                    await ability(str(user.id), ref)
+                assert raised.value.status_code == 404
+        assert closed == [] and LOADED_MODELS.get(str(chat.id)) is not None
+
+        unloaded = await EXT_Local_AI_GGUF.unload_model(env("ROOT_ID"), chat.name)
+        assert not unloaded["loaded"] and closed == ["held"]
+    finally:
+        LOADED_MODELS.unload(str(chat.id))

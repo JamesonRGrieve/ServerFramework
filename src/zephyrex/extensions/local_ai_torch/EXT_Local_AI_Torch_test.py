@@ -258,13 +258,18 @@ class TestModels:
 
     async def test_listed_and_unloaded(self, models):
         text, encoder, _ = models
-        await EXT_Local_AI_Torch.load_model(encoder.name)
-        listed = {m["id"]: m for m in await EXT_Local_AI_Torch.list_local_models()}
+        await EXT_Local_AI_Torch.load_model(env("ROOT_ID"), encoder.name)
+        listed = {
+            m["id"]: m
+            for m in await EXT_Local_AI_Torch.list_local_models(env("ROOT_ID"))
+        }
         assert (
             listed[str(encoder.id)]["loaded"] and listed[str(encoder.id)]["downloaded"]
         )
         assert listed[str(text.id)]["abilities"] == ["chat", "text_completion"]
-        assert not (await EXT_Local_AI_Torch.unload_model(encoder.name))["loaded"]
+        assert not (
+            await EXT_Local_AI_Torch.unload_model(env("ROOT_ID"), encoder.name)
+        )["loaded"]
 
 
 class Planted:

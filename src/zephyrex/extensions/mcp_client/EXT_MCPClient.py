@@ -4,7 +4,9 @@
 Each provider instance is one MCP server: a Streamable HTTP endpoint (its
 URL and an optional bearer token), or a local command the operator has
 declared in the stdio servers file. Every ability names its server (the
-instance's name or id) and runs against that server only.
+instance's name or id) and runs against that server only. Abilities act
+for the user named by ``requester_id``: they list and reach only the
+servers (and so the stored tokens) that user can see.
 
 A connection lasts one ability call: the client negotiates the protocol,
 makes its request and closes the session. Results come back as the
@@ -276,56 +278,83 @@ class EXT_MCPClient(AbstractStaticExtension):
 
     @classmethod
     @ability("list_mcp_servers")
-    async def list_mcp_servers(cls) -> List[Dict[str, Any]]:
-        """The configured MCP servers: id, name, and how each is reached."""
-        return cls.instances_of()
+    async def list_mcp_servers(cls, requester_id: str) -> List[Dict[str, Any]]:
+        """The MCP servers the user can see: id, name, and how each is
+        reached."""
+        return cls.instances_of(requester_id)
 
     @classmethod
     @ability("list_tools")
-    async def list_tools(cls, server: str) -> List[Dict[str, Any]]:
+    async def list_tools(cls, requester_id: str, server: str) -> List[Dict[str, Any]]:
         """The server's tools: name, title, description and input schema."""
-        result: List[Dict[str, Any]] = await cls.rotate_on_instance(server, "tools")
+        result: List[Dict[str, Any]] = await cls.rotate_on_instance(
+            server, "tools", requester_id=requester_id
+        )
         return result
 
     @classmethod
     @ability("call_tool")
     async def call_tool(
-        cls, server: str, tool: str, arguments: Optional[Dict[str, Any]] = None
+        cls,
+        requester_id: str,
+        server: str,
+        tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Call ``tool`` with ``arguments``: its content, structured content,
         and whether the tool reported an error."""
         result: Dict[str, Any] = await cls.rotate_on_instance(
-            server, "call", plain_name(tool, "tool"), arguments_object(arguments)
+            server,
+            "call",
+            plain_name(tool, "tool"),
+            arguments_object(arguments),
+            requester_id=requester_id,
         )
         return result
 
     @classmethod
     @ability("list_resources")
-    async def list_resources(cls, server: str) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = await cls.rotate_on_instance(server, "resources")
+    async def list_resources(
+        cls, requester_id: str, server: str
+    ) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = await cls.rotate_on_instance(
+            server, "resources", requester_id=requester_id
+        )
         return result
 
     @classmethod
     @ability("read_resource")
-    async def read_resource(cls, server: str, uri: str) -> Dict[str, Any]:
+    async def read_resource(
+        cls, requester_id: str, server: str, uri: str
+    ) -> Dict[str, Any]:
         result: Dict[str, Any] = await cls.rotate_on_instance(
-            server, "read", plain_name(uri, "uri")
+            server, "read", plain_name(uri, "uri"), requester_id=requester_id
         )
         return result
 
     @classmethod
     @ability("list_prompts")
-    async def list_prompts(cls, server: str) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = await cls.rotate_on_instance(server, "prompts")
+    async def list_prompts(cls, requester_id: str, server: str) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = await cls.rotate_on_instance(
+            server, "prompts", requester_id=requester_id
+        )
         return result
 
     @classmethod
     @ability("get_prompt")
     async def get_prompt(
-        cls, server: str, name: str, arguments: Optional[Dict[str, Any]] = None
+        cls,
+        requester_id: str,
+        server: str,
+        name: str,
+        arguments: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """The prompt's messages, filled with ``arguments`` (strings)."""
         result: Dict[str, Any] = await cls.rotate_on_instance(
-            server, "prompt", plain_name(name, "prompt"), prompt_arguments(arguments)
+            server,
+            "prompt",
+            plain_name(name, "prompt"),
+            prompt_arguments(arguments),
+            requester_id=requester_id,
         )
         return result
