@@ -2,8 +2,10 @@
 name: Release
 
 # A `v*` tag builds, signs and audits the wheel and sdist, publishes them to
-# TestPyPI, smoke-tests `zephyrex[all]` installed from there, and only then
-# publishes to PyPI, behind the `pypi` environment's required reviewer.
+# TestPyPI, checks TestPyPI serves exactly those files, smoke-tests them (the
+# wheel as `zephyrex` and `zephyrex[all]`, and the sdist), and only then
+# publishes the same files to PyPI, behind the `pypi` environment's required
+# reviewer.
 # Pre-release versions (a/b/rc/dev) are internal and stop after the smoke
 # test; only a final version goes on to PyPI.
 # Publishing uses PyPI Trusted Publishing (OIDC): no token is stored. Each
@@ -132,15 +134,17 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          # TestPyPI never frees a version, so a re-tag of a version already
-          # uploaded there smoke-tests that upload.
-          skip-existing: true
+          # No skip-existing: re-uploading an identical file is accepted (a
+          # re-run of this run), but a re-tag whose build differs from what
+          # TestPyPI already holds fails here instead of smoke-testing the old
+          # upload and publishing the new, untested build to PyPI. TestPyPI
+          # never frees a version, so such a release needs a new version.
 
   smoke-testpypi:
-    name: Smoke-test zephyrex and zephyrex[all] from TestPyPI
+    name: Smoke-test the files TestPyPI serves (wheel and sdist)
     needs: [build, publish-testpypi]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -148,19 +152,59 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install from TestPyPI (dependencies from PyPI only)
+      # The very files publish-pypi uploads.
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: /tmp/dist/
+      - name: Check TestPyPI serves exactly the files to be published
+        # By sha256, every file: the smoke test below installs these files,
+        # so it vouches for TestPyPI's upload, and for PyPI's, only if they
+        # are one and the same.
+        shell: python
         env:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
+          import hashlib, json, os, sys, time, urllib.request
+          from pathlib import Path
+
+          ATTEMPTS, PAUSE_SECONDS = 6, 20
+          url = f"https://test.pypi.org/pypi/zephyrex/{os.environ['VERSION']}/json"
+          built = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in Path("/tmp/dist").iterdir()
+          }
+          if not any(n.endswith(".whl") for n in built) or not any(
+              n.endswith(".tar.gz") for n in built
+          ):
+              sys.exit(f"dist lacks a wheel or an sdist: {sorted(built)}")
+          served = {}
+          for attempt in range(1, ATTEMPTS + 1):
+              try:
+                  with urllib.request.urlopen(url) as response:
+                      served = {
+                          entry["filename"]: entry["digests"]["sha256"]
+                          for entry in json.load(response)["urls"]
+                      }
+              except OSError as error:
+                  print(f"TestPyPI: {error}")
+              if built.keys() <= served.keys():
+                  break
+              print(f"TestPyPI does not serve every file yet (attempt {attempt})")
+              time.sleep(PAUSE_SECONDS)
+          else:
+              sys.exit(f"TestPyPI never served {sorted(built.keys() - served.keys())}")
+          if served != built:
+              sys.exit(
+                  "TestPyPI holds other files for this version than the ones "
+                  f"built here: served {served}, built {built}. TestPyPI never "
+                  "frees a version: release a new one."
+              )
+          print(f"TestPyPI serves exactly {sorted(built)}")
+      - name: Install the wheel (dependencies from PyPI only)
+        run: |
           python -m venv /tmp/smoke
-          # Fetch only zephyrex from TestPyPI; its dependencies resolve from
-          # PyPI, so nobody else's TestPyPI upload can stand in for one.
-          for attempt in 1 2 3 4 5 6; do
-            /tmp/smoke/bin/pip download --no-deps --dest /tmp/wheel \
-              --index-url https://test.pypi.org/simple/ "zephyrex==${VERSION}" && break
-            echo "TestPyPI has not served ${VERSION} yet (attempt ${attempt})"; sleep 20
-          done
-          /tmp/smoke/bin/pip install "$(ls /tmp/wheel/zephyrex-*.whl)"
+          /tmp/smoke/bin/pip install "$(ls /tmp/dist/zephyrex-*.whl)"
           /tmp/smoke/bin/pip check
       - name: Smoke test zephyrex (core dependencies only)
         working-directory: /tmp
@@ -178,12 +222,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends ${packages}
       - name: Install zephyrex[all]
         run: |
-          wheel=$(ls /tmp/wheel/zephyrex-*.whl)
+          wheel=$(ls /tmp/dist/zephyrex-*.whl)
           /tmp/smoke/bin/pip install "zephyrex[all] @ file://${wheel}"
           /tmp/smoke/bin/pip check
       - name: Smoke test zephyrex[all]
         working-directory: /tmp
         run: /tmp/smoke/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py"
+      - name: Smoke test the sdist (built and installed in a clean venv)
+        # The sdist is published too: it must build, ship every manifest
+        # (--system-packages reads them) and boot on core dependencies.
+        working-directory: /tmp
+        run: |
+          python -m venv /tmp/smoke-sdist
+          /tmp/smoke-sdist/bin/pip install "$(ls /tmp/dist/zephyrex-*.tar.gz)"
+          /tmp/smoke-sdist/bin/pip check
+          /tmp/smoke-sdist/bin/zephyrex version
+          /tmp/smoke-sdist/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py" --system-packages
+          /tmp/smoke-sdist/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py" --core
 
   publish-pypi:
     name: Publish to PyPI
