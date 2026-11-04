@@ -3,17 +3,243 @@
 over an in-memory manager: what a client may set, what it gets back, and
 which records a route may touch."""
 
-from typing import Any, Dict
+from typing import Any, ClassVar, Dict, List, Optional, Type
 
+import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
+from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 from zephyrex.pydantic2.fastapi import (
     AuthType,
     HTTPMethod,
+    NestedResourceConfig,
+    RouterMixin,
+    RouteType,
+    create_router_from_manager,
     register_custom_route,
     static_route,
 )
+
+# ---------------------------------------------------------------------------
+# An in-memory resource: a model, its network envelopes, a manager over a
+# dict, and a registry that binds them.
+# ---------------------------------------------------------------------------
+
+ALL_ROUTES = [
+    RouteType.GET,
+    RouteType.LIST,
+    RouteType.CREATE,
+    RouteType.UPDATE,
+    RouteType.DELETE,
+    RouteType.SEARCH,
+    RouteType.BATCH_UPDATE,
+    RouteType.BATCH_DELETE,
+]
+
+_PROJECTION = {"include": Optional[List[str]], "fields": Optional[List[str]]}
+
+
+def _optional_model(name, annotations):
+    """A model whose every field is optional and defaults to None."""
+    namespace = {"__annotations__": annotations, "__module__": __name__}
+    namespace.update({field: None for field in annotations})
+    return type(name, (BaseModel,), namespace)
+
+
+def _network(model, single, plural):
+    """The Network envelopes the registry generates for ``model``, keyed by
+    ``single``/``plural``."""
+    partial = _optional_model(
+        f"{model.__name__}Partial",
+        {name: Optional[info.annotation] for name, info in model.model_fields.items()},
+    )
+    envelope = {single: Optional[partial], **_PROJECTION}
+    return type(
+        "Network",
+        (),
+        {
+            "POST": _optional_model("POST", dict(envelope)),
+            "PUT": _optional_model("PUT", dict(envelope)),
+            "SEARCH": _optional_model("SEARCH", dict(envelope)),
+            "GET": _optional_model("GET", dict(_PROJECTION)),
+            "LIST": _optional_model(
+                "LIST",
+                {
+                    **_PROJECTION,
+                    "offset": Optional[int],
+                    "limit": Optional[int],
+                    "sort_by": Optional[str],
+                    "sort_order": Optional[str],
+                },
+            ),
+            "ResponseSingle": type(
+                "ResponseSingle", (BaseModel,), {"__annotations__": {single: model}}
+            ),
+            "ResponsePlural": type(
+                "ResponsePlural",
+                (BaseModel,),
+                {"__annotations__": {plural: List[model]}},
+            ),
+        },
+    )
+
+
+class WidgetModel(BaseModel):
+    id: Optional[str] = None
+    owner_id: Optional[str] = None
+    name: Optional[str] = None
+
+    Manager: ClassVar[Optional[Type[Any]]] = None
+
+
+setattr(WidgetModel, "Network", _network(WidgetModel, "widget", "widgets"))
+
+
+class OwnerModel(BaseModel):
+    id: Optional[str] = None
+
+    Manager: ClassVar[Optional[Type[Any]]] = None
+
+
+class _Registry:
+    def __init__(self, *models):
+        self._models = {model.__name__: model for model in models}
+
+    def apply(self, model):
+        return model
+
+    def is_model_bound(self, model):
+        return model in self._models.values()
+
+    def action_managers(self):
+        return []
+
+
+def _matches(row, filters):
+    return all(
+        getattr(row, key, None) == value
+        for key, value in filters.items()
+        if not isinstance(value, dict) and value is not None
+    )
+
+
+class WidgetManager(AbstractBLLManager, RouterMixin):
+    """Widgets in a dict shared by every instance (reset per test)."""
+
+    _model = WidgetModel
+    prefix = "/v1/widget"
+    auth_type = AuthType.NONE
+    routes_to_register = ALL_ROUTES
+    rows: ClassVar[Dict[str, WidgetModel]] = {}
+    created: ClassVar[List[Dict[str, Any]]] = []
+
+    def create(self, **kwargs):
+        type(self).created.append(dict(kwargs))
+        row = WidgetModel(id=f"w{len(self.rows) + 1}", **kwargs)
+        self.rows[row.id] = row
+        return row
+
+    def get(self, include=None, fields=None, **kwargs):
+        row = self.rows.get(kwargs.pop("id"))
+        return row if row is not None and _matches(row, kwargs) else None
+
+    def list(
+        self,
+        include=None,
+        fields=None,
+        sort_by=None,
+        sort_order="asc",
+        filters=None,
+        limit=None,
+        offset=None,
+        **kwargs,
+    ):
+        rows = [row for row in self.rows.values() if _matches(row, kwargs)]
+        start = offset or 0
+        return rows[start : start + (limit or 100)]
+
+    def update(self, id, **kwargs):
+        row = self.rows[id]
+        for key, value in kwargs.items():
+            setattr(row, key, value)
+        return row
+
+    def delete(self, id):
+        del self.rows[id]
+
+    def search(
+        self,
+        include=None,
+        fields=None,
+        offset=0,
+        limit=100,
+        sort_by=None,
+        sort_order="asc",
+        page=None,
+        pageSize=None,
+        **criteria,
+    ):
+        rows = [row for row in self.rows.values() if _matches(row, criteria)]
+        return rows[offset : offset + limit]
+
+    def batch_update(self, items):
+        return [self.update(item["id"], **item["data"]) for item in items]
+
+    def batch_delete(self, ids):
+        for entity_id in ids:
+            self.delete(entity_id)
+
+
+WidgetModel.Manager = WidgetManager
+
+
+class OwnerManager(AbstractBLLManager, RouterMixin):
+    """Serves only its widgets, nested as ``/v1/owner/{owner_id}/kid``: the
+    manager property ("kids") is not the widget's own envelope name."""
+
+    _model = OwnerModel
+    prefix = "/v1/owner"
+    auth_type = AuthType.NONE
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = []
+    nested_resources = {
+        "kid": NestedResourceConfig(
+            child_resource_name="kid",
+            manager_property="kids",
+            child_manager_class=WidgetManager,
+            routes_to_register=ALL_ROUTES,
+        )
+    }
+
+    @property
+    def kids(self):
+        return WidgetManager(model_registry=self.model_registry)
+
+
+@pytest.fixture(autouse=True)
+def _empty_store():
+    WidgetManager.rows.clear()
+    WidgetManager.created.clear()
+    yield
+    WidgetManager.rows.clear()
+    WidgetManager.created.clear()
+
+
+def _client(*managers):
+    registry = _Registry(WidgetModel, OwnerModel)
+    app = FastAPI()
+    app.state.model_registry = registry
+    for manager in managers:
+        app.include_router(create_router_from_manager(manager, registry))
+    return TestClient(app)
+
+
+def _seed(**fields):
+    row = WidgetModel(id=f"w{len(WidgetManager.rows) + 1}", **fields)
+    WidgetManager.rows[row.id] = row
+    return row
+
 
 # ---------------------------------------------------------------------------
 # Static custom routes: server-derived arguments win over the body (#272)
@@ -76,3 +302,51 @@ def test_static_route_body_cannot_override_server_arguments():
         # An ordinary body field still reaches the method.
         "note": "kept",
     }
+
+
+# ---------------------------------------------------------------------------
+# Envelopes are keyed by the network model's own name (#267)
+# ---------------------------------------------------------------------------
+
+
+class GadgetManager(WidgetManager):
+    """Named for something other than the model it serves: its envelopes
+    are still the model's (``widget``), as its generated network model
+    declares them."""
+
+    prefix = "/v1/gadget"
+
+
+def test_a_manager_named_unlike_its_model_uses_the_model_envelope():
+    client = _client(GadgetManager)
+
+    created = client.post("/v1/gadget", json={"widget": {"name": "first"}})
+    assert created.status_code == 201, created.text
+    widget_id = created.json()["widget"]["id"]
+
+    fetched = client.get(f"/v1/gadget/{widget_id}")
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["widget"]["name"] == "first"
+
+    listed = client.get("/v1/gadget")
+    assert listed.status_code == 200, listed.text
+    assert [w["name"] for w in listed.json()["widgets"]] == ["first"]
+
+    updated = client.put(f"/v1/gadget/{widget_id}", json={"widget": {"name": "2nd"}})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["widget"]["name"] == "2nd"
+
+
+def test_a_nested_resource_named_unlike_its_model_uses_the_model_envelope():
+    """``/v1/owner/{owner_id}/kid`` serves widgets: the manager property
+    ("kids" -> "kid") names the path, the widget model names the envelope."""
+    row = _seed(owner_id="o1", name="kid-widget")
+    client = _client(OwnerManager)
+
+    fetched = client.get(f"/v1/owner/o1/kid/{row.id}")
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["widget"]["name"] == "kid-widget"
+
+    listed = client.get("/v1/owner/o1/kid")
+    assert listed.status_code == 200, listed.text
+    assert [w["id"] for w in listed.json()["widgets"]] == [row.id]

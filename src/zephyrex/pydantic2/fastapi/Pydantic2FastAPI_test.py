@@ -919,8 +919,9 @@ class TestQueryParameterInjection:
         # not an alternate success path (the old if/else let a 422 pass as long
         # as the manager recorded the params).
         assert response.status_code == 200, response.text
-        # Response is wrapped under the manager's resource name ("query_aware").
-        payload = response.json()["query_aware"]
+        # Response is wrapped under the network model's own envelope key
+        # ("test"), not the manager's name ("query_aware").
+        payload = response.json()["test"]
 
         assert payload["name"] == "Seed"
         assert payload["value"] == 7
@@ -971,10 +972,10 @@ class TestQueryParameterInjection:
         response = client.get("/v1/test?fields=name")
         # The route must return 200 with the seeded entities (never a 422 that
         # the old if/else accepted, never an empty page). Response is wrapped
-        # under the manager's plural resource name.
+        # under the network model's plural envelope key.
         assert response.status_code == 200, response.text
         body = response.json()
-        items = body["query_awares"]
+        items = body["tests"]
 
         # Both seeded rows are present, in order, with their real values -- a
         # stubbed/empty list would fail here.

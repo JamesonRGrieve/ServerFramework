@@ -98,6 +98,13 @@ class BatchTarget(RouteModel):
     if_match: Optional[str] = None
 
 
+def _envelope_key(envelope: Any, fallback: str) -> str:
+    """The one field an envelope model (``ResponseSingle``/``ResponsePlural``)
+    keys its payload by; ``fallback`` when it does not declare exactly one."""
+    fields: List[str] = list(getattr(envelope, "model_fields", None) or {})
+    return fields[0] if len(fields) == 1 else fallback
+
+
 def register_route(
     router: APIRouter,
     route_type: RouteType,
@@ -182,6 +189,18 @@ def register_route(
             return
         network_model = bound_base_model.Network
         target_model = bound_base_model
+
+    # Request and response envelopes are keyed by the name the network model
+    # itself declares (the model's wire name). The manager's name, or a
+    # nested route's manager property, can differ from it
+    # (``/v1/user/{user_id}/metadata`` serves MetadataModel, whose envelope is
+    # ``metadata``, never ``metadatum``).
+    resource_name = _envelope_key(
+        getattr(network_model, "ResponseSingle", None), resource_name
+    )
+    resource_name_plural = _envelope_key(
+        getattr(network_model, "ResponsePlural", None), resource_name_plural
+    )
 
     # Generate examples if not provided
     if not examples or route_type not in examples:
