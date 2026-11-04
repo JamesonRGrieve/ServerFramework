@@ -350,3 +350,91 @@ def test_a_nested_resource_named_unlike_its_model_uses_the_model_envelope():
     listed = client.get("/v1/owner/o1/kid")
     assert listed.status_code == 200, listed.text
     assert [w["id"] for w in listed.json()["widgets"]] == [row.id]
+
+
+# ---------------------------------------------------------------------------
+# Nested writes are scoped to the path's parent (#264)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_owners():
+    """One widget under owner o1 and one under owner o2."""
+    return _seed(owner_id="o1", name="mine"), _seed(owner_id="o2", name="theirs")
+
+
+def test_nested_update_of_another_parents_child_is_not_found(two_owners):
+    _, theirs = two_owners
+    response = _client(OwnerManager).put(
+        f"/v1/owner/o1/kid/{theirs.id}", json={"widget": {"name": "hijacked"}}
+    )
+
+    assert response.status_code == 404, response.text
+    assert WidgetManager.rows[theirs.id].name == "theirs"
+
+
+def test_nested_update_cannot_move_a_child_to_another_parent(two_owners):
+    mine, _ = two_owners
+    client = _client(OwnerManager)
+
+    moved = client.put(
+        f"/v1/owner/o1/kid/{mine.id}", json={"widget": {"owner_id": "o2"}}
+    )
+    assert moved.status_code == 422, moved.text
+    assert WidgetManager.rows[mine.id].owner_id == "o1"
+
+    renamed = client.put(f"/v1/owner/o1/kid/{mine.id}", json={"widget": {"name": "ok"}})
+    assert renamed.status_code == 200, renamed.text
+    assert WidgetManager.rows[mine.id].name == "ok"
+
+
+def test_nested_delete_of_another_parents_child_is_not_found(two_owners):
+    mine, theirs = two_owners
+    client = _client(OwnerManager)
+
+    refused = client.delete(f"/v1/owner/o1/kid/{theirs.id}")
+    assert refused.status_code == 404, refused.text
+    assert theirs.id in WidgetManager.rows
+
+    deleted = client.delete(f"/v1/owner/o1/kid/{mine.id}")
+    assert deleted.status_code == 204, deleted.text
+    assert mine.id not in WidgetManager.rows
+
+
+def test_nested_batch_writes_refuse_another_parents_children(two_owners):
+    mine, theirs = two_owners
+    client = _client(OwnerManager)
+
+    updated = client.put(
+        "/v1/owner/o1/kid",
+        json={"widget": {"name": "batched"}, "target_ids": [mine.id, theirs.id]},
+    )
+    assert updated.status_code == 404, updated.text
+    assert theirs.id in updated.text
+    assert [WidgetManager.rows[mine.id].name, WidgetManager.rows[theirs.id].name] == [
+        "mine",
+        "theirs",
+    ]
+
+    deleted = client.delete(f"/v1/owner/o1/kid?target_ids={mine.id},{theirs.id}")
+    assert deleted.status_code == 404, deleted.text
+    assert {mine.id, theirs.id} <= set(WidgetManager.rows)
+
+
+def test_nested_batch_update_cannot_move_children(two_owners):
+    mine, _ = two_owners
+    response = _client(OwnerManager).put(
+        "/v1/owner/o1/kid",
+        json={"widget": {"owner_id": "o2"}, "target_ids": [mine.id]},
+    )
+
+    assert response.status_code == 422, response.text
+    assert WidgetManager.rows[mine.id].owner_id == "o1"
+
+
+def test_nested_list_filter_cannot_widen_the_parent_scope(two_owners):
+    mine, _ = two_owners
+    response = _client(OwnerManager).get("/v1/owner/o1/kid?owner_id__eq=o2")
+
+    assert response.status_code == 200, response.text
+    assert [w["id"] for w in response.json()["widgets"]] == [mine.id]

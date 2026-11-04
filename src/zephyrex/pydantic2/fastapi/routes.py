@@ -105,6 +105,61 @@ def _envelope_key(envelope: Any, fallback: str) -> str:
     return fields[0] if len(fields) == 1 else fallback
 
 
+def _parent_scope(
+    parent_param_name: Optional[str], request: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """A nested route's parent filter, ``{"<parent>_id": <path value>}``;
+    empty for a top-level route."""
+    if not parent_param_name or not request:
+        return {}
+    return {parent_param_name: request["path_params"][parent_param_name]}
+
+
+def _require_under_parent(
+    manager: Any,
+    ids: List[str],
+    parent_scope: Dict[str, Any],
+    resource_name: str,
+) -> None:
+    """404 unless every record is a child of the path's parent, as the
+    nested GET finds it: a write through ``/v1/<parent>/{a}/<child>`` never
+    reaches a child of parent ``b``."""
+    if not parent_scope:
+        return
+    missing: List[str] = []
+    for entity_id in ids:
+        try:
+            found = manager.get(id=entity_id, **parent_scope)
+        except HTTPException as err:
+            if err.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+            found = None
+        if found is None:
+            missing.append(entity_id)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"{stringcase.titlecase(resource_name)} not found: "
+                f"{', '.join(missing)}"
+            ),
+        )
+
+
+def _refuse_parent_change(data: Any, parent_scope: Dict[str, Any]) -> None:
+    """422 when a nested write's body sets the parent foreign key to another
+    value than the path's: a child is not moved to another parent through
+    its current parent's URL."""
+    if not isinstance(data, dict):
+        return
+    for key, value in parent_scope.items():
+        if key in data and str(data[key]) != str(value):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"'{key}' is set by the path and cannot be changed here",
+            )
+
+
 def register_route(
     router: APIRouter,
     route_type: RouteType,
@@ -350,6 +405,7 @@ def register_route(
             router=router,
             model_registry=model_registry,
             examples=examples,
+            parent_param_name=parent_param_name,
             manager_property=manager_property,
             resource_name=resource_name,
             resource_name_plural=resource_name_plural,
@@ -365,6 +421,7 @@ def register_route(
     elif route_type == RouteType.DELETE:
         _build_delete_route(
             router=router,
+            parent_param_name=parent_param_name,
             manager_property=manager_property,
             resource_name=resource_name,
             manager_factory=manager_factory,
@@ -393,6 +450,7 @@ def register_route(
         _build_batch_update_route(
             router=router,
             examples=examples,
+            parent_param_name=parent_param_name,
             manager_property=manager_property,
             resource_name=resource_name,
             resource_name_plural=resource_name_plural,
@@ -405,7 +463,9 @@ def register_route(
     elif route_type == RouteType.BATCH_DELETE:
         _build_batch_delete_route(
             router=router,
+            parent_param_name=parent_param_name,
             manager_property=manager_property,
+            resource_name=resource_name,
             resource_name_plural=resource_name_plural,
             manager_factory=manager_factory,
             dependencies=dependencies,
@@ -467,11 +527,7 @@ def _build_get_route(
         try:
             # A nested GET is scoped to the parent in its path: a child of a
             # different parent is not found here.
-            parent_scope = (
-                {parent_param_name: request["path_params"][parent_param_name]}
-                if parent_param_name and request
-                else {}
-            )
+            parent_scope = _parent_scope(parent_param_name, request)
 
             # Normalize include/fields query params to lists (accept comma-separated strings)
             include_param = _normalize_query_list(
@@ -725,10 +781,7 @@ def _build_list_route(
         manager=Depends(manager_factory),
     ):
         try:
-            search_params = {}
-            if parent_param_name and request:
-                parent_id = request["path_params"][parent_param_name]
-                search_params[parent_param_name] = parent_id
+            search_params: Dict[str, Any] = {}
 
             # Reserved query parameters that are not filter fields
             reserved_params = {
@@ -777,6 +830,10 @@ def _build_list_route(
                 elif not isinstance(search_params[base], dict):
                     search_params[base] = {"eq": search_params[base]}
                 search_params[base][op] = raw_val
+
+            # A nested LIST is scoped to the path's parent, applied last: a
+            # ``?<parent>_id=`` filter cannot widen it to another parent.
+            search_params.update(_parent_scope(parent_param_name, request))
 
             include_param = _normalize_query_list(
                 getattr(query_params, "include", None)
@@ -1219,6 +1276,7 @@ def _build_update_route(
     router: Any,
     model_registry: Any,
     examples: Any,
+    parent_param_name: Any,
     manager_property: Any,
     resource_name: Any,
     resource_name_plural: Any,
@@ -1266,6 +1324,13 @@ def _build_update_route(
             # The update runs as the caller: a record the caller cannot see is
             # a 404 for them, never retried with elevated privileges.
             actual_manager = get_manager(manager, manager_property)
+
+            # A nested update reaches only a child of the path's parent, and
+            # leaves it there.
+            parent_scope = _parent_scope(parent_param_name, request)
+            _require_under_parent(actual_manager, [id], parent_scope, resource_name)
+            _refuse_parent_change(update_data, parent_scope)
+
             with expect_versions(actual_manager, {id: if_match}):
                 update_result = actual_manager.update(id, **update_data)  # type: ignore[arg-type]
             if (resp := _render_degradation_sentinel(update_result)) is not None:
@@ -1288,7 +1353,10 @@ def _build_update_route(
             if include_selection or fields_selection:
                 try:
                     fresh = get_manager(manager, manager_property).get(
-                        id=id, include=include_selection, fields=fields_selection
+                        id=id,
+                        include=include_selection,
+                        fields=fields_selection,
+                        **parent_scope,
                     )
                     serialized_fresh = serialize_for_response(fresh)
                 except HTTPException as he:
@@ -1331,7 +1399,7 @@ def _build_update_route(
                             if missing:
                                 try:
                                     full = get_manager(manager, manager_property).get(
-                                        id=id, include=None, fields=None
+                                        id=id, include=None, fields=None, **parent_scope
                                     )
                                     full_serialized = serialize_for_response(full)
                                     if isinstance(full_serialized, dict):
@@ -1373,6 +1441,7 @@ def _build_update_route(
 
 def _build_delete_route(
     router: Any,
+    parent_param_name: Any,
     manager_property: Any,
     resource_name: Any,
     manager_factory: Any,
@@ -1391,12 +1460,19 @@ def _build_delete_route(
         dependencies=dependencies,
     )
     async def delete_resource(
+        request: Dict = Depends(get_request_info),
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
         if_match: Optional[str] = _IF_MATCH,
         manager=Depends(manager_factory),
     ):
         try:
             actual_manager: Any = get_manager(manager, manager_property)
+            _require_under_parent(
+                actual_manager,
+                [id],
+                _parent_scope(parent_param_name, request),
+                resource_name,
+            )
             with expect_versions(actual_manager, {id: if_match}):
                 actual_manager.delete(id=id)
             return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1639,6 +1715,7 @@ def _build_search_route(
 def _build_batch_update_route(
     router: Any,
     examples: Any,
+    parent_param_name: Any,
     manager_property: Any,
     resource_name: Any,
     resource_name_plural: Any,
@@ -1678,6 +1755,7 @@ def _build_batch_update_route(
         openapi_extra=_multiformat_request_body_extra(),
     )
     async def batch_update_resources(
+        request: Dict = Depends(get_request_info),
         body: BatchUpdateModel = Body(...),
         manager=Depends(manager_factory),
     ):
@@ -1691,6 +1769,14 @@ def _build_batch_update_route(
             items = [{"id": target.id, "data": update_data} for target in targets]
 
             actual_manager: Any = get_manager(manager, manager_property)
+            parent_scope = _parent_scope(parent_param_name, request)
+            _require_under_parent(
+                actual_manager,
+                [target.id for target in targets],
+                parent_scope,
+                resource_name,
+            )
+            _refuse_parent_change(update_data, parent_scope)
             try:
                 with expect_versions(
                     actual_manager,
@@ -1714,7 +1800,9 @@ def _build_batch_update_route(
 
 def _build_batch_delete_route(
     router: Any,
+    parent_param_name: Any,
     manager_property: Any,
+    resource_name: Any,
     resource_name_plural: Any,
     manager_factory: Any,
     dependencies: Any,
@@ -1731,6 +1819,7 @@ def _build_batch_delete_route(
         dependencies=dependencies,
     )
     async def batch_delete_resources(
+        request: Dict = Depends(get_request_info),
         target_ids: str = Query(
             ..., description=f"Comma-separated list of {resource_name_plural} IDs"
         ),
@@ -1746,6 +1835,12 @@ def _build_batch_delete_route(
                 )
 
             actual_manager: Any = get_manager(manager, manager_property)
+            _require_under_parent(
+                actual_manager,
+                ids_list,
+                _parent_scope(parent_param_name, request),
+                resource_name,
+            )
             try:
                 with expect_versions(
                     actual_manager,
