@@ -453,9 +453,10 @@ class AbstractSDKHandler(ABC):
         """Make an HTTP request, optionally using a caller-supplied *client*.
 
         When *client* is ``None`` a fresh ``httpx.Client`` is created for
-        the call (the default production path).  When a *client* is
-        provided (e.g. a ``TestClient``), it is used directly without
-        ``timeout`` / ``verify`` kwargs that test clients do not accept.
+        the call (the default production path), carrying this handler's
+        ``timeout`` and ``verify_ssl``: httpx takes ``verify`` only on the
+        client, not per request.  When a *client* is provided (e.g. a
+        ``TestClient``), it is used directly with its own configuration.
 
         Args:
             method: HTTP method
@@ -480,11 +481,6 @@ class AbstractSDKHandler(ABC):
             "headers": request_headers,
         }
 
-        # Only pass transport-level options to real httpx clients.
-        if not use_custom:
-            request_kwargs["timeout"] = self.timeout
-            request_kwargs["verify"] = self.verify_ssl
-
         if data is not None:
             if isinstance(data, (dict, list)):
                 request_kwargs["json"] = data
@@ -500,7 +496,9 @@ class AbstractSDKHandler(ABC):
             if use_custom:
                 response = client.request(method, url, **request_kwargs)
             else:
-                with httpx.Client() as http_client:
+                with httpx.Client(
+                    timeout=self.timeout, verify=self.verify_ssl
+                ) as http_client:
                     response = http_client.request(method, url, **request_kwargs)
 
             self.logger.debug(f"Response status: {response.status_code}")
