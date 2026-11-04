@@ -1830,10 +1830,38 @@ def register_custom_route(
                     status_code=500, detail="Model registry not available"
                 )
 
-            # Build method arguments
             sig = inspect.signature(method)
-            method_args = {}
 
+            # What the client sends comes first; the server's own arguments
+            # are applied after it, so a body key can never stand in for the
+            # caller's IP, its Authorization header, the registry or the class.
+            method_args: Dict[str, Any] = {}
+
+            # Handle request body for POST/PUT/PATCH
+            if request.method in _BODY_METHODS:
+                body = await _json_body(request)
+                if not isinstance(body, dict):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Request body must be a JSON object",
+                    )
+
+                # Map body to expected parameters
+                if "registration_data" in sig.parameters:
+                    method_args["registration_data"] = body.get("user", body)
+                elif "login_data" in sig.parameters:
+                    method_args["login_data"] = body.get("auth", body)
+                elif "body" in sig.parameters:
+                    method_args["body"] = body
+                else:
+                    method_args.update(body)
+
+            method_args.update(_declared_request_args(request, response, sig))
+
+            # Add path parameters
+            method_args.update(dict(request.path_params))
+
+            # Server-derived arguments, applied last so they always win.
             if "model_registry" in sig.parameters:
                 method_args["model_registry"] = model_registry
 
@@ -1866,32 +1894,8 @@ def register_custom_route(
             if "req_uri" in sig.parameters:
                 method_args["req_uri"] = request.headers.get("Referer")
 
-            if "cls" in sig.parameters and "cls" not in method_args:
+            if "cls" in sig.parameters:
                 method_args["cls"] = manager_class
-
-            method_args.update(_declared_request_args(request, response, sig))
-
-            # Handle request body for POST/PUT/PATCH
-            if request.method in _BODY_METHODS:
-                body = await _json_body(request)
-                if not isinstance(body, dict):
-                    raise HTTPException(
-                        status_code=422,
-                        detail="Request body must be a JSON object",
-                    )
-
-                # Map body to expected parameters
-                if "registration_data" in sig.parameters:
-                    method_args["registration_data"] = body.get("user", body)
-                elif "login_data" in sig.parameters:
-                    method_args["login_data"] = body.get("auth", body)
-                elif "body" in sig.parameters:
-                    method_args["body"] = body
-                else:
-                    method_args.update(body)
-
-            # Add path parameters
-            method_args.update(dict(request.path_params))
 
             # Call the static method
             result = method(**method_args)
