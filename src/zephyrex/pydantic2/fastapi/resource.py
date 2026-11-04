@@ -628,11 +628,8 @@ def handle_resource_operation_error(err: Exception) -> None:
     except ImportError:
         pass
 
-    else:
-        logger.exception(f"Unexpected error during operation: {err}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=_error_envelope(
-                "An unexpected error occurred", code="internal_error"
-            ),
-        )
+    logger.exception("Unexpected error during operation: %s", err)
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=_error_envelope("An unexpected error occurred", code="internal_error"),
+    )

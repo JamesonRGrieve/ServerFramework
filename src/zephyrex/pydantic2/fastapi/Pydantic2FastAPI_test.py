@@ -1,3 +1,4 @@
+import sys
 from typing import Any, ClassVar, Dict, List, Optional, Type
 
 import pytest
@@ -468,6 +469,19 @@ class TestErrorHandling:
             handle_resource_operation_error(error)
         assert exc_info.value.status_code == 500
         assert "An unexpected error occurred" in exc_info.value.detail["message"]
+
+    def test_generic_exception_is_500_when_external_errors_unimportable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unexpected error is still a 500 when the optional
+        TransientExternalError import fails: the handler never returns
+        quietly, so a failed DELETE cannot be reported as a 204 success."""
+        # A None entry in sys.modules makes the import raise ImportError.
+        monkeypatch.setitem(sys.modules, "zephyrex.extensions.ExternalErrors", None)
+        with pytest.raises(HTTPException) as exc_info:
+            handle_resource_operation_error(RuntimeError("delete failed"))
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == "internal_error"
 
 
 class TestRouteRegistration:
