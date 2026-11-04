@@ -269,3 +269,25 @@ class TestLoadedModels:
         models.load("a", "A", "p", lambda: "model-a", closer)
         assert models.unload("a") and not models.unload("a")
         assert closer.closed == ["model-a"] and models.get("a") is None
+
+    def test_a_pinned_model_is_not_evicted(self, set_env):
+        set_env("LOCAL_AI_MAX_LOADED_MODELS", "1")
+        models, closer = LoadedModels(), Closer()
+        pinned = models.load("a", "A", "p", lambda: "model-a", closer, pinned=True)
+        models.load("b", "B", "p", lambda: "model-b", closer)
+        assert closer.closed == []
+        models.release(pinned)
+        models.load("c", "C", "p", lambda: "model-c", closer)
+        assert closer.closed == ["model-a", "model-b"]
+
+    def test_an_unloaded_pinned_model_closes_with_its_last_pin(self):
+        models, closer = LoadedModels(), Closer()
+        models.load("a", "A", "p", lambda: "model-a", closer)
+        first, second = models.pin("a"), models.pin("a")
+        assert first is not None and first is second
+        assert models.unload("a") and models.get("a") is None
+        models.release(first)
+        assert closer.closed == []
+        models.release(second)
+        assert closer.closed == ["model-a"]
+        assert models.pin("a") is None

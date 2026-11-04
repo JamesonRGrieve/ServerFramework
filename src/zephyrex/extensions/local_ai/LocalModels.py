@@ -292,7 +292,11 @@ async def download_verified(
 @dataclass
 class LoadedModel:
     """A model in memory. ``lock`` serializes inference on it: the
-    libraries' model objects are not safe to use from two threads."""
+    libraries' model objects are not safe to use from two threads.
+
+    ``pins`` counts the callers holding it between finding it and using
+    it; a pinned model is never evicted, and one unloaded while pinned is
+    ``retired`` and closed when its last pin is released."""
 
     key: str
     name: str
@@ -303,6 +307,8 @@ class LoadedModel:
     last_used: float = field(default_factory=time.time)
     uses: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    pins: int = 0
+    retired: bool = False
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -332,6 +338,24 @@ class LoadedModels:
         with self._lock:
             return self._models.get(key)
 
+    def pin(self, key: str) -> Optional[LoadedModel]:
+        """``key``'s model pinned (see :meth:`release`), or ``None`` when
+        it is not in memory."""
+        with self._lock:
+            found = self._models.get(key)
+            if found is not None:
+                found.pins += 1
+            return found
+
+    def release(self, loaded: LoadedModel) -> None:
+        """Drop one pin on ``loaded``; the last pin on a model unloaded
+        meanwhile closes it."""
+        with self._lock:
+            loaded.pins -= 1
+            closing = loaded.retired and loaded.pins == 0
+        if closing:
+            self._close(loaded)
+
     def load(
         self,
         key: str,
@@ -339,9 +363,12 @@ class LoadedModels:
         provider: str,
         load: Callable[[], Any],
         close: Callable[[Any], None],
+        pinned: bool = False,
     ) -> LoadedModel:
         """The model loaded for ``key``, loading it with ``load`` if it is
-        not in memory yet (once, however many callers ask at a time)."""
+        not in memory yet (once, however many callers ask at a time).
+        With ``pinned`` it is pinned before it is returned, so it cannot be
+        evicted before the caller uses it; the caller then releases it."""
         with self._lock:
             gate = self._loading.setdefault(key, threading.Lock())
         with gate:
@@ -349,21 +376,31 @@ class LoadedModels:
                 found = self._models.get(key)
                 if found is not None:
                     self._models.move_to_end(key)
+                    if pinned:
+                        found.pins += 1
                     return found
             self._make_room()
             loaded = LoadedModel(key, name, provider, load(), close)
             with self._lock:
                 self._models[key] = loaded
+                if pinned:
+                    loaded.pins += 1
             return loaded
 
     def _make_room(self) -> None:
-        """Unload least recently used idle models until one more fits."""
+        """Unload least recently used idle models until one more fits: a
+        model in use or pinned is never chosen."""
         while True:
             with self._lock:
                 if len(self._models) < self.capacity():
                     return
                 idle = next(
-                    (m for m in self._models.values() if not m.lock.locked()), None
+                    (
+                        m
+                        for m in self._models.values()
+                        if m.pins == 0 and not m.lock.locked()
+                    ),
+                    None,
                 )
             if idle is None or not self.unload(idle.key):
                 return
@@ -377,14 +414,22 @@ class LoadedModels:
 
     def unload(self, key: str) -> bool:
         """Unload ``key``'s model, after any inference on it finishes;
-        whether it was loaded."""
+        whether it was loaded. A pinned model leaves memory at once and is
+        closed when its last pin is released."""
         with self._lock:
             loaded = self._models.pop(key, None)
-        if loaded is None:
-            return False
+            if loaded is None:
+                return False
+            loaded.retired = True
+            closing = loaded.pins == 0
+        if closing:
+            self._close(loaded)
+        return True
+
+    @staticmethod
+    def _close(loaded: LoadedModel) -> None:
         with loaded.lock:
             loaded.close(loaded.value)
-        return True
 
     def summaries(self) -> List[Dict[str, Any]]:
         with self._lock:

@@ -20,6 +20,7 @@ Generation is bounded: a call asks for at most the instance's
 
 import asyncio
 import gc
+import threading
 from abc import abstractmethod
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, TypeVar
@@ -226,8 +227,9 @@ class AbstractLocalAIProvider(AbstractAIProvider):
     @classmethod
     async def loaded(cls, instance: ProviderInstanceModel) -> LoadedModel:
         """The instance's model in memory, downloaded and loaded if it is
-        not yet."""
-        found = LOADED_MODELS.get(str(instance.id))
+        not yet, and pinned: nothing evicts or closes it until the caller
+        passes it to ``LOADED_MODELS.release``."""
+        found = LOADED_MODELS.pin(str(instance.id))
         if found is not None:
             return found
         directory = await cls.ensure_files(instance)
@@ -239,6 +241,7 @@ class AbstractLocalAIProvider(AbstractAIProvider):
                 cls.name,
                 lambda: cls.load_model(instance, directory),
                 cls.close_model,
+                True,
             )
         except (OSError, ValueError, RuntimeError) as exc:
             raise PermanentExternalError(
@@ -250,14 +253,29 @@ class AbstractLocalAIProvider(AbstractAIProvider):
     @classmethod
     async def run(cls, instance: ProviderInstanceModel, work: Callable[[Any], T]) -> T:
         """``work`` on the instance's loaded model, off the event loop and
-        alone on that model, abandoned if it overruns its deadline."""
-        loaded = await cls.loaded(instance)
+        alone on that model, abandoned if it overruns its deadline.
+
+        The model stays pinned from lookup until ``work`` returns, so no
+        eviction or unload closes it in between. Whichever of the task and
+        this call claims the pin first releases it: the task once its work
+        is done (even after this call stopped waiting), or this call when
+        the task never started."""
         budget = cls.timeout_seconds(instance) + DEADLINE_GRACE_SECONDS
+        loaded = await cls.loaded(instance)
+        claim = threading.Lock()
 
         def task() -> T:
-            with loaded.lock:
-                LOADED_MODELS.touch(loaded)
-                return work(loaded.value)
+            if not claim.acquire(blocking=False):
+                raise TransientExternalError(
+                    f"{instance.name} was abandoned before it started",
+                    provider=cls.name,
+                )
+            try:
+                with loaded.lock:
+                    LOADED_MODELS.touch(loaded)
+                    return work(loaded.value)
+            finally:
+                LOADED_MODELS.release(loaded)
 
         try:
             return await asyncio.wait_for(asyncio.to_thread(task), budget)
@@ -266,6 +284,9 @@ class AbstractLocalAIProvider(AbstractAIProvider):
                 f"{instance.name} did not answer within {budget:g} seconds",
                 provider=cls.name,
             ) from exc
+        finally:
+            if claim.acquire(blocking=False):
+                LOADED_MODELS.release(loaded)
 
     @classmethod
     def plain_messages(
@@ -304,7 +325,7 @@ class AbstractLocalAIProvider(AbstractAIProvider):
 
     @classmethod
     async def load(cls, instance: ProviderInstanceModel) -> Dict[str, Any]:
-        await cls.loaded(instance)
+        LOADED_MODELS.release(await cls.loaded(instance))
         return cls.describe(instance)
 
     @classmethod
