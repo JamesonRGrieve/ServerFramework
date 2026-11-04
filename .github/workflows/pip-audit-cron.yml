@@ -49,7 +49,7 @@ jobs:
 
       - name: Gate on known vulnerabilities
         id: filter
-        run: python scripts/audit_gate.py audit-report.json
+        run: python scripts/audit_gate.py audit-report.json --pip-audit-status "${{ steps.audit.outputs.rc }}"
 
       - name: Open issue on scheduled failure
         if: failure() && github.event_name == 'schedule'
