@@ -15,6 +15,7 @@ import pytest
 from decimal import Decimal
 
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
+from zephyrex.extensions.quota.BLL_Quota import Quota, QuotaExhaustedError
 from zephyrex.lib.Metrics import (
     InMemoryMetricsBackend,
     reset_metrics_backend,
@@ -548,6 +549,83 @@ def test_cost_model_failure_does_not_break_rotation(monkeypatch):
 
     # Cost model raising must NOT fail the rotation call.
     assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
+
+
+def _metered_provider(name: str, per_call_usd: str) -> MagicMock:
+    inst = MagicMock()
+    inst.name = name
+    inst.provider_class = type(
+        "P", (), {"cost_model": ConstantCostModel(per_call_usd=Decimal(per_call_usd))}
+    )
+    return inst
+
+
+def _usd_quota(limit_usd: str) -> Quota:
+    return Quota(
+        ability="charge.create",
+        period="day",
+        period_key="2026-04-30",
+        limit=1000,
+        limit_usd=Decimal(limit_usd),
+    )
+
+
+@pytest.mark.unit
+def test_sticky_pinned_call_is_refused_when_the_usd_cap_is_reached(monkeypatch):
+    """A tenant at its USD cap is refused on the sticky-pinned path too:
+    once a pin exists, the next call must not slip past the pre-check."""
+    a = _metered_provider("prov-A", "1.00")
+    quota = _usd_quota("1.50")
+    hint = RoutingHint(stickiness_key="conv-usd-cap")
+
+    rm1 = fake_rotation_manager(monkeypatch, [a], team_id="team-7")
+    rm1.rotate(
+        lambda inst: "ok", ability="charge.create", usd_quota=quota, routing_hint=hint
+    )
+    assert quota.consumed_usd == Decimal("1.00")
+    # The pin exists, so the next call takes the pinned path.
+    assert _bll_mod._sticky_get("conv-usd-cap", "charge.create") == "pi-0"
+
+    rm2 = fake_rotation_manager(monkeypatch, [a], team_id="team-7")
+    called: list = []
+
+    def call(inst):
+        called.append(inst.name)
+        return "ok"
+
+    with pytest.raises(QuotaExhaustedError) as ei:
+        rm2.rotate(call, ability="charge.create", usd_quota=quota, routing_hint=hint)
+    assert ei.value.scope == "usd"
+    assert called == []
+    assert quota.consumed_usd == Decimal("1.00")
+
+
+@pytest.mark.unit
+def test_sticky_pinned_calls_are_charged(monkeypatch):
+    """Calls served by the sticky pin update `consumed_usd` and the cost
+    counter exactly like calls served by the linear chain."""
+    a = _metered_provider("prov-A", "0.25")
+    b = _metered_provider("prov-B", "0.25")
+    quota = _usd_quota("10.00")
+    hint = RoutingHint(stickiness_key="conv-usd-charge")
+    visited: list = []
+
+    def call(inst):
+        visited.append(inst.name)
+        return "ok"
+
+    for _ in range(3):
+        rm = fake_rotation_manager(monkeypatch, [a, b], team_id="team-7")
+        assert (
+            rm.rotate(call, ability="charge.create", usd_quota=quota, routing_hint=hint)
+            == "ok"
+        )
+
+    # First call pinned prov-A via the chain; the next two were served by the pin.
+    assert visited == ["prov-A", "prov-A", "prov-A"]
+    assert quota.consumed_usd == Decimal("0.75")
+    counters = RotationManager.get_cost_counter()
+    assert counters[("team-7", "prov-A", "charge.create")] == Decimal("0.75")
 
 
 # ----- Item 34 — distributed-tracing + provider-call metrics -------------

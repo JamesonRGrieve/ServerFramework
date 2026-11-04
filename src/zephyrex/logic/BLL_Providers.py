@@ -1941,6 +1941,104 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         except Exception:
             return None
 
+    def _check_usd_quota(
+        self,
+        provider_instance: Any,
+        args: Any,
+        kwargs: Any,
+        *,
+        ability: Optional[str],
+        usd_quota: Optional[Any],
+    ) -> None:
+        """Item 84 — per-tenant USD-cap pre-check. Refuse the call when
+        the estimated cost would push the quota's `consumed_usd` past
+        `limit_usd`. Skipped entirely when `usd_quota` is None or the row
+        has no USD cap. Every provider call goes through here, the pinned
+        attempt included, so a sticky pin cannot bypass the cap."""
+        if usd_quota is None or getattr(usd_quota, "limit_usd", None) is None:
+            return
+        estimated = self._estimate_pre_call_cost(
+            self._resolve_cost_model(provider_instance), args, kwargs
+        )
+        if estimated is None or not usd_quota.is_usd_exhausted(additional=estimated):
+            return
+        from zephyrex.extensions.quota.BLL_Quota import QuotaExhaustedError
+
+        raise QuotaExhaustedError(
+            scope="usd",
+            ability=str(ability or "unknown"),
+            period=str(getattr(usd_quota, "period", "unknown")),
+        )
+
+    def _charge_call(
+        self,
+        provider_instance: Any,
+        args: Any,
+        kwargs: Any,
+        result: Any,
+        *,
+        ability: Optional[str],
+        usd_quota: Optional[Any],
+    ) -> None:
+        """Item 84 — account a successful provider call: the per-tenant
+        cost counter, the cost audit log and the USD-cap true-up. Every
+        successful call goes through here, the pinned attempt included.
+        Never raises: accounting failure must not fail the call."""
+        cost_model = self._resolve_cost_model(provider_instance)
+        if cost_model is None:
+            return
+        try:
+            cost = cost_model((args, kwargs), result)
+            cost_dec = Decimal(str(cost))
+            key = (
+                self._tenant_id(),
+                str(getattr(provider_instance, "name", "unknown")),
+                str(ability or "unknown"),
+            )
+            current = RotationManager._cost_counter.get(key, Decimal("0"))
+            RotationManager._cost_counter[key] = current + cost_dec
+            # Item 84 — emit cost into the audit log when an
+            # emitter is registered. Source-of-truth for
+            # finance reconstruction lives in the audit log;
+            # the in-process counter is the same-process
+            # roll-up optimization.
+            try:
+                from zephyrex.extensions.billing.BLL_CostAuditEmitter import (
+                    get_cost_audit_emitter,
+                )
+
+                _emitter = get_cost_audit_emitter()
+            except Exception:  # noqa: BLE001
+                _emitter = None
+            if _emitter is not None:
+                _emitter(
+                    {
+                        "tenant_id": key[0],
+                        "provider": key[1],
+                        "ability": key[2],
+                        "cost_usd": cost_dec,
+                    }
+                )
+            # Item 84 — true-up the per-tenant USD cap with
+            # the actual cost. Atomic via the Quota module's
+            # fallback lock so concurrent rotations agree.
+            if (
+                usd_quota is not None
+                and getattr(usd_quota, "limit_usd", None) is not None
+            ):
+                from zephyrex.extensions.quota.BLL_Quota import (
+                    _FALLBACK_LOCK,
+                )
+
+                with _FALLBACK_LOCK:
+                    usd_quota.consumed_usd = usd_quota.consumed_usd + cost_dec
+        except Exception as cost_exc:
+            logger.warning(
+                "cost_model raised for provider %s: %s",
+                getattr(provider_instance, "name", "unknown"),
+                cost_exc,
+            )
+
     def _emit_health_for(self, provider_instance) -> None:
         """Item 34 — best-effort: read the provider's health and emit
         ``provider_health_status{provider, status}`` as a gauge. Never
@@ -1994,7 +2092,13 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         return time.monotonic() >= cooldown_expires
 
     def _attempt_pinned(
-        self, rpi, args, kwargs
+        self,
+        rpi,
+        args,
+        kwargs,
+        *,
+        ability: Optional[str],
+        usd_quota: Optional[Any],
     ) -> Generator[_CallProvider, Any, Tuple[Any, bool]]:
         """Item 51: run the rotated callable against the pinned RPI exactly once.
 
@@ -2003,7 +2107,10 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         rotation on failure. Errors that linear rotation would surface
         immediately (`InvalidInputExternalError`, `PermanentExternalError`)
         are re-raised through the pin path as well — sticky pinning never
-        masks application-level invalid input.
+        masks application-level invalid input. The USD-cap pre-check and
+        the cost accounting run here exactly as on the chain path, so a
+        pinned call is refused at the cap (`QuotaExhaustedError`) and is
+        charged when it succeeds.
         """
         try:
             with self.model_registry.DB.get_session():
@@ -2020,9 +2127,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return None, False
         if not provider_instance:
             return None, False
+        self._check_usd_quota(
+            provider_instance, args, kwargs, ability=ability, usd_quota=usd_quota
+        )
         try:
             result = yield _CallProvider(provider_instance, args, kwargs)
-            return result, True
         except Exception as exc:
             policy_mod = self._load_rotation_policy_module()
             if policy_mod is not None:
@@ -2035,6 +2144,15 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 ):
                     raise
             return None, False
+        self._charge_call(
+            provider_instance,
+            args,
+            kwargs,
+            result,
+            ability=ability,
+            usd_quota=usd_quota,
+        )
+        return result, True
 
     def rotate(self, callable_func, *args, **kwargs):
         """
@@ -2185,7 +2303,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 )
                 if pinned_rpi is not None and self._sticky_pin_usable(pinned_rpi):
                     pin_result, pin_succeeded = yield from self._attempt_pinned(
-                        pinned_rpi, args, kwargs
+                        pinned_rpi,
+                        args,
+                        kwargs,
+                        ability=ability,
+                        usd_quota=usd_quota,
                     )
                     if pin_succeeded:
                         # Refresh TTL on success.
@@ -2358,30 +2480,13 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     logger.debug(
                         f"Attempting to use provider instance: {provider_instance.name}"
                     )
-                    # Item 84 — per-tenant USD-cap pre-check. Refuse the
-                    # call when the estimated cost would push the quota's
-                    # `consumed_usd` past `limit_usd`. Skipped entirely
-                    # when `usd_quota` is None or the row has no USD cap.
-                    if (
-                        usd_quota is not None
-                        and getattr(usd_quota, "limit_usd", None) is not None
-                    ):
-                        cost_model_for_pre = self._resolve_cost_model(provider_instance)
-                        estimated = self._estimate_pre_call_cost(
-                            cost_model_for_pre, args, kwargs
-                        )
-                        if estimated is not None and usd_quota.is_usd_exhausted(
-                            additional=estimated
-                        ):
-                            from zephyrex.extensions.quota.BLL_Quota import (
-                                QuotaExhaustedError,
-                            )
-
-                            raise QuotaExhaustedError(
-                                scope="usd",
-                                ability=str(ability or "unknown"),
-                                period=str(getattr(usd_quota, "period", "unknown")),
-                            )
+                    self._check_usd_quota(
+                        provider_instance,
+                        args,
+                        kwargs,
+                        ability=ability,
+                        usd_quota=usd_quota,
+                    )
                     result = yield _CallProvider(provider_instance, args, kwargs)
                     # Success metrics — Item 34. Emission is best-effort.
                     elapsed_ms = (time.monotonic() - attempt_started_at) * 1000.0
@@ -2420,65 +2525,14 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     logger.debug(
                         f"Successfully used provider instance: {provider_instance.name}"
                     )
-                    # Item 84 — emit per-tenant cost metric. Failure here
-                    # must NEVER fail the rotation call.
-                    cost_model = self._resolve_cost_model(provider_instance)
-                    if cost_model is not None:
-                        try:
-                            cost = cost_model((args, kwargs), result)
-                            cost_dec = Decimal(str(cost))
-                            key = (
-                                self._tenant_id(),
-                                str(getattr(provider_instance, "name", "unknown")),
-                                str(ability or "unknown"),
-                            )
-                            current = RotationManager._cost_counter.get(
-                                key, Decimal("0")
-                            )
-                            RotationManager._cost_counter[key] = current + cost_dec
-                            # Item 84 — emit cost into the audit log when an
-                            # emitter is registered. Source-of-truth for
-                            # finance reconstruction lives in the audit log;
-                            # the in-process counter is the same-process
-                            # roll-up optimization.
-                            try:
-                                from zephyrex.extensions.billing.BLL_CostAuditEmitter import (
-                                    get_cost_audit_emitter,
-                                )
-
-                                _emitter = get_cost_audit_emitter()
-                            except Exception:  # noqa: BLE001
-                                _emitter = None
-                            if _emitter is not None:
-                                _emitter(
-                                    {
-                                        "tenant_id": key[0],
-                                        "provider": key[1],
-                                        "ability": key[2],
-                                        "cost_usd": cost_dec,
-                                    }
-                                )
-                            # Item 84 — true-up the per-tenant USD cap with
-                            # the actual cost. Atomic via the Quota module's
-                            # fallback lock so concurrent rotations agree.
-                            if (
-                                usd_quota is not None
-                                and getattr(usd_quota, "limit_usd", None) is not None
-                            ):
-                                from zephyrex.extensions.quota.BLL_Quota import (
-                                    _FALLBACK_LOCK,
-                                )
-
-                                with _FALLBACK_LOCK:
-                                    usd_quota.consumed_usd = (
-                                        usd_quota.consumed_usd + cost_dec
-                                    )
-                        except Exception as cost_exc:
-                            logger.warning(
-                                "cost_model raised for provider %s: %s",
-                                getattr(provider_instance, "name", "unknown"),
-                                cost_exc,
-                            )
+                    self._charge_call(
+                        provider_instance,
+                        args,
+                        kwargs,
+                        result,
+                        ability=ability,
+                        usd_quota=usd_quota,
+                    )
                     # Item 51 — on a successful default-rotation attempt with a
                     # stickiness key, the winning provider becomes the new pin.
                     if sticky_key:
