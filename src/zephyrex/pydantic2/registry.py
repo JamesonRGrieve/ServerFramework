@@ -291,6 +291,8 @@ class ModelRegistry(AbstractRegistry):
             "sort_by": Optional[str],
             "sort_order": Optional[str],
         }
+        from zephyrex.pydantic2.fastapi.limits import MAX_PAGE_SIZE
+
         list_attrs = {
             "__module__": model.__module__,
             "model_config": ConfigDict(populate_by_name=True, extra="ignore"),
@@ -298,7 +300,10 @@ class ModelRegistry(AbstractRegistry):
                 0, ge=0, description="Number of items to skip for pagination"
             ),
             "limit": Field(
-                1000, ge=1, le=1000, description="Maximum number of items to return"
+                MAX_PAGE_SIZE,
+                ge=1,
+                le=MAX_PAGE_SIZE,
+                description="Maximum number of items to return",
             ),
             "page": Field(
                 None, ge=1, description="Page number (1-indexed) for pagination"
@@ -306,7 +311,7 @@ class ModelRegistry(AbstractRegistry):
             "page_size": Field(
                 None,
                 ge=1,
-                le=1000,
+                le=MAX_PAGE_SIZE,
                 description="Number of items per page (alternative to limit/offset)",
                 validation_alias="pageSize",
             ),

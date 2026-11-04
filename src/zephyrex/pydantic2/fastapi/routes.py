@@ -27,7 +27,7 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel as RouteModel
-from pydantic import ValidationError, create_model
+from pydantic import Field, ValidationError, create_model
 
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.InboundSecurity import carry_rate_limit
@@ -41,6 +41,7 @@ from zephyrex.lib.Preconditions import (
 )
 from zephyrex.pydantic2.util import manager_resource_name
 
+from .limits import MAX_BATCH_SIZE, MAX_PAGE_SIZE
 from .types import AuthType, CustomRouteConfig, RouteType
 from .query import (
     _apply_field_projection_to_entity,
@@ -103,6 +104,15 @@ def _envelope_key(envelope: Any, fallback: str) -> str:
     keys its payload by; ``fallback`` when it does not declare exactly one."""
     fields: List[str] = list(getattr(envelope, "model_fields", None) or {})
     return fields[0] if len(fields) == 1 else fallback
+
+
+def _refuse_oversized_batch(count: int) -> None:
+    """422 for a batch write naming more than ``MAX_BATCH_SIZE`` items."""
+    if count > MAX_BATCH_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"A batch names at most {MAX_BATCH_SIZE} items, got {count}",
+        )
 
 
 def _parent_scope(
@@ -1215,6 +1225,7 @@ def _build_create_route(
                         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail=f"Format mismatch: plural key '{resource_name_plural}' must contain array data",
                     )
+                _refuse_oversized_batch(len(items_data))
                 items = []
                 for item in items_data:
                     item_data = item.dict() if hasattr(item, "dict") else item
@@ -1537,10 +1548,12 @@ def _build_search_route(
         manager=Depends(manager_factory),
         include: Optional[Union[List[str], str]] = Query(None),
         fields: Optional[Union[List[str], str]] = Query(None),
-        limit: Optional[int] = Query(None),
-        offset: Optional[int] = Query(None),
-        page: Optional[int] = Query(None),
-        page_size: Optional[int] = Query(None, alias="pageSize"),
+        limit: Optional[int] = Query(None, ge=1, le=MAX_PAGE_SIZE),
+        offset: Optional[int] = Query(None, ge=0),
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(
+            None, alias="pageSize", ge=1, le=MAX_PAGE_SIZE
+        ),
         sort_by: Optional[str] = Query(None),
         sort_order: Optional[str] = Query(None),
     ):
@@ -1748,7 +1761,10 @@ def _build_batch_update_route(
         f"{stringcase.capitalcase(resource_name)}BatchUpdateModel",
         **{
             resource_name: (Dict[str, Any], ...),
-            "target_ids": (List[Union[str, BatchTarget]], ...),
+            "target_ids": (
+                List[Union[str, BatchTarget]],
+                Field(..., max_length=MAX_BATCH_SIZE),
+            ),
         },
     )
 
@@ -1846,6 +1862,7 @@ def _build_batch_delete_route(
                     status_code=400,
                     detail="No valid IDs provided in target_ids parameter",
                 )
+            _refuse_oversized_batch(len(ids_list))
 
             actual_manager: Any = get_manager(manager, manager_property)
             _require_under_parent(

@@ -21,6 +21,7 @@ from zephyrex.pydantic2.fastapi import (
     register_custom_route,
     static_route,
 )
+from zephyrex.pydantic2.fastapi.limits import MAX_BATCH_SIZE, MAX_PAGE_SIZE
 
 # ---------------------------------------------------------------------------
 # An in-memory resource: a model, its network envelopes, a manager over a
@@ -473,3 +474,76 @@ def test_list_accepts_operator_filter_on_a_model_field():
 
     assert response.status_code == 200, response.text
     assert [w["name"] for w in response.json()["widgets"]] == ["first"]
+
+
+# ---------------------------------------------------------------------------
+# SEARCH pages and batch writes are bounded (#270)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        f"limit={MAX_PAGE_SIZE + 1}",
+        "limit=0",
+        "offset=-5",
+        "page=0",
+        f"pageSize={MAX_PAGE_SIZE + 1}",
+        "pageSize=0",
+    ],
+)
+def test_search_refuses_out_of_bounds_paging(query):
+    response = _client(WidgetManager).post(f"/v1/widget/search?{query}", json={})
+
+    assert response.status_code == 422, response.text
+
+
+def test_search_accepts_the_largest_page():
+    _seed(name="first")
+    response = _client(WidgetManager).post(
+        f"/v1/widget/search?limit={MAX_PAGE_SIZE}&offset=0", json={"widget": {}}
+    )
+
+    assert response.status_code == 200, response.text
+    assert [w["name"] for w in response.json()["widgets"]] == ["first"]
+
+
+def test_batch_create_refuses_an_oversized_batch_before_writing():
+    items = [{"name": f"w{n}"} for n in range(MAX_BATCH_SIZE + 1)]
+    response = _client(WidgetManager).post("/v1/widget", json={"widgets": items})
+
+    assert response.status_code == 422, response.text
+    assert WidgetManager.created == []
+
+
+def test_batch_update_refuses_an_oversized_batch():
+    row = _seed(name="kept")
+    response = _client(WidgetManager).put(
+        "/v1/widget",
+        json={"widget": {"name": "x"}, "target_ids": [row.id] * (MAX_BATCH_SIZE + 1)},
+    )
+
+    assert response.status_code == 422, response.text
+    assert WidgetManager.rows[row.id].name == "kept"
+
+
+def test_batch_delete_refuses_an_oversized_batch():
+    rows = [_seed(name=f"w{n}") for n in range(MAX_BATCH_SIZE + 1)]
+    ids = ",".join(row.id for row in rows)
+    response = _client(WidgetManager).delete(f"/v1/widget?target_ids={ids}")
+
+    assert response.status_code == 422, response.text
+    assert len(WidgetManager.rows) == MAX_BATCH_SIZE + 1
+
+
+def test_batch_writes_accept_a_full_batch():
+    client = _client(WidgetManager)
+    items = [{"name": f"w{n}"} for n in range(MAX_BATCH_SIZE)]
+
+    created = client.post("/v1/widget", json={"widgets": items})
+    assert created.status_code == 201, created.text
+    ids = [w["id"] for w in created.json()["widgets"]]
+
+    deleted = client.delete(f"/v1/widget?target_ids={','.join(ids)}")
+    assert deleted.status_code == 204, deleted.text
+    assert WidgetManager.rows == {}
