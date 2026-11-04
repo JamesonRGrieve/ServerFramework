@@ -34,3 +34,5 @@ src/extensions/**/__init__.py
 venv/
 .vscode
 **/workspace
+# Machine-specific wall-time efficiency floors (EfficiencyRatchet).
+.efficiency-baseline.local.json

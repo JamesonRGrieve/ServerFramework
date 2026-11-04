@@ -7,6 +7,16 @@ Two entry points:
 
 Default tolerance is 15% (CPU-bound). IO-bound benchmarks should pass
 a higher tolerance (e.g. 0.50).
+
+Two baseline files:
+
+- ``.efficiency-baseline.json`` (tracked) holds only the ``scaling:``
+  complexity exponents from :func:`ratchet_scaling`. They are dimensionless,
+  so one value holds on every machine.
+- ``.efficiency-baseline.local.json`` (gitignored) holds the wall-time
+  floors from :func:`ratchet` and :func:`ratchet_subprocess`. MHz
+  normalization does not make them portable (memory, disk and load still
+  differ), so each machine ratchets against its own.
 """
 
 from __future__ import annotations
@@ -20,7 +30,12 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence, cast
 
-BASELINE_FILE = Path(__file__).resolve().parents[3] / ".efficiency-baseline.json"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+# Portable complexity exponents only: tracked.
+BASELINE_FILE = _REPO_ROOT / ".efficiency-baseline.json"
+# Machine-specific wall-time floors: gitignored, one per checkout.
+LOCAL_BASELINE_FILE = _REPO_ROOT / ".efficiency-baseline.local.json"
+SCALING_KEY_PREFIX = "scaling:"
 DEFAULT_TOLERANCE = 0.15
 
 # Absolute margin (in units of the complexity exponent) that a scaling ratchet
@@ -57,25 +72,30 @@ def _read_mhz() -> float:
     return 3600.0
 
 
-def _load() -> dict[str, float]:
-    if BASELINE_FILE.exists():
-        return cast("dict[str, float]", json.loads(BASELINE_FILE.read_text()))
+def _load(path: Path | None = None) -> dict[str, float]:
+    """The baselines in ``path`` (the tracked file when omitted)."""
+    path = BASELINE_FILE if path is None else path
+    if path.exists():
+        return cast("dict[str, float]", json.loads(path.read_text()))
     return {}
 
 
-def _save(data: dict[str, float]) -> None:
-    BASELINE_FILE.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+def _save(data: dict[str, float], path: Path | None = None) -> None:
+    path = BASELINE_FILE if path is None else path
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
 def _check(
     key: str, normalized: float, elapsed: float, mhz: float, tolerance: float
 ) -> None:
-    baselines = _load()
+    if key.startswith(SCALING_KEY_PREFIX):
+        raise ValueError(f"{key}: a wall-time key must not use the scaling prefix")
+    baselines = _load(LOCAL_BASELINE_FILE)
     best = baselines.get(key)
 
     if best is None or normalized < best:
         baselines[key] = normalized
-        _save(baselines)
+        _save(baselines, LOCAL_BASELINE_FILE)
         return
 
     limit = best * (1.0 + tolerance)
@@ -126,7 +146,7 @@ def ratchet_subprocess(
         capture_output=True,
         text=True,
         timeout=timeout,
-        cwd=str(Path(__file__).resolve().parents[3]),
+        cwd=str(_REPO_ROOT),
     )
     if result.returncode != 0:
         raise RuntimeError(f"Benchmark subprocess failed:\n{result.stderr}")
@@ -155,6 +175,8 @@ def _lstsq_slope(xs: Sequence[float], ys: Sequence[float]) -> float:
 
 
 def _check_scaling(key: str, exponent: float, margin: float) -> None:
+    if not key.startswith(SCALING_KEY_PREFIX):
+        raise ValueError(f"{key}: a tracked exponent key needs {SCALING_KEY_PREFIX!r}")
     baselines = _load()
     best = baselines.get(key)
 
@@ -215,4 +237,4 @@ def ratchet_scaling(
     # Floor the normalized time so a sub-microsecond sample can't produce a
     # nonsense log; callers are told to size the work above noise regardless.
     ys = [math.log(max(min(samples[n]) * mhz, 1e-9)) for n in sizes]
-    _check_scaling(f"scaling:{key}", _lstsq_slope(xs, ys), margin)
+    _check_scaling(f"{SCALING_KEY_PREFIX}{key}", _lstsq_slope(xs, ys), margin)

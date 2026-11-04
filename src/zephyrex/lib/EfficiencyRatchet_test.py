@@ -11,6 +11,7 @@ with large margin, and they point the baseline at a tmp file so the real
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,48 @@ class TestCheckScaling:
         ER._check_scaling("scaling:demo", 1.0, margin=0.35)
         with pytest.raises(AssertionError, match="Complexity regression"):
             ER._check_scaling("scaling:demo", 2.0, margin=0.35)  # O(n) -> O(n^2)
+
+
+class TestBaselineFiles:
+    """Wall-time floors are machine-specific, so they stay out of the tracked
+    file; only the dimensionless ``scaling:`` exponents go in it (#243)."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_baselines(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ER, "BASELINE_FILE", tmp_path / "tracked.json")
+        monkeypatch.setattr(ER, "LOCAL_BASELINE_FILE", tmp_path / "local.json")
+
+    def test_a_wall_time_floor_goes_to_the_local_file_only(self):
+        ER._check("health_check", 4.7, elapsed=0.001, mhz=4700.0, tolerance=0.15)
+        assert ER._load(ER.LOCAL_BASELINE_FILE) == {"health_check": pytest.approx(4.7)}
+        assert not ER.BASELINE_FILE.exists()
+
+    def test_a_wall_time_ratchet_runs_against_the_local_floor(self):
+        ER._check("health_check", 4.0, elapsed=0.001, mhz=4000.0, tolerance=0.15)
+        with pytest.raises(AssertionError, match="Efficiency regression"):
+            ER._check("health_check", 5.0, elapsed=0.001, mhz=5000.0, tolerance=0.15)
+
+    def test_a_wall_time_key_in_the_tracked_file_is_not_a_floor(self):
+        # A stale floor committed from another machine must not fail this one.
+        ER._save({"health_check": 1.0})
+        ER._check("health_check", 5.0, elapsed=0.001, mhz=5000.0, tolerance=0.15)
+        assert ER._load() == {"health_check": 1.0}
+        assert ER._load(ER.LOCAL_BASELINE_FILE) == {"health_check": pytest.approx(5.0)}
+
+    def test_an_exponent_goes_to_the_tracked_file_only(self):
+        ER._check_scaling("scaling:demo", 1.0, margin=0.35)
+        assert ER._load() == {"scaling:demo": pytest.approx(1.0)}
+        assert not ER.LOCAL_BASELINE_FILE.exists()
+
+    def test_keys_cannot_cross_files(self):
+        with pytest.raises(ValueError):
+            ER._check("scaling:demo", 1.0, elapsed=0.001, mhz=1000.0, tolerance=0.15)
+        with pytest.raises(ValueError):
+            ER._check_scaling("boot", 1.0, margin=0.35)
+
+    def test_the_local_file_is_gitignored(self):
+        ignore = (Path(ER.__file__).resolve().parents[3] / ".gitignore").read_text()
+        assert ".efficiency-baseline.local.json" in ignore.splitlines()
 
 
 class TestRatchetScalingIntegration:
