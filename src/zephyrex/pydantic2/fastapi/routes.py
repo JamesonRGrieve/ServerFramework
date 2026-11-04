@@ -1278,9 +1278,11 @@ def _build_create_route(
     responses = {
         201: {"content": _multiformat_response_content(examples.get("create"))},
         207: {
-            "description": "Multi-Status — a batch in which not every item was "
-            "created: each item's outcome (created, queued, silent_dropped or "
-            "error) is reported in order"
+            "description": "Multi-Status — a batch in which some but not all "
+            "items were created, or some were queued: each item's outcome "
+            "(created, queued, silent_dropped or error) is reported in order. "
+            "A batch in which every item failed is answered with the first "
+            "item's error."
         },
         **_mutation_responses,
     }
@@ -1328,6 +1330,17 @@ def _build_create_route(
                     outcomes.append(outcome)
                     if created is not None:
                         items.append(created)
+
+                # Every item failed: nothing was written, so the batch is
+                # answered as its first item would be on its own (a retry
+                # duplicates nothing).
+                if items_data and all(
+                    outcome["outcome"] == _BATCH_ERROR for outcome in outcomes
+                ):
+                    raise HTTPException(
+                        status_code=outcomes[0]["status_code"],
+                        detail=outcomes[0]["error"],
+                    )
 
                 # Created records go back held to the field ACL.
                 created_records = apply_field_acl_to_payload(

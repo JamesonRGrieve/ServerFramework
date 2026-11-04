@@ -601,6 +601,18 @@ def test_batch_create_attempts_every_item_and_reports_each():
     assert sorted(row.name for row in WidgetManager.rows.values()) == ["a", "d"]
 
 
+def test_batch_create_in_which_every_item_fails_is_the_first_items_error():
+    """Nothing was written, so the batch answers as its first item would
+    alone (the endpoint suite's 422 for an invalid batch)."""
+    response = _client(FlakyWidgetManager).post(
+        "/v1/flaky", json={"widgets": [{"name": "bad"}, {"name": "bad"}]}
+    )
+
+    assert response.status_code == 422, response.text
+    assert len(WidgetManager.created) == 2
+    assert WidgetManager.rows == {}
+
+
 def test_batch_create_reports_a_non_object_item():
     response = _client(WidgetManager).post(
         "/v1/widget", json={"widgets": [{"name": "a"}, "not-an-object"]}
