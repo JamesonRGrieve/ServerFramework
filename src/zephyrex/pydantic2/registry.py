@@ -21,6 +21,7 @@ from zephyrex.pydantic2.fastapi import (
 
 from ordered_set import OrderedSet
 from pydantic import BaseModel, ConfigDict
+from pydantic import create_model as create_pydantic_model
 from sqlalchemy.orm import configure_mappers
 
 from zephyrex.database.migrations.Migration import MigrationManager
@@ -249,25 +250,16 @@ class ModelRegistry(AbstractRegistry):
         if hasattr(model, "Search"):
             search_model = getattr(model, "Search")
         else:
-            # Create a basic search model with optional versions of main fields
-            search_annotations = {}
-            if hasattr(model, "model_fields"):
-                for field_name_inner, field_info in model.model_fields.items():
-                    # Make all search fields optional
-                    field_type = field_info.annotation
-                    # Handle Union types (Optional fields)
-                    if is_union(field_type):
-                        search_annotations[field_name_inner] = field_type
-                    else:
-                        search_annotations[field_name_inner] = Optional[field_type]
-
-            search_model = type(
-                "Search",
-                (BaseModel,),
-                {
-                    "__annotations__": search_annotations,
-                    "__module__": model.__module__,
-                },
+            # A basic search model: every field of the model, optional and
+            # defaulting to None, so a body may name any subset of them.
+            search_fields: Dict[str, Any] = {
+                field_name_inner: (Optional[field_info.annotation], None)
+                for field_name_inner, field_info in getattr(
+                    model, "model_fields", {}
+                ).items()
+            }
+            search_model = create_pydantic_model(
+                "Search", __module__=model.__module__, **search_fields
             )
 
         network_attrs["SEARCH"] = type(

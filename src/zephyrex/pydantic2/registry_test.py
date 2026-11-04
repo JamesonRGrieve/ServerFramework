@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Union, get_args, get_origin
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 # Add parent directory to sys.path to import Pydantic
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1635,3 +1635,32 @@ class TestModelRegistry:
         assert len(registry.bound_models) == k
         # Index stayed in lockstep with the set.
         assert len(registry._bound_model_names) == k
+
+    def test_generated_search_model_accepts_a_partial_body(self):
+        """A model without its own ``Search`` class gets a generated one whose
+        fields are all optional with a default of None, so a search body that
+        names one field validates and only that field is set."""
+
+        class SearchableWidgetModel(BaseModel):
+            name: str
+            size: int
+            note: Optional[str]
+
+        registry = ModelRegistry()
+        registry._generate_network_class(SearchableWidgetModel)
+        network = getattr(SearchableWidgetModel, "Network")
+        search_model = network.SEARCH.model_fields["searchable_widget"].annotation
+
+        assert search_model.__name__ == "Search"
+        assert search_model.__module__ == SearchableWidgetModel.__module__
+        assert set(search_model.model_fields) == {"name", "size", "note"}
+        assert all(
+            not field.is_required() and field.default is None
+            for field in search_model.model_fields.values()
+        )
+
+        body = network.SEARCH.model_validate({"searchable_widget": {"name": "foo"}})
+        assert body.searchable_widget.model_dump(exclude_unset=True) == {"name": "foo"}
+        # A field that is given is still type-checked.
+        with pytest.raises(ValidationError):
+            search_model.model_validate({"size": "not-a-number"})
