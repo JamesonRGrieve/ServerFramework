@@ -756,16 +756,13 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         )
 
     def _username_for(self, identity: Identity) -> Optional[str]:
-        """The provider's username, when no local user has it."""
+        """The provider's username, when no live local user signs in by it.
+        Usernames and emails are one namespace: a username equal to another
+        user's email would make login match two users and lock that user out."""
         if identity.username is None:
             return None
         username = UserManager._normalize_identifier(identity.username)
-        UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
-        taken = UserDB.exists(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            username=username,
-        )
+        taken = UserManager._identifier_taken(username, self.model_registry)
         return None if taken else username
 
     def _create_user(self, identity: Identity, email: str) -> UserModel:

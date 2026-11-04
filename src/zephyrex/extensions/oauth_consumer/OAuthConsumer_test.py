@@ -65,7 +65,9 @@ from zephyrex.logic.BLL_Providers import (
 )
 from zephyrex.testing.factories import (
     INTERNAL_ACCOUNTS,
+    create_user,
     current_if_match,
+    generate_test_email,
     internal_account_email,
 )
 
@@ -737,6 +739,19 @@ class TestAccounts(OAuthCase):
         user = flow.user_by_email(str(idp.account.email))[0]
         assert (user.first_name, user.last_name) == ("Ada", "Lovelace")
         assert user.username == idp.account.preferred_username
+
+    def test_a_provider_username_that_is_another_users_email_is_not_taken(
+        self, flow, idp, set_env
+    ):
+        # Usernames and emails are one sign-in namespace (#252): taking another
+        # user's email as a username would lock that user out of login.
+        set_env("REGISTRATION_MODE", "open")
+        other = create_user(flow.server, email=generate_test_email("victim"))
+        idp.account.preferred_username = other.email
+        created = flow.sign_in(idp, flow.oidc(idp))
+        assert created.status_code == 200 and created.json()["new_user"]
+        user = flow.user_by_email(str(idp.account.email))[0]
+        assert user.username is None
 
     def test_sso_registration_creates_a_new_user_through_the_provider(
         self, flow, idp, set_env
