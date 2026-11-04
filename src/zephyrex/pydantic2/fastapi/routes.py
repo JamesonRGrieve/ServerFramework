@@ -106,6 +106,60 @@ def _envelope_key(envelope: Any, fallback: str) -> str:
     return fields[0] if len(fields) == 1 else fallback
 
 
+_BATCH_CREATED = "created"
+_BATCH_ERROR = "error"
+
+
+def _batch_item_error(err: Exception) -> Dict[str, Any]:
+    """An item's failure as the single-record route would answer it: its
+    status code and error envelope."""
+    try:
+        handle_resource_operation_error(err)
+    except HTTPException as mapped:
+        return {"status_code": mapped.status_code, "error": mapped.detail}
+    return {
+        "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
+        "error": {"message": "An unexpected error occurred"},
+    }
+
+
+def _create_batch_item(
+    manager: Any, index: int, item: Any, parent_scope: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Any]:
+    """Create one item of a batch: its outcome (``created``, ``queued``,
+    ``silent_dropped`` or ``error``) and the created record, or None when
+    nothing was created."""
+    from zephyrex.extensions.ExternalErrors import extract_degradation_sentinel
+
+    try:
+        if not isinstance(item, dict):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Each batch item must be an object",
+            )
+        created = manager.create(**{**item, **parent_scope})
+    except Exception as err:  # stored as this item's outcome; the batch goes on
+        return {"index": index, "outcome": _BATCH_ERROR, **_batch_item_error(err)}, None
+
+    sentinel = extract_degradation_sentinel(created)
+    if sentinel is not None:
+        outcome: Dict[str, Any] = {
+            "index": index,
+            "outcome": sentinel.kind,
+            "status": sentinel.status,
+        }
+        if sentinel.kind == "queued":
+            outcome["tracking_id"] = sentinel.tracking_id
+        else:
+            outcome["provider"] = sentinel.provider
+            outcome["ability"] = sentinel.ability
+        return outcome, None
+
+    record = serialize_for_response(created)
+    record_id = record.get("id") if isinstance(record, dict) else None
+    return {"index": index, "outcome": _BATCH_CREATED, "id": record_id}, created
+
+
 def _refuse_oversized_batch(count: int) -> None:
     """422 for a batch write naming more than ``MAX_BATCH_SIZE`` items."""
     if count > MAX_BATCH_SIZE:
@@ -1194,6 +1248,11 @@ def _build_create_route(
     # Prepare responses with examples — advertise all negotiable formats
     responses = {
         201: {"content": _multiformat_response_content(examples.get("create"))},
+        207: {
+            "description": "Multi-Status — a batch in which not every item was "
+            "created: each item's outcome (created, queued, silent_dropped or "
+            "error) is reported in order"
+        },
         **_mutation_responses,
     }
     responses.update(degradation_responses)
@@ -1226,18 +1285,41 @@ def _build_create_route(
                         detail=f"Format mismatch: plural key '{resource_name_plural}' must contain array data",
                     )
                 _refuse_oversized_batch(len(items_data))
-                items = []
-                for item in items_data:
-                    item_data = item.dict() if hasattr(item, "dict") else item
-                    if parent_param_name and request:
-                        item_data[parent_param_name] = request["path_params"][
-                            parent_param_name
-                        ]
-                    actual_manager: Any = get_manager(manager, manager_property)
-                    created = actual_manager.create(**item_data)
-                    if (resp := _render_degradation_sentinel(created)) is not None:
-                        return resp
-                    items.append(created)
+
+                # Every item is attempted and reported: one that is queued or
+                # fails neither stops the rest nor hides the ones already
+                # created.
+                actual_manager: Any = get_manager(manager, manager_property)
+                parent_scope = _parent_scope(parent_param_name, request)
+                outcomes: List[Dict[str, Any]] = []
+                items: List[Any] = []
+                for index, item in enumerate(items_data):
+                    outcome, created = _create_batch_item(
+                        actual_manager, index, item, parent_scope
+                    )
+                    outcomes.append(outcome)
+                    if created is not None:
+                        items.append(created)
+
+                if len(items) < len(items_data):
+                    errors = [
+                        outcome
+                        for outcome in outcomes
+                        if outcome["outcome"] == _BATCH_ERROR
+                    ]
+                    return JSONResponse(
+                        status_code=status.HTTP_207_MULTI_STATUS,
+                        content=jsonable_encoder(
+                            {
+                                "message": "Partial success",
+                                "results": outcomes,
+                                "errors": errors,
+                                "successful_creates": len(items),
+                                "failed_creates": len(errors),
+                                resource_name_plural: serialize_for_response(items),
+                            }
+                        ),
+                    )
                 return network_model.ResponsePlural(
                     **{resource_name_plural: serialize_for_response(items)}
                 )

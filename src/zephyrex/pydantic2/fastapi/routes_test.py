@@ -10,6 +10,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from zephyrex.extensions.ExternalErrors import QueuedForRetry
 from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 from zephyrex.pydantic2.fastapi import (
     AuthType,
@@ -547,3 +548,64 @@ def test_batch_writes_accept_a_full_batch():
     deleted = client.delete(f"/v1/widget?target_ids={','.join(ids)}")
     assert deleted.status_code == 204, deleted.text
     assert WidgetManager.rows == {}
+
+
+# ---------------------------------------------------------------------------
+# Batch create reports every item (#269)
+# ---------------------------------------------------------------------------
+
+
+class FlakyWidgetManager(WidgetManager):
+    """Queues a widget named "queue" (a QUEUE_AND_RETRY provider's answer)
+    and rejects one named "bad"."""
+
+    prefix = "/v1/flaky"
+
+    def create(self, **kwargs):
+        if kwargs.get("name") == "queue":
+            type(self).created.append(dict(kwargs))
+            return QueuedForRetry(tracking_id="t-1")
+        if kwargs.get("name") == "bad":
+            type(self).created.append(dict(kwargs))
+            raise ValueError("bad widget")
+        return super().create(**kwargs)
+
+
+def test_batch_create_attempts_every_item_and_reports_each():
+    names = ["a", "queue", "bad", "d"]
+    response = _client(FlakyWidgetManager).post(
+        "/v1/flaky", json={"widgets": [{"name": name} for name in names]}
+    )
+
+    assert response.status_code == 207, response.text
+    body = response.json()
+    # Nothing after the queued or failed item was skipped.
+    assert [attempt["name"] for attempt in WidgetManager.created] == names
+    assert [result["outcome"] for result in body["results"]] == [
+        "created",
+        "queued",
+        "error",
+        "created",
+    ]
+    assert [result["index"] for result in body["results"]] == [0, 1, 2, 3]
+    assert body["results"][1]["tracking_id"] == "t-1"
+    assert body["results"][2]["status_code"] == 422
+    assert body["errors"] == [body["results"][2]]
+    # The records created before and after are reported, not dropped.
+    assert [widget["name"] for widget in body["widgets"]] == ["a", "d"]
+    assert [body["results"][0]["id"], body["results"][3]["id"]] == [
+        widget["id"] for widget in body["widgets"]
+    ]
+    assert (body["successful_creates"], body["failed_creates"]) == (2, 1)
+    assert sorted(row.name for row in WidgetManager.rows.values()) == ["a", "d"]
+
+
+def test_batch_create_reports_a_non_object_item():
+    response = _client(WidgetManager).post(
+        "/v1/widget", json={"widgets": [{"name": "a"}, "not-an-object"]}
+    )
+
+    assert response.status_code == 207, response.text
+    body = response.json()
+    assert [result["outcome"] for result in body["results"]] == ["created", "error"]
+    assert body["results"][1]["status_code"] == 422
