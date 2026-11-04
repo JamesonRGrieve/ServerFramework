@@ -2072,8 +2072,10 @@ class AbstractStaticExtension(
         """:meth:`rotate_provider` on one provider instance, named by its id
         or its name: for an operation on a device that instance is (a
         printer, a camera), which no other instance can stand in for. It is
-        still retried as the rotation retries. 404 when no instance of this
-        extension's providers in the rotation goes by ``instance_ref``."""
+        still retried as the rotation retries. 404 when no live instance of
+        this extension's providers in the rotation goes by ``instance_ref``:
+        a deleted instance is never found (ROOT's reads include deleted
+        rows, so they are filtered out)."""
         root = cls.root
         if root is None:
             raise HTTPException(
@@ -2091,10 +2093,12 @@ class AbstractStaticExtension(
         instances = ProviderInstanceManager(
             model_registry=registry, requester_id=requester_id
         )
+        live = [instances.DB.deleted_at.is_(None)]
         matches = [
             instance
             for instance in (
-                instances.list(id=instance_ref) or instances.list(name=instance_ref)
+                instances.list(filters=live, id=instance_ref)
+                or instances.list(filters=live, name=instance_ref)
             )
             if instance.provider_id in own
         ]
@@ -2112,7 +2116,7 @@ class AbstractStaticExtension(
 
     @classmethod
     def instances_of(cls) -> List[Dict[str, Any]]:
-        """This extension's provider instances: id, name, provider."""
+        """This extension's live provider instances: id, name, provider."""
         root = cls.root
         if root is None:
             return []
@@ -2126,10 +2130,11 @@ class AbstractStaticExtension(
         instances = ProviderInstanceManager(
             model_registry=registry, requester_id=requester_id
         )
+        live = [instances.DB.deleted_at.is_(None)]
         found = []
         for provider in cls.providers:
             record = providers.get(name=provider.name)
-            for instance in instances.list(provider_id=record.id) or []:
+            for instance in instances.list(filters=live, provider_id=record.id) or []:
                 found.append(
                     {
                         "id": str(instance.id),

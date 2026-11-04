@@ -37,6 +37,8 @@ from zephyrex.extensions.mcp_client.PRV_Stdio import (
 from zephyrex.extensions.mcp_client.PRV_StreamableHTTP import (
     PRV_StreamableHTTP_MCPClient,
 )
+from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Providers import ProviderInstanceManager
 
 TOKEN = "test-bearer-token"
 SERVER_SOURCE = '''
@@ -353,3 +355,22 @@ class TestAbilities:
             InvalidInputExternalError,
             EXT_MCPClient.get_prompt(working.name, "review", {"language": 3}),
         )
+
+    async def test_a_deleted_server_is_never_reached(self, servers, extension_app):
+        """ROOT's reads include deleted rows: a deleted instance must be
+        neither listed nor reached, even when a live one took its name."""
+        unset, working = servers
+        instances = ProviderInstanceManager(
+            model_registry=extension_app.state.model_registry,
+            requester_id=env("ROOT_ID"),
+        )
+        instances.delete(str(unset.id))
+        instances.update(str(working.id), name=unset.name)
+
+        listed = await EXT_MCPClient.list_mcp_servers()
+        assert str(unset.id) not in [s["id"] for s in listed]
+        assert str(working.id) in [s["id"] for s in listed]
+        error = await raises(HTTPException, EXT_MCPClient.list_tools(str(unset.id)))
+        assert error.status_code == 404
+        result = await EXT_MCPClient.call_tool(unset.name, "add", {"a": 2, "b": 3})
+        assert result["structured_content"] == {"result": 5}
