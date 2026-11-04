@@ -160,6 +160,28 @@ def _create_batch_item(
     return {"index": index, "outcome": _BATCH_CREATED, "id": record_id}, created
 
 
+def _single_response(
+    network_model: Any,
+    envelope_key: str,
+    entity: Any,
+    manager: Any,
+    target_model: Any,
+    status_code: int,
+    headers: Dict[str, str],
+) -> JSONResponse:
+    """One record in its validated ``ResponseSingle`` envelope, held to the
+    requester's field ACL as a GET of it is."""
+    content: Dict[str, Any] = network_model.ResponseSingle(
+        **{envelope_key: entity}
+    ).model_dump()
+    content[envelope_key] = apply_field_acl_to_payload(
+        content[envelope_key], manager, target_model
+    )
+    return JSONResponse(
+        content=jsonable_encoder(content), status_code=status_code, headers=headers
+    )
+
+
 def _refuse_oversized_batch(count: int) -> None:
     """422 for a batch write naming more than ``MAX_BATCH_SIZE`` items."""
     if count > MAX_BATCH_SIZE:
@@ -463,6 +485,7 @@ def register_route(
             get_manager=get_manager,
             degradation_responses=degradation_responses,
             _mutation_responses=_mutation_responses,
+            target_model=target_model,
         )
     elif route_type == RouteType.UPDATE:
         _build_update_route(
@@ -523,6 +546,7 @@ def register_route(
             dependencies=dependencies,
             get_manager=get_manager,
             _mutation_responses=_mutation_responses,
+            target_model=target_model,
         )
     elif route_type == RouteType.BATCH_DELETE:
         _build_batch_delete_route(
@@ -1043,10 +1067,14 @@ def _build_list_route(
                     **{resource_name_plural: serialized_results}
                 )
             except ValidationError:
+                # Rows the envelope cannot validate are still held to the
+                # field ACL.
                 return JSONResponse(
                     content=jsonable_encoder(
                         {
-                            resource_name_plural: serialized_results,
+                            resource_name_plural: apply_field_acl_to_payload(
+                                serialized_results, manager, target_model
+                            ),
                             "pagination": _pagination_meta,
                         }
                     ),
@@ -1240,6 +1268,7 @@ def _build_create_route(
     get_manager: Any,
     degradation_responses: Any,
     _mutation_responses: Any,
+    target_model: Any,
 ) -> None:
     """Register the CREATE route (extracted from register_route, #226)."""
     path = ""
@@ -1269,7 +1298,6 @@ def _build_create_route(
         openapi_extra=_multiformat_request_body_extra(),
     )
     async def create_resource(
-        response: Response,
         request: Dict = Depends(get_request_info),
         body: Dict = Body(...),
         manager=Depends(manager_factory),
@@ -1301,6 +1329,10 @@ def _build_create_route(
                     if created is not None:
                         items.append(created)
 
+                # Created records go back held to the field ACL.
+                created_records = apply_field_acl_to_payload(
+                    serialize_for_response(items), manager, target_model
+                )
                 if len(items) < len(items_data):
                     errors = [
                         outcome
@@ -1316,12 +1348,13 @@ def _build_create_route(
                                 "errors": errors,
                                 "successful_creates": len(items),
                                 "failed_creates": len(errors),
-                                resource_name_plural: serialize_for_response(items),
+                                resource_name_plural: created_records,
                             }
                         ),
                     )
-                return network_model.ResponsePlural(
-                    **{resource_name_plural: serialize_for_response(items)}
+                return JSONResponse(
+                    content=jsonable_encoder({resource_name_plural: created_records}),
+                    status_code=status.HTTP_201_CREATED,
                 )
             else:
                 # Handle single creation
@@ -1361,19 +1394,16 @@ def _build_create_route(
                 logger.debug(f"ResponseSingle expects fields: {expected_fields}")
 
                 # Try to construct the payload based on expected fields
-                if "base" in expected_fields:
-                    payload = {"base": created_dict}
-                else:
-                    payload = {resource_name: created_dict}
-
-                logger.debug(f"Payload to ResponseSingle: {payload}")
-                toReturn = network_model.ResponseSingle(**payload)
-                response.headers.update(etag_headers(created_dict))
-                logger.debug(f"ResponseSingle type: {type(toReturn)}")
-                logger.debug(
-                    f"ResponseSingle dict: {toReturn.model_dump() if hasattr(toReturn, 'model_dump') else toReturn}"
+                envelope_key = "base" if "base" in expected_fields else resource_name
+                return _single_response(
+                    network_model,
+                    envelope_key,
+                    created_dict,
+                    manager,
+                    target_model,
+                    status.HTTP_201_CREATED,
+                    etag_headers(created_dict),
                 )
-                return toReturn
         except Exception as err:
             handle_resource_operation_error(err)
 
@@ -1521,6 +1551,11 @@ def _build_update_route(
                     except Exception:
                         pass
 
+                    # The ACL applies after the fill, which reads the full
+                    # record.
+                    projected = apply_field_acl_to_payload(
+                        projected, manager, target_model
+                    )
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: projected}),
                         status_code=status.HTTP_200_OK,
@@ -1531,16 +1566,35 @@ def _build_update_route(
                     populated = _populate_includes_on_serialized(
                         serialized_fresh, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None), model_class=target_model  # type: ignore[arg-type]
                     )
+                    populated = apply_field_acl_to_payload(
+                        populated, manager, target_model
+                    )
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: populated}),
                         status_code=status.HTTP_200_OK,
                         headers=version_headers,
                     )
 
-                return network_model.ResponseSingle(**{resource_name: serialized_fresh})
+                return _single_response(
+                    network_model,
+                    resource_name,
+                    serialized_fresh,
+                    manager,
+                    target_model,
+                    status.HTTP_200_OK,
+                    version_headers,
+                )
 
             # Otherwise return the serialized update result
-            return network_model.ResponseSingle(**{resource_name: serialized_update})
+            return _single_response(
+                network_model,
+                resource_name,
+                serialized_update,
+                manager,
+                target_model,
+                status.HTTP_200_OK,
+                version_headers,
+            )
         except Exception as err:
             handle_resource_operation_error(err)
 
@@ -1730,6 +1784,22 @@ def _build_search_route(
             registry = getattr(actual_manager, "model_registry", None)
             _validate_includes(actual_include, target_model, resource_name, registry)
 
+            # Restricted fields cannot be sorted, filtered or projected on by
+            # a requester who may not read them (ordering or filtering on one
+            # reveals its values), as on LIST.
+            if actual_sort_by:
+                validate_field_acl_query(
+                    manager, target_model, [actual_sort_by], "sort_by"
+                )
+            if actual_fields:
+                validate_field_acl_query(
+                    manager, target_model, actual_fields, "projection"
+                )
+            if isinstance(search_data, dict) and search_data:
+                validate_field_acl_query(
+                    manager, target_model, list(search_data.keys()), "filter"
+                )
+
             _search_offset = actual_offset
             _search_limit = actual_limit
             if actual_page is not None and actual_page_size is not None:
@@ -1773,10 +1843,16 @@ def _build_search_route(
             fields_selection = _normalize_projection_values(actual_fields)
             include_selection = _normalize_projection_values(actual_include)
 
-            if fields_selection:
-                serialized_items = serialize_for_response(
+            # Every row goes back held to the requester's field ACL.
+            serialized_items = apply_field_acl_to_payload(
+                serialize_for_response(
                     getattr(response_model_instance, resource_name_plural)
-                )
+                ),
+                manager,
+                target_model,
+            )
+
+            if fields_selection:
                 projected_items = [
                     _apply_field_projection_to_entity(
                         item, fields_selection, include_selection
@@ -1800,7 +1876,9 @@ def _build_search_route(
                 return JSONResponse(
                     content=jsonable_encoder(
                         {
-                            resource_name_plural: populated_items,
+                            resource_name_plural: apply_field_acl_to_payload(
+                                populated_items, manager, target_model
+                            ),
                             "pagination": _search_pagination_meta,
                         }
                     ),
@@ -1810,7 +1888,7 @@ def _build_search_route(
             return JSONResponse(
                 content=jsonable_encoder(
                     {
-                        **response_model_instance.model_dump(),
+                        resource_name_plural: serialized_items,
                         "pagination": _search_pagination_meta,
                     }
                 ),
@@ -1832,6 +1910,7 @@ def _build_batch_update_route(
     dependencies: Any,
     get_manager: Any,
     _mutation_responses: Any,
+    target_model: Any,
 ) -> None:
     """Register the BATCH_UPDATE route (extracted from register_route, #226)."""
     path = ""
@@ -1902,8 +1981,18 @@ def _build_batch_update_route(
                     )
                 raise
 
-            return network_model.ResponsePlural(
+            validated = network_model.ResponsePlural(
                 **{resource_name_plural: serialize_for_response(updated_items)}
+            ).model_dump()
+            return JSONResponse(
+                content=jsonable_encoder(
+                    {
+                        resource_name_plural: apply_field_acl_to_payload(
+                            validated[resource_name_plural], manager, target_model
+                        )
+                    }
+                ),
+                status_code=status.HTTP_200_OK,
             )
         except Exception as err:
             handle_resource_operation_error(err)

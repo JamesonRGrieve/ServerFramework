@@ -8,9 +8,10 @@ from typing import Any, ClassVar, Dict, List, Optional, Type
 import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from zephyrex.extensions.ExternalErrors import QueuedForRetry
+from zephyrex.lib.FieldACL import requires
 from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 from zephyrex.pydantic2.fastapi import (
     AuthType,
@@ -134,12 +135,12 @@ class WidgetManager(AbstractBLLManager, RouterMixin):
     prefix = "/v1/widget"
     auth_type = AuthType.NONE
     routes_to_register = ALL_ROUTES
-    rows: ClassVar[Dict[str, WidgetModel]] = {}
+    rows: ClassVar[Dict[str, Any]] = {}
     created: ClassVar[List[Dict[str, Any]]] = []
 
     def create(self, **kwargs):
         type(self).created.append(dict(kwargs))
-        row = WidgetModel(id=f"w{len(self.rows) + 1}", **kwargs)
+        row = self.Model(id=f"w{len(self.rows) + 1}", **kwargs)
         self.rows[row.id] = row
         return row
 
@@ -609,3 +610,172 @@ def test_batch_create_reports_a_non_object_item():
     body = response.json()
     assert [result["outcome"] for result in body["results"]] == ["created", "error"]
     assert body["results"][1]["status_code"] == 422
+
+
+# ---------------------------------------------------------------------------
+# Every response path applies the field ACL (#263)
+# ---------------------------------------------------------------------------
+
+SECRET = "s3cret"
+READ_SECRET = "widget.read_secret"
+
+
+class SecretWidgetModel(BaseModel):
+    id: Optional[str] = None
+    owner_id: Optional[str] = None
+    name: Optional[str] = None
+    secret: Optional[str] = Field(None, json_schema_extra=requires(READ_SECRET))
+
+    Manager: ClassVar[Optional[Type[Any]]] = None
+
+
+setattr(
+    SecretWidgetModel,
+    "Network",
+    _network(SecretWidgetModel, "secret_widget", "secret_widgets"),
+)
+
+
+class _Requester:
+    id = "requester-1"
+
+    def __init__(self, granted):
+        self.granted = granted
+
+    def has_permission(self, name):
+        return name in self.granted
+
+
+class SecretWidgetManager(WidgetManager):
+    """Widgets with a restricted ``secret``, served to a requester holding
+    ``granted`` permissions."""
+
+    _model = SecretWidgetModel
+    prefix = "/v1/secret_widget"
+    granted: ClassVar[frozenset] = frozenset()
+
+    def __init__(self, model_registry=None, requester_id=None):
+        super().__init__(model_registry=model_registry, requester_id=requester_id)
+        self.requester = _Requester(type(self).granted)
+
+
+class GrantedSecretWidgetManager(SecretWidgetManager):
+    prefix = "/v1/granted_secret_widget"
+    granted = frozenset({READ_SECRET})
+
+
+def _hides_secret(records):
+    assert records, "expected records to check"
+    for record in records:
+        assert record.get("secret") != SECRET, record
+
+
+def _secret_client(manager=SecretWidgetManager):
+    client = _client(manager)
+    created = client.post(
+        manager.prefix,
+        json={"secret_widget": {"name": "first", "secret": SECRET}},
+    )
+    assert created.status_code == 201, created.text
+    return client, created
+
+
+def test_create_response_hides_a_restricted_field():
+    _, created = _secret_client()
+
+    _hides_secret([created.json()["secret_widget"]])
+    # The value was stored; only the response withholds it.
+    assert [row.secret for row in WidgetManager.rows.values()] == [SECRET]
+
+
+def test_batch_create_response_hides_a_restricted_field():
+    response = _client(SecretWidgetManager).post(
+        "/v1/secret_widget",
+        json={"secret_widgets": [{"name": "a", "secret": SECRET}]},
+    )
+
+    assert response.status_code == 201, response.text
+    _hides_secret(response.json()["secret_widgets"])
+
+
+def test_update_responses_hide_a_restricted_field():
+    client, created = _secret_client()
+    widget_id = created.json()["secret_widget"]["id"]
+
+    plain = client.put(
+        f"/v1/secret_widget/{widget_id}", json={"secret_widget": {"name": "b"}}
+    )
+    assert plain.status_code == 200, plain.text
+    _hides_secret([plain.json()["secret_widget"]])
+
+    projected = client.put(
+        f"/v1/secret_widget/{widget_id}",
+        json={"secret_widget": {"name": "c"}, "fields": ["name", "secret"]},
+    )
+    assert projected.status_code == 200, projected.text
+    assert projected.json()["secret_widget"]["name"] == "c"
+    _hides_secret([projected.json()["secret_widget"]])
+
+
+def test_batch_update_response_hides_a_restricted_field():
+    client, created = _secret_client()
+    widget_id = created.json()["secret_widget"]["id"]
+
+    response = client.put(
+        "/v1/secret_widget",
+        json={"secret_widget": {"name": "b"}, "target_ids": [widget_id]},
+    )
+
+    assert response.status_code == 200, response.text
+    _hides_secret(response.json()["secret_widgets"])
+
+
+def test_search_response_hides_a_restricted_field():
+    client, _ = _secret_client()
+
+    response = client.post("/v1/secret_widget/search", json={"secret_widget": {}})
+
+    assert response.status_code == 200, response.text
+    _hides_secret(response.json()["secret_widgets"])
+
+
+@pytest.mark.parametrize(
+    "query, body",
+    [
+        ("sort_by=secret", {}),
+        ("fields=secret", {}),
+        ("", {"secret_widget": {"secret": SECRET}}),
+    ],
+)
+def test_search_refuses_a_restricted_field_in_sort_projection_or_filter(query, body):
+    client, _ = _secret_client()
+
+    response = client.post(f"/v1/secret_widget/search?{query}", json=body)
+
+    assert response.status_code == 403, response.text
+
+
+def test_a_requester_holding_the_permission_sees_the_field():
+    client, created = _secret_client(GrantedSecretWidgetManager)
+    assert created.json()["secret_widget"]["secret"] == SECRET
+
+    response = client.post(
+        "/v1/granted_secret_widget/search?sort_by=secret",
+        json={"secret_widget": {"secret": SECRET}},
+    )
+    assert response.status_code == 200, response.text
+    assert [w["secret"] for w in response.json()["secret_widgets"]] == [SECRET]
+
+
+def test_list_fallback_for_unvalidated_rows_hides_a_restricted_field():
+    """A row the plural envelope cannot validate is still filtered: the
+    fallback used to return the raw rows with no ACL."""
+    client, _ = _secret_client()
+    # A row the envelope rejects (its name is not a string) forces the
+    # fallback path.
+    WidgetManager.rows["raw"] = {"id": "raw", "name": {"not": "str"}, "secret": SECRET}
+
+    response = client.get("/v1/secret_widget")
+
+    assert response.status_code == 200, response.text
+    _hides_secret(response.json()["secret_widgets"])
