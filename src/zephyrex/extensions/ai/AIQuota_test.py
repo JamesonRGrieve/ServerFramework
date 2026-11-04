@@ -72,6 +72,15 @@ class TestEstimateAndTrueUp:
     def test_true_up_reads_usage_block(self):
         assert true_up_tokens({"usage": {"total_tokens": 123}}) == 123
 
+    def test_true_up_sums_input_and_output_when_total_absent(self):
+        # The shape chat_answer emits: input/output counts, no total.
+        answer = {"usage": {"input_tokens": 12, "output_tokens": 30}}
+        assert true_up_tokens(answer, fallback=9999) == 42
+
+    def test_true_up_uses_the_count_present_when_one_is_missing(self):
+        answer = {"usage": {"input_tokens": None, "output_tokens": 8}}
+        assert true_up_tokens(answer, fallback=9999) == 8
+
     def test_true_up_falls_back_to_length_for_text(self):
         assert true_up_tokens("x" * 40) == 10
 
@@ -105,3 +114,28 @@ class TestGuardedInference:
         with pytest.raises(QuotaExhaustedError):
             await guarded_inference(ledger, "gpt", "p", fake, max_tokens=100)
         assert calls["n"] == 0  # the model was never dispatched
+
+    @pytest.mark.asyncio
+    async def test_failed_call_releases_its_reservation(self):
+        ledger = TokenQuotaLedger(overall_budget=100, per_model_budgets={"gpt": 100})
+
+        async def failing(prompt, **kw):
+            raise RuntimeError("provider down")
+
+        # Each attempt reserves 1 + 60 = 61; without the release the second
+        # attempt would be refused for quota instead of reaching the provider.
+        for _ in range(3):
+            with pytest.raises(RuntimeError):
+                await guarded_inference(ledger, "gpt", "p", failing, max_tokens=60)
+        assert ledger.overall_remaining() == 100
+        assert ledger.model_remaining("gpt") == 100
+
+    @pytest.mark.asyncio
+    async def test_reconciles_chat_answer_usage(self):
+        ledger = TokenQuotaLedger(overall_budget=1000)
+
+        async def fake(prompt, **kw):
+            return {"usage": {"input_tokens": 3, "output_tokens": 4}}
+
+        await guarded_inference(ledger, "gpt", "hello", fake, max_tokens=500)
+        assert ledger.overall_remaining() == 993

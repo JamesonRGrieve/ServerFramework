@@ -121,15 +121,21 @@ def estimate_tokens(
 def true_up_tokens(response: Any, *, fallback: Optional[int] = None) -> int:
     """Actual tokens consumed, for reconciliation.
 
-    Reads an upstream ``usage.total_tokens`` block when the response carries one;
-    otherwise estimates a text response by length, or returns ``fallback`` when
-    the shape is unknown and a fallback is given.
+    Reads an upstream ``usage`` block when the response carries one: its
+    ``total_tokens``, or else the sum of ``input_tokens`` and ``output_tokens``
+    (the shape the framework's ``chat_answer`` emits). Otherwise estimates a
+    text response by length, or returns ``fallback`` when the shape is unknown
+    and a fallback is given.
     """
     if isinstance(response, dict):
         usage = response.get("usage") or {}
         total = usage.get("total_tokens")
         if isinstance(total, (int, float)):
             return int(total)
+        counts = [usage.get("input_tokens"), usage.get("output_tokens")]
+        parts = [int(count) for count in counts if isinstance(count, (int, float))]
+        if parts:
+            return sum(parts)
     if isinstance(response, str):
         return max(1, len(response) // 4)
     if fallback is not None:
@@ -154,11 +160,15 @@ async def guarded_inference(
     exceeded), invokes the inference, then reconciles the reservation against the
     actual usage. This is the pre-estimate -> reserve -> call -> true-up flow the
     framework's ``PRV_Abstract_AI`` contract declares; a provider opts in by
-    calling it with its own ``inference`` coroutine.
+    calling it with its own ``inference`` coroutine. A call that raises spends
+    nothing: its reservation is released before the error propagates.
     """
     estimate = estimate_tokens(prompt, max_tokens, default_ceiling)
     ledger.reserve(model, estimate)
-    response = await inference_fn(prompt, **inference_kwargs)
-    actual = true_up_tokens(response, fallback=estimate)
-    ledger.reconcile(model, estimate, actual)
+    actual = 0
+    try:
+        response = await inference_fn(prompt, **inference_kwargs)
+        actual = true_up_tokens(response, fallback=estimate)
+    finally:
+        ledger.reconcile(model, estimate, actual)
     return response
