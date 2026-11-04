@@ -28,20 +28,24 @@ import sys
 import venv
 from pathlib import Path
 
+# The checkout layout: ``<root>/src/zephyrex/bootstrap.py``. ``pyproject.toml``,
+# ``requirements.txt`` and ``.venv`` live at ``<root>``.
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_SRC_DIR = _PACKAGE_DIR.parent
+_ROOT_DIR = _SRC_DIR.parent
+
 
 def setup_python_path() -> None:
-    """Add the framework's ``src/`` directory and its parent to ``sys.path``.
+    """Put the directory holding the ``zephyrex`` package (``src/`` in a
+    checkout) on ``sys.path``.
 
-    This mirrors the historical behavior so ``from lib.Logging import logger``
-    style imports keep working when the framework is run from a checkout.
+    The package directory itself is deliberately not added: every framework
+    import is rooted at ``zephyrex.``, and exposing its subpackages as
+    top-level ``extensions``, ``lib``, ``logic`` or ``database`` would shadow
+    a consumer's own packages of those names.
     """
-    current_file_path = Path(__file__).resolve()
-    src_dir = current_file_path.parent
-    root_dir = src_dir.parent
-    if str(root_dir) not in sys.path:
-        sys.path.insert(0, str(root_dir))
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
+    if str(_SRC_DIR) not in sys.path:
+        sys.path.insert(0, str(_SRC_DIR))
 
 
 def run_venv_bootstrap() -> bool:
@@ -59,12 +63,9 @@ def run_venv_bootstrap() -> bool:
 
         logger = getLogger(__name__)
 
-    current_file_path = Path(__file__).resolve()
-    src_dir = current_file_path.parent
-    root_dir = src_dir.parent
-    venv_dir = root_dir / ".venv"
-    pyproject_file = src_dir / "pyproject.toml"
-    requirements_file = root_dir / "requirements.txt"
+    venv_dir = _ROOT_DIR / ".venv"
+    pyproject_file = _ROOT_DIR / "pyproject.toml"
+    requirements_file = _ROOT_DIR / "requirements.txt"
 
     use_uv = shutil.which("uv") is not None
     use_conda = shutil.which("conda") is not None
@@ -105,14 +106,14 @@ def run_venv_bootstrap() -> bool:
             if use_uv:
                 logger.debug("Using uv for faster package installation...")
                 subprocess.run(
-                    ["uv", "pip", "install", "-e", str(src_dir)],
+                    ["uv", "pip", "install", "-e", str(_ROOT_DIR)],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
             else:
                 subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-e", str(src_dir)],
+                    [sys.executable, "-m", "pip", "install", "-e", str(_ROOT_DIR)],
                     capture_output=True,
                     text=True,
                     check=True,
