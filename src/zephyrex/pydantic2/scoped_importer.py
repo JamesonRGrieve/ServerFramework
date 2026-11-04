@@ -53,21 +53,25 @@ class ScopedModuleImporter:
 
         from zephyrex.lib.Environment import env
 
-        # Create cache key based on file_type and scopes
-        scoped_import_cache_key = f"{file_type}_{'+'.join(sorted(scopes))}"
+        # The "extensions" scope expands to the enabled extensions, looked up
+        # under the active extensions root, so both belong in the cache key:
+        # otherwise a change to either would be answered with a stale list.
+        enabled_extensions = [
+            ext.strip() for ext in env("APP_EXTENSIONS").split(",") if ext.strip()
+        ]
+        scoped_import_cache_key = (
+            file_type,
+            tuple(sorted(scopes)),
+            tuple(sorted(enabled_extensions)),
+            _resolve_extensions_dir(),
+        )
 
         # Return cached result if available and not forcing clean
-        if (
-            not clean
-            and hasattr(self, "_import_cache")
-            and scoped_import_cache_key in self._cache
-        ):
+        if not clean and scoped_import_cache_key in self._cache:
             logger.debug(
-                f"Using cached scoped_import result for {scoped_import_cache_key}"
+                "Using cached scoped_import result for %s", scoped_import_cache_key
             )
             return self._cache[scoped_import_cache_key]
-
-        # Cache is already initialized in __init__ via CacheManager
 
         # Get the source directory
         src_dir = _resolve_src_dir()
@@ -90,12 +94,7 @@ class ScopedModuleImporter:
         expanded_scopes = []
         for scope in scopes:
             if scope == "extensions":
-                # Get enabled extensions from APP_EXTENSIONS environment variable
-                app_extensions = env("APP_EXTENSIONS")
-                if app_extensions:
-                    enabled_extensions = [
-                        ext.strip() for ext in app_extensions.split(",") if ext.strip()
-                    ]
+                if enabled_extensions:
                     logger.debug(
                         f"Only importing from enabled extensions: {enabled_extensions}"
                     )
@@ -354,7 +353,7 @@ class ScopedModuleImporter:
         # Cache the result for future use
         result = (imported_modules, import_errors)
         self._cache[scoped_import_cache_key] = result
-        logger.debug(f"Cached scoped_import result for {scoped_import_cache_key}")
+        logger.debug("Cached scoped_import result for %s", scoped_import_cache_key)
 
         return result
 
