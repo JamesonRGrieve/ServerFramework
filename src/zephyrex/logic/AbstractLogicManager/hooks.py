@@ -806,6 +806,13 @@ def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> boo
     """
     Check if hook should execute based on condition.
 
+    A condition that raises fails closed for a blocking hook: the error
+    propagates and the operation does not run, exactly as if the hook body
+    had raised. Otherwise a validation hook whose condition hits a missing
+    kwarg would be skipped and the operation would proceed unvalidated. A
+    non-blocking hook is logged and skipped. Blocking resolves as for the
+    hook body (Item 22): BEFORE hooks block by default, AFTER hooks do not.
+
     Args:
         hook_info: Hook information dictionary
         context: Hook execution context
@@ -820,7 +827,23 @@ def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> boo
     try:
         return condition(context)  # type: ignore[no-any-return]
     except Exception as e:
-        logger.error(f"Hook condition failed: {e}")
+        hook_name = getattr(hook_info.get("func"), "__name__", "<unknown>")
+        if _hook_blocking(hook_info, default=context.timing is HookTiming.BEFORE):
+            logger.error(
+                "Condition of blocking %s hook %s on %s raised; failing closed: %s",
+                context.timing.value,
+                hook_name,
+                context.method_name,
+                e,
+            )
+            raise
+        logger.error(
+            "Condition of non-blocking %s hook %s on %s raised; skipping it: %s",
+            context.timing.value,
+            hook_name,
+            context.method_name,
+            e,
+        )
         return False
 
 
