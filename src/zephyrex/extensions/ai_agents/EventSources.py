@@ -76,14 +76,17 @@ def webhook_signature(secret: str, timestamp: str, body: bytes) -> str:
 
 
 def _stored_trigger(model_registry: Any, trigger_id: str) -> Optional[Any]:
-    """The trigger row with its secret: read from the table itself, since
-    the secret never leaves the model in a serialization (or a cache)."""
+    """The live trigger row with its secret: read from the table itself,
+    since the secret never leaves the model in a serialization (or a cache).
+    Root sees deleted rows too, so a deleted trigger is filtered out here:
+    deleting a trigger revokes its webhook."""
     rows = InvocationTriggerModel.DB(model_registry.DB.manager.Base).list(
         requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         return_type="dto",
         override_dto=InvocationTriggerModel,
         id=trigger_id,
+        deleted_at=None,
     )
     return rows[0] if rows else None
 
@@ -186,6 +189,7 @@ async def receive_email(model_registry: Any, message: InboundEmail) -> List[str]
             event_source=EMAIL,
             enabled=True,
             email_address=recipient,
+            deleted_at=None,
         )
     }
     turns: List[str] = []

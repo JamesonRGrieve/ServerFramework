@@ -32,6 +32,7 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
 )
 from zephyrex.extensions.ai_agents.EventSources import (
     MAX_WEBHOOK_BODY_BYTES,
+    receive_email,
     receive_webhook,
     webhook_signature,
 )
@@ -314,6 +315,18 @@ class TestWebhookTriggers(EventTriggers):
         assert response.status_code == 409, response.text
         assert self._turns(admin_a, model_registry, agent) == []
 
+    def test_a_deleted_trigger_is_401(self, server, admin_a, model_registry):
+        # Deleting the trigger is how a leaked secret is revoked.
+        agent = self._agent(admin_a, model_registry)
+        trigger, secret = self._webhook(server, admin_a, model_registry, agent)
+        InvocationTriggerManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).delete(trigger.id)
+        body = b"{}"
+        response = self._call(server, trigger.id, body, signed(secret, body))
+        assert response.status_code == 401, response.text
+        assert self._turns(admin_a, model_registry, agent) == []
+
     def test_calls_are_rate_limited(self, server, admin_a, model_registry):
         agent = self._agent(admin_a, model_registry)
         trigger, _ = self._webhook(server, admin_a, model_registry, agent)
@@ -441,6 +454,18 @@ class TestEmailTriggers(EventTriggers):
             t.invocation_trigger_id for t in self._turns(admin_a, model_registry, mine)
         ] == [my_trigger.id]
         assert self._turns(admin_b, model_registry, theirs) == []
+
+    async def test_mail_to_a_deleted_trigger_fires_nothing(
+        self, admin_a, model_registry, domain
+    ):
+        agent = self._agent(admin_a, model_registry)
+        trigger = self._trigger(admin_a, model_registry, agent, event_source="email")
+        InvocationTriggerManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).delete(trigger.id)
+        fired = await receive_email(model_registry, self._mail(trigger.email_address))
+        assert fired == []
+        assert self._turns(admin_a, model_registry, agent) == []
 
 
 class TestMailToAnAppWithoutAgents(ExtensionServerMixin):

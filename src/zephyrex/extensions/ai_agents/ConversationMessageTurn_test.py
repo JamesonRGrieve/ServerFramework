@@ -148,3 +148,24 @@ class TestConversationMessageTurn(ExtensionServerMixin):
         self._listen(outsider.id, admin_a, model_registry)
         self._post(conversation.id, admin_a, model_registry)
         assert self._turns(outsider.id, admin_a, model_registry) == []
+
+    def test_a_deleted_auto_respond_seat_does_not_fire(self, admin_a, model_registry):
+        agent, conversation = self._seated_agent(
+            admin_a, model_registry, auto_respond=True
+        )
+        seats = ConversationAgentManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        [seat] = seats.list(agent_id=agent.id, conversation_id=conversation.id)
+        seats.delete(seat.id)
+        self._post(conversation.id, admin_a, model_registry)
+        assert self._turns(agent.id, admin_a, model_registry) == []
+
+    def test_a_deleted_trigger_does_not_fire(self, admin_a, model_registry):
+        agent, conversation = self._seated_agent(admin_a, model_registry)
+        trigger = self._listen(agent.id, admin_a, model_registry)
+        InvocationTriggerManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).delete(trigger.id)
+        self._post(conversation.id, admin_a, model_registry)
+        assert self._turns(agent.id, admin_a, model_registry) == []

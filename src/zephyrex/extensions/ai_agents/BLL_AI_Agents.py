@@ -1616,9 +1616,10 @@ async def _wake_agents_for(registry: Any, message: Any) -> None:
     from zephyrex.extensions.ai_agents.AgentTurnExecutor import fire_turn
     from zephyrex.extensions.ai_agents.EventSources import count_firing
 
+    # Root sees deleted rows too: a deleted seat or trigger must not wake.
     root = env("ROOT_ID")
     seats = ConversationAgentManager(requester_id=root, model_registry=registry).list(
-        conversation_id=message.conversation_id, active=True
+        conversation_id=message.conversation_id, active=True, deleted_at=None
     )
     triggers = InvocationTriggerManager(requester_id=root, model_registry=registry)
     for seat in seats:
@@ -1627,6 +1628,7 @@ async def _wake_agents_for(registry: Any, message: Any) -> None:
             invocation_type="event",
             event_source="conversation_message",
             enabled=True,
+            deleted_at=None,
         )
         if not seat.auto_respond and not listening:
             continue
