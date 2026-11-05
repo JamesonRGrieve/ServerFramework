@@ -12,6 +12,7 @@ from zephyrex.lib.InboundSecurity import (
     AnomalyDetector,
     CORSPolicyError,
     ETagMiddleware,
+    JSONDepthMiddleware,
     LockoutPolicy,
     LockoutTracker,
     NoOpAnomalyDetector,
@@ -1335,3 +1336,40 @@ async def test_an_event_stream_goes_out_as_it_is_written():
     assert not any(key == b"etag" for key, _ in sent[0]["headers"])
     stream_open.set()
     await serving
+
+
+class TestJSONDepthMiddleware:
+    """#281: the depth guard skipped bodies sent without a Content-Type,
+    which FastAPI still parses as JSON, and counted brackets inside strings,
+    so closing brackets in a string pre-paid for deeper real nesting."""
+
+    @staticmethod
+    def _client() -> TestClient:
+        from typing import Any
+
+        from fastapi import Body
+
+        app = FastAPI()
+        app.add_middleware(JSONDepthMiddleware, max_depth=8)
+
+        @app.post("/echo")
+        def echo(body: Any = Body(...)) -> dict:
+            return {"ok": True}
+
+        return TestClient(app)
+
+    def test_strings_do_not_count(self):
+        guard = JSONDepthMiddleware(app=None, max_depth=8)
+        deep = b"[" * 20 + b"]" * 20
+        padded = b'{"pad": "' + b"]" * 40 + b'", "x": ' + deep + b"}"
+        assert guard._exceeds_depth(padded)
+        assert not guard._exceeds_depth(b'{"text": "' + b"[" * 40 + b'"}')
+        assert not guard._exceeds_depth(b'{"text": "a \\" [[[[[[[[[[ \\" b"}')
+
+    def test_a_missing_content_type_is_still_scanned(self):
+        client = self._client()
+        deep = "[" * 20 + "]" * 20
+        refused = client.post("/echo", content=deep)
+        assert refused.status_code == 400
+        assert client.post("/echo", content="[[1]]").status_code == 200
+

@@ -583,8 +583,8 @@ class JSONDepthMiddleware:
     ``MAX_JSON_DEPTH`` levels.
 
     Prevents stack overflow and excessive memory allocation from
-    adversarial deeply-nested payloads. Only inspects requests with
-    a JSON content-type.
+    adversarial deeply-nested payloads. Inspects every body FastAPI would
+    parse as JSON: a JSON content-type, or none at all (#281).
     """
 
     def __init__(self, app: Any, max_depth: int = MAX_JSON_DEPTH) -> None:
@@ -602,7 +602,9 @@ class JSONDepthMiddleware:
                 content_type = raw_value.decode("latin-1").lower()
                 break
 
-        if "json" not in content_type:
+        # FastAPI parses a body sent without a Content-Type as JSON, so a
+        # missing header must not skip the scan (#281).
+        if content_type and "json" not in content_type:
             await self.app(scope, receive, send)
             return
 
@@ -629,9 +631,24 @@ class JSONDepthMiddleware:
                 raise
 
     def _exceeds_depth(self, body: bytes) -> bool:
+        """Whether the body nests deeper than ``max_depth``. Brackets inside
+        string literals don't count: counted, closing ones would pre-pay for
+        deeper real nesting, and opening ones would refuse legitimate text
+        (#281)."""
         depth = 0
+        in_string = False
+        escaped = False
         for ch in body:
-            if ch in (123, 91):  # '{' or '['
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == 92:  # '\\'
+                    escaped = True
+                elif ch == 34:  # '"'
+                    in_string = False
+            elif ch == 34:
+                in_string = True
+            elif ch in (123, 91):  # '{' or '['
                 depth += 1
                 if depth > self.max_depth:
                     return True
