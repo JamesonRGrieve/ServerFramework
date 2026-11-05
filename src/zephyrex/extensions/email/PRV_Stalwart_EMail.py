@@ -51,6 +51,7 @@ from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+from zephyrex.lib.ConstantTime import secure_equals
 
 
 def _build_auth_strategy(strategy_name: str, **kwargs):
@@ -311,7 +312,7 @@ class StalwartProvider(AbstractEmailProvider):
         expected = hmac.new(
             secret.encode("utf-8"), body or b"", hashlib.sha256
         ).hexdigest()
-        return hmac.compare_digest(expected, provided)
+        return secure_equals(expected, provided)
 
     @classmethod
     @ability(name="email_send")

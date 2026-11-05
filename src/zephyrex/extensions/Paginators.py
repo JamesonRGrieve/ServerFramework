@@ -21,6 +21,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from zephyrex.extensions.ExternalErrors import InvalidPaginationError
+from zephyrex.lib.ConstantTime import secure_equals
 
 # ---------------------------------------------------------------------------
 # Pagination model
@@ -123,7 +124,7 @@ def decode_token(
         padded = encoded_part + "=" * (-len(encoded_part) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
         expected_sig = hmac.new(_token_hmac_key(), raw, "sha256").hexdigest()[:16]
-        if not hmac.compare_digest(sig, expected_sig):
+        if not secure_equals(sig, expected_sig):
             raise InvalidPaginationError("Pagination token signature invalid")
         payload = json.loads(raw)
     except InvalidPaginationError:

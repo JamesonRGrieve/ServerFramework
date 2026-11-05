@@ -27,7 +27,6 @@ class in a ``PRV_`` module is taken for a concrete provider.
 
 import base64
 import hashlib
-import hmac
 import time
 from abc import abstractmethod
 from dataclasses import dataclass, field
@@ -46,6 +45,7 @@ from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     PermanentExternalError,
 )
+from zephyrex.lib.ConstantTime import secure_equals
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 # Clock skew tolerated between this server and an identity provider.
@@ -684,14 +684,14 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             time.time() - issued_at > MAX_ID_TOKEN_AGE_SECONDS + CLOCK_SKEW_SECONDS
         ):
             raise cls._refuse("issued too long ago")
-        if not hmac.compare_digest(str(claims.get("nonce") or ""), nonce):
+        if not secure_equals(str(claims.get("nonce") or ""), nonce):
             raise cls._refuse("nonce mismatch")
         if text(claims.get("sub")) is None:
             raise cls._refuse("no subject")
         at_hash = claims.get("at_hash")
         if at_hash is not None and access_token is not None:
             expected = _token_hash(access_token, algorithm)
-            if expected is None or not hmac.compare_digest(str(at_hash), expected):
+            if expected is None or not secure_equals(str(at_hash), expected):
                 raise cls._refuse("access token hash mismatch")
         return claims
 

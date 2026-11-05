@@ -24,7 +24,6 @@ upgrades and CORS does not apply to them, so without the Origin check any
 site could open a socket as the signed-in user.
 """
 
-import hmac
 import json
 import re
 import secrets
@@ -34,6 +33,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from fastapi import Response
 
 from zephyrex.lib.Environment import env
+from zephyrex.lib.ConstantTime import secure_equals
 
 SESSION_COOKIE = "zx_session"
 CSRF_COOKIE = "zx_csrf"
@@ -209,7 +209,7 @@ class SessionCookieMiddleware:
     def _csrf_matches(present: Dict[bytes, bytes]) -> bool:
         expected = _cookies(present.get(b"cookie")).get(CSRF_COOKIE, "")
         offered = present.get(CSRF_HEADER.encode(), b"").decode("latin-1")
-        return bool(expected) and hmac.compare_digest(expected, offered)
+        return bool(expected) and secure_equals(expected, offered)
 
     @staticmethod
     async def _refuse(send: Callable[[Any], Awaitable[None]], detail: str) -> None:

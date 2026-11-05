@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import hmac
 import mimetypes
 import os
 from decimal import Decimal
@@ -45,6 +44,7 @@ from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+from zephyrex.lib.ConstantTime import secure_equals
 
 try:
     import httpx as _httpx
@@ -250,7 +250,7 @@ class Smtp2goProvider(AbstractEmailProvider):
         if not token:
             logger.debug("SMTP2go webhook missing bearer token; rejecting.")
             return False
-        return hmac.compare_digest(token, secret)
+        return secure_equals(token, secret)
 
     @classmethod
     @ability(name="email_send")

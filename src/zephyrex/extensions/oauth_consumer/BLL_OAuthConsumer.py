@@ -103,6 +103,7 @@ from zephyrex.logic.BLL_Providers import (
 )
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
+from zephyrex.lib.ConstantTime import secure_equals
 
 OAUTH_PREFIX = "/v1/auth/oauth"
 GRANT_TYPE = "oauth_consumer"
@@ -681,11 +682,7 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
             if endpoints.issuer_in_response:
                 raise HTTPException(status_code=400, detail="Missing iss parameter")
             return
-        if (
-            issuer is not None
-            and "{" not in issuer
-            and not hmac.compare_digest(iss, issuer)
-        ):
+        if issuer is not None and "{" not in issuer and not secure_equals(iss, issuer):
             raise HTTPException(status_code=400, detail="Issuer mismatch")
 
     @staticmethod

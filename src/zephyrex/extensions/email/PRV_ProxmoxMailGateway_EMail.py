@@ -62,6 +62,7 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.ProviderHTTPClient import ClientPolicy, get_async_client
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+from zephyrex.lib.ConstantTime import secure_equals
 
 try:
     import aiosmtplib  # noqa: F401
@@ -524,7 +525,7 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
         expected = hmac.new(
             secret.encode("utf-8"), body or b"", hashlib.sha256
         ).hexdigest()
-        return hmac.compare_digest(expected, provided)
+        return secure_equals(expected, provided)
 
 
 def _coerce_pmg_event(raw: Dict[str, Any], event_type: str) -> EmailDeliveryEvent:

@@ -40,6 +40,7 @@ from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from zephyrex.lib.SessionCookies import CSRF_HEADER
+from zephyrex.lib.ConstantTime import secure_equals
 
 RawHeaders = List[Tuple[bytes, bytes]]
 
@@ -287,7 +288,7 @@ def verify_identity(
         )
     ]
     expected = signature(secret, signed_text(timestamp, method, target, fields))
-    return hmac.compare_digest(expected, offered)
+    return secure_equals(expected, offered)
 
 
 class UnsafePath(ValueError):

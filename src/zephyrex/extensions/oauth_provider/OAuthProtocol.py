@@ -16,6 +16,8 @@ import secrets
 from typing import Dict, List, Mapping, Optional, Tuple
 from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
 
+from zephyrex.lib.ConstantTime import secure_equals
+
 # RFC 7636 §4.1: 43-128 characters of [A-Z] / [a-z] / [0-9] / "-" / "." /
 # "_" / "~". An S256 challenge is the 43-character base64url of a SHA-256.
 _VERIFIER = re.compile(r"^[A-Za-z0-9\-._~]{43,128}$")
@@ -112,7 +114,7 @@ def pkce_verifies(verifier: Optional[str], challenge: str) -> bool:
     """Whether ``verifier`` proves the S256 ``challenge`` (RFC 7636 §4.6)."""
     if not verifier or not _VERIFIER.match(verifier):
         return False
-    return hmac.compare_digest(s256(verifier), challenge)
+    return secure_equals(s256(verifier), challenge)
 
 
 def half_hash(value: str) -> str:
