@@ -84,5 +84,13 @@ def test_a_grant_cannot_edit_a_server_owned_row(server, model_registry, owner_id
             {db_cls.user_id: server_id}, synchronize_session=False
         )
     assert other.get(id=rotation.id).id == rotation.id
+    assert rotation.id in {r.id for r in other.list()}
     with pytest.raises(HTTPException):
         other.update(rotation.id, description="not the user's to change")
+    with pytest.raises(HTTPException):
+        other.delete(id=rotation.id)
+    # Still there, and still the server's: ROOT reads it unchanged.
+    root = RotationManager(requester_id=env("ROOT_ID"), model_registry=model_registry)
+    kept = root.get(id=rotation.id)
+    assert kept.user_id == server_id
+    assert kept.description == "editable while the user owns it"

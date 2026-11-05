@@ -375,6 +375,74 @@ class TestTheFlow(OAuthFlows):
         code = query_of(silent.headers["location"])["code"]
         assert client.redeem(code, verifier).status_code == 200
 
+    def _silent(self, client: Client, user) -> Any:
+        _, challenge = pkce()
+        return client.server.get(
+            AUTHORIZE,
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": client.redirect_uri,
+                "scope": "openid",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "prompt": "none",
+            },
+            headers=bearer(user.jwt),
+            follow_redirects=False,
+        )
+
+    def test_prompt_none_after_revoked_consent_needs_consent(
+        self, server, admin_a, user
+    ):
+        """#274: the consent lookup ran as ROOT and found the soft-deleted
+        grant, so prompt=none still issued a code after the user revoked
+        their consent."""
+        client = self.register(server, admin_a)
+        self.tokens(server, client, user)
+        assert "code" in query_of(self._silent(client, user).headers["location"])
+        [grant] = [
+            g
+            for g in server.get("/v1/oauth2/grants", headers=bearer(user.jwt)).json()[
+                "oauth_grants"
+            ]
+            if g["client_id"] == client.client_id
+        ]
+        revoked = server.delete(
+            f"/v1/oauth2/grants/{grant['id']}",
+            headers={**bearer(user.jwt), **if_match_of(grant)},
+        )
+        assert revoked.status_code in (200, 204), revoked.text
+        landed = query_of(self._silent(client, user).headers["location"])
+        assert landed.get("error") == "consent_required"
+        assert "code" not in landed
+
+    def test_a_deleted_client_cannot_authorize_or_authenticate(
+        self, server, admin_a, user
+    ):
+        """#274: a soft-deleted client still resolved, so its secret still
+        authenticated and prompt=none still minted codes for it."""
+        client = self.register(server, admin_a)
+        self.tokens(server, client, user)
+        engine = AuthorizationServer(self.registry(server))
+        row = engine.clients.first(engine.clients.db.client_id == client.client_id)
+        path = f"/v1/oauth2/clients/{row.id}"
+        deleted = server.delete(
+            path,
+            headers={
+                **bearer(admin_a.jwt),
+                **current_if_match(server, path, bearer(admin_a.jwt)),
+            },
+        )
+        assert deleted.status_code in (200, 204), deleted.text
+        silent = self._silent(client, user)
+        assert silent.status_code != 302 or "code" not in query_of(
+            silent.headers["location"]
+        )
+        refused = client.post(INTROSPECT, token="x")
+        assert refused.status_code == 401, refused.text
+        assert refused.json()["error"] == "invalid_client"
+
     def test_denied_consent(self, server, admin_a, user):
         client = self.register(server, admin_a)
         _, challenge = pkce()

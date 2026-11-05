@@ -415,6 +415,45 @@ class TestRateLimitMiddleware:
         assert b"x-ratelimit-limit" in headers
 
     @pytest.mark.asyncio
+    async def test_a_templated_route_shares_one_budget_across_its_parameters(self):
+        """#276: the counter was keyed on the raw path, so each value of a
+        path parameter got a fresh budget and the limit never applied."""
+        register_rate_limited_route("POST", "/v1/hooks/{source}/{event}", 3, 60, "ip")
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        mw = RateLimitMiddleware(app)
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        def scope(path, client="7.7.7.7"):
+            return {
+                "type": "http",
+                "method": "POST",
+                "path": path,
+                "client": (client, 1),
+                "headers": [],
+            }
+
+        statuses = []
+        for n in range(5):
+            sent.clear()
+            await mw(scope(f"/v1/hooks/src{n}/evt{n}"), receive, send)
+            statuses.append(sent[0]["status"])
+        assert statuses == [200, 200, 200, 429, 429]
+        # Another client still has its own budget on the same template.
+        sent.clear()
+        await mw(scope("/v1/hooks/a/b", client="8.8.8.8"), receive, send)
+        assert sent[0]["status"] == 200
+
+    @pytest.mark.asyncio
     async def test_2xx_includes_rate_limit_headers(self):
         """Successful responses include X-RateLimit-Limit and X-RateLimit-Remaining."""
         register_rate_limited_route("GET", "/v1/rl-headers", 10, 60, "ip")
@@ -1372,4 +1411,3 @@ class TestJSONDepthMiddleware:
         refused = client.post("/echo", content=deep)
         assert refused.status_code == 400
         assert client.post("/echo", content="[[1]]").status_code == 200
-

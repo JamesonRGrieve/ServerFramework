@@ -139,9 +139,7 @@ class TestConversationMessageTurn(ExtensionServerMixin):
         ).create_agent_message(conversation_id=conversation.id, content="agent reply")
         assert self._turns(agent.id, admin_a, model_registry) == []
 
-    def test_a_message_from_an_agents_tool_does_not_loop(
-        self, admin_a, model_registry
-    ):
+    def test_a_message_from_an_agents_tool_does_not_loop(self, admin_a, model_registry):
         """#277: post_message and start_direct_message post through
         MessageManager.create as the owner, so the message has an author;
         posted from an agent's tool call, it still wakes no agent, or an

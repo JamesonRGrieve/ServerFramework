@@ -368,6 +368,89 @@ class TestAgentAccess(ExtensionServerMixin):
             == []
         )
 
+    def _teammate_and_team_agent(self, server, admin_a, team_a, model_registry):
+        from zephyrex.testing.factories import add_user_to_team, create_user
+
+        teammate = create_user(server)
+        add_user_to_team(server, teammate.id, team_a.id, env("USER_ROLE_ID"))
+        # No rotation, so a new conversation's hook seats nothing on its own.
+        agent = self._agent(admin_a, model_registry, team_id=team_a.id)
+        seen = self._m(AgentManager, teammate, model_registry).get(id=agent.id)
+        assert seen.id == agent.id  # the teammate can see it
+        return teammate, agent
+
+    def test_a_viewer_cannot_seat_a_team_agent(
+        self, server, admin_a, team_a, model_registry
+    ):
+        """#257: a member who can only view the team agent must not seat it
+        to auto-respond in their own conversation, where their messages
+        would drive the creator's granted tools."""
+        from zephyrex.extensions.conversations.BLL_Conversations import (
+            ConversationManager,
+        )
+
+        teammate, agent = self._teammate_and_team_agent(
+            server, admin_a, team_a, model_registry
+        )
+        mine = self._m(ConversationManager, teammate, model_registry).create(
+            name="Mine"
+        )
+        for auto_respond in (True, False):
+            refused(
+                {403, 404},
+                self._m(ConversationAgentManager, teammate, model_registry).create,
+                agent_id=agent.id,
+                conversation_id=mine.id,
+                active=True,
+                auto_respond=auto_respond,
+            )
+        assert (
+            self._m(ConversationAgentManager, admin_a, model_registry).list(
+                agent_id=agent.id
+            )
+            == []
+        )
+
+    def test_a_viewer_cannot_run_a_team_agents_turn(
+        self, server, admin_a, team_a, model_registry
+    ):
+        """#257: nor take a turn with it over REST."""
+        teammate, agent = self._teammate_and_team_agent(
+            server, admin_a, team_a, model_registry
+        )
+        response = server.post(
+            f"/v1/agent/{agent.id}/turn",
+            json={"payload": "use the creator's tools"},
+            headers=auth(teammate),
+        )
+        assert response.status_code in (403, 404), response.text
+        assert (
+            self._m(InvocationInstanceManager, admin_a, model_registry).list(
+                agent_id=agent.id
+            )
+            == []
+        )
+
+    def test_a_viewer_cannot_change_a_team_agent(
+        self, server, admin_a, team_a, model_registry
+    ):
+        """#257: nor point it at other abilities."""
+        teammate, agent = self._teammate_and_team_agent(
+            server, admin_a, team_a, model_registry
+        )
+        refused(
+            {403, 404},
+            self._m(AgentAbilityManager, teammate, model_registry).create,
+            agent_id=agent.id,
+            ability_id=ensure_ability(model_registry, "list_agents"),
+        )
+        refused(
+            {403, 404},
+            self._m(AgentManager, teammate, model_registry).update,
+            agent.id,
+            name="hijacked",
+        )
+
 
 class TestAgentHooks(ExtensionServerMixin):
     extension_class = EXT_AI_Agents

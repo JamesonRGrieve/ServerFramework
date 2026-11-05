@@ -167,9 +167,7 @@ class TestAgentAbilityMark:
             seen.append(IN_AGENT_ABILITY.get())
 
         invoker = AbilityInvoker(model_registry=None, requester_id="u")
-        monkeypatch.setattr(
-            invoker, "resolve", lambda _grant: ability.__get__(object)
-        )
+        monkeypatch.setattr(invoker, "resolve", lambda _grant: ability.__get__(object))
         allowed = {"probe": grant("probe")}
         await invoker.invoke("probe", None, allowed)
         assert seen == [True]
