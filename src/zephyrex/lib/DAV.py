@@ -23,6 +23,7 @@ CALDAV = "{urn:ietf:params:xml:ns:caldav}"
 CARDDAV = "{urn:ietf:params:xml:ns:carddav}"
 
 
+def multistatus_resources(answer: str, data_element: str) -> List[Tuple[str, str]]:
     """Each ``(href, data)`` in a multistatus ``answer``, where ``data`` is
     the text of ``data_element`` (``CALDAV + "calendar-data"``,
     ``CARDDAV + "address-data"``); a response without data (the collection
@@ -45,10 +46,12 @@ def resource_name(href: str) -> str:
     return unquote(href.rstrip("/").rsplit("/", 1)[-1])
 
 
+def collection_url(url: str) -> str:
     """A collection's URL, ending in ``/`` so resource names join onto it."""
     return url if url.endswith("/") else f"{url}/"
 
 
+def resource_url(collection: str, name: str) -> str:
     """The URL of resource ``name`` in ``collection``; ``name`` must be one
     path segment."""
     if not name or "/" in name or name in (".", ".."):

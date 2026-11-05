@@ -19,6 +19,7 @@ LICENSE = "AGPL-3.0-or-later"
 MANIFEST_FILE = "manifest.toml"
 
 
+def _state(state: SourceState) -> Dict[str, Optional[str]]:
     return {
         "hash_status": state.hash_status,
         "git_status": state.git_status,
@@ -34,6 +35,7 @@ def _declared_repository(directory: Path) -> Optional[str]:
     return load_manifest(manifest).repository if manifest.is_file() else None
 
 
+def _extension_entry(extension: Any, package_root: Path, link: str) -> Dict[str, Any]:
     directory = Path(inspect.getfile(extension)).resolve().parent
     if package_root in directory.parents:
         return {"name": extension.name, "bundled": True, "source": link}

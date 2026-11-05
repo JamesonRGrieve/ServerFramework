@@ -15,6 +15,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 DEFAULT_LANGUAGE = "en"
 
 
+class PRV_Wikipedia_Wiki(AbstractWikiProvider):
     name: ClassVar[str] = "wikipedia"
     friendly_name: ClassVar[str] = "Wikipedia"
     description: ClassVar[str] = "Wikipedia, any language edition"

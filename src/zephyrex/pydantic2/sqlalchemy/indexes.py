@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional, Tuple
 from sqlalchemy import Index, text
 
 
+@dataclass(frozen=True)
+class TableIndex:
     """An index on ``columns``; ``where`` (a SQL predicate) makes it
     partial, on SQLite and PostgreSQL alike."""
 
@@ -22,8 +24,11 @@ from sqlalchemy import Index, text
     unique: bool = False
     where: Optional[str] = None
 
+    def build(self) -> Index:
         dialect_options: Dict[str, Any] = {}
         if self.where is not None:
             dialect_options = {
+                "sqlite_where": text(self.where),
+                "postgresql_where": text(self.where),
             }
         return Index(self.name, *self.columns, unique=self.unique, **dialect_options)

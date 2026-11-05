@@ -35,6 +35,7 @@ def moonraker_state(status: Mapping[str, Any]) -> str:
     return _STATES.get(str(status.get("print_stats", {}).get("state")), "idle")
 
 
+def moonraker_report(status: Mapping[str, Any]) -> Dict[str, Any]:
     """A Moonraker object query's ``result.status`` as a printer status.
     The time left is estimated from the progress so far."""
     stats = status.get("print_stats", {})
@@ -58,6 +59,7 @@ def moonraker_state(status: Mapping[str, Any]) -> str:
     }
 
 
+class PRV_Moonraker_Printing(AbstractPrinterProvider):
     name: ClassVar[str] = "moonraker"
     friendly_name: ClassVar[str] = "Moonraker (Klipper)"
     description: ClassVar[str] = "A Klipper printer through Moonraker"

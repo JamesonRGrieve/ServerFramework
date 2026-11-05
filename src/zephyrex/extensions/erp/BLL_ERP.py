@@ -213,6 +213,7 @@ def checked_name(value: Any) -> str:
     return value
 
 
+def _checked_filters(value: Any, what: str) -> Optional[Dict[str, Any]]:
     """Frappe's dictionary filters: ``{fieldname: value}`` or
     ``{fieldname: [operator, value]}``; the ERP checks the operators."""
     if value is None:
@@ -345,6 +346,7 @@ def live_instance(
     return ERPInstance(model=instances[0], provider=provider)
 
 
+def can_use(model_registry: Any, user_id: str, instance: ProviderInstanceModel) -> bool:
     """Whether ``user_id`` may use the instance: it is enabled, and they are
     ROOT or SYSTEM, or it is the operator's (which serves everyone), or the
     framework lets them see it."""
@@ -354,6 +356,7 @@ def live_instance(
         return True
     try:
         ProviderInstanceManager(
+            model_registry=model_registry, requester_id=user_id
         ).get(id=str(instance.id))
     except HTTPException as exc:
         if exc.status_code in (401, 403, 404):
@@ -389,6 +392,8 @@ class DocTypeField:
     allow_on_submit: bool
 
 
+@dataclass(frozen=True)
+class DocTypeSchema:
     """A DocType as the ERP describes it now, lifted to a model."""
 
     doctype: str
@@ -411,6 +416,7 @@ class DocTypeField:
             own.add("idx")
         return frozenset(own - SYSTEM_FIELDS)
 
+    def checked_write(self, data: Any) -> Dict[str, Any]:
         """``data`` as sent to the ERP: only this DocType's fields, each of
         its type, child rows checked against their DocType. 422 otherwise."""
         if not isinstance(data, Mapping):
@@ -506,6 +512,7 @@ def _property(
     return {"type": "string"}
 
 
+def doctype_openapi(bundle: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     """The bundle's DocTypes (a DocType, then its child tables) as an
     OpenAPI document of component schemas, one per DocType."""
     components = _component_names([str(meta.get("name")) for meta in bundle])
@@ -537,6 +544,7 @@ def _property(
     }
 
 
+def lift_doctype(bundle: Sequence[Mapping[str, Any]]) -> DocTypeSchema:
     """The bundle's first DocType as a model, its child tables nested, by
     way of the federation's OpenAPI importer."""
     if not bundle:
@@ -551,6 +559,7 @@ def _property(
             # left incomplete must fail here, not on its first write.
             model.model_rebuild(force=True)
 
+    def schema_of(doctype: str, parents: FrozenSet[str]) -> DocTypeSchema:
         meta = metas[doctype]
         fields = _value_fields(meta)
         tables = {
@@ -707,6 +716,9 @@ class ERPWebhookAccepted(RouteModel):
 # ---------------------------------------------------------------------------
 
 
+def refusal(
+    provider: Type[AbstractERPProvider], exc: BaseExternalError
+) -> HTTPException:
     """What the caller is told of an ERP's refusal: its own reason where it
     gives one, never its raw body."""
     name = provider.friendly_name
@@ -749,6 +761,7 @@ class ERPWebhookAccepted(RouteModel):
     return HTTPException(status_code=502, detail=f"{name} is unavailable")
 
 
+class ERPDocuments:
     """One instance's documents, for one request: what the ERP describes is
     kept for the request and no longer."""
 
@@ -1048,6 +1061,7 @@ def _versioned(response: Response, document: ERPDocument) -> ERPDocument:
     return document
 
 
+class ERPManager(AbstractBLLManager, RouterMixin):
     """The documents of the instances the requester may use. Each operation
     is a POST naming the instance (a DocType or a document name is free
     text, so it travels in the body), on REST and as a GraphQL field."""

@@ -51,6 +51,8 @@ TLS_SERVER_END_POINT_PREFIX = b"tls-server-end-point:"
 ANONYMOUS_REALM = "WELLKNOWN:ANONYMOUS"
 
 
+@dataclass(frozen=True)
+class AcceptedPrincipal:
     """A client the service accepted: its realm-qualified principal, and
     the token answering it (mutual authentication), if the client asked."""
 
@@ -60,6 +62,7 @@ ANONYMOUS_REALM = "WELLKNOWN:ANONYMOUS"
     reply_token: Optional[bytes]
 
 
+def principal_realm(principal: str) -> str:
     """The realm of a realm-qualified principal (``alice@EXAMPLE.COM``).
     A component may hold an escaped ``\\@``; the realm follows the last
     unescaped one."""
@@ -86,6 +89,7 @@ def realm_list(value: Optional[str]) -> FrozenSet[str]:
     return frozenset((value or "").replace(",", " ").split())
 
 
+def decode_keytab(value: str) -> bytes:
     """The keytab's bytes from its base64 setting (line breaks allowed)."""
     try:
         keytab = base64.b64decode("".join(value.split()), validate=True)
@@ -98,6 +102,7 @@ def realm_list(value: Optional[str]) -> FrozenSet[str]:
     return keytab
 
 
+def tls_server_end_point(certificate_pem: str) -> bytes:
     """The ``tls-server-end-point`` channel binding (RFC 5929) of the TLS
     certificate clients see when they reach this server."""
     try:
@@ -121,6 +126,7 @@ def realm_list(value: Optional[str]) -> FrozenSet[str]:
     return TLS_SERVER_END_POINT_PREFIX + digest.finalize()
 
 
+class PRV_KerberosKeytab(AbstractStaticProvider):
     name: ClassVar[str] = "kerberos_keytab"
     friendly_name: ClassVar[str] = "Kerberos service keytab"
     description: ClassVar[str] = (
@@ -165,6 +171,8 @@ def realm_list(value: Optional[str]) -> FrozenSet[str]:
     def is_configured_instance(cls, instance: ProviderInstanceModel) -> bool:
         return bool(cls.setting(instance, "keytab"))
 
+    @classmethod
+    def service_name(cls, instance: ProviderInstanceModel) -> Optional[str]:
         principal = (cls.setting(instance, "service_principal") or "").strip()
         if not principal:
             return None
@@ -208,6 +216,8 @@ def realm_list(value: Optional[str]) -> FrozenSet[str]:
         )
 
 
+@dataclass(frozen=True)
+class Acceptor:
     """Accepts one GSSAPI (Kerberos or SPNEGO) initiator token."""
 
     # Never in a repr: a traceback or log line must not carry the keys.
@@ -216,6 +226,7 @@ def realm_list(value: Optional[str]) -> FrozenSet[str]:
     allowed_realms: FrozenSet[str]
     bindings: Optional[ChannelBindings]
 
+    def accept(self, token: bytes) -> AcceptedPrincipal:
         """The client ``token`` authenticates, or InvalidInputExternalError
         when GSSAPI refuses it (another service's ticket, expired, replayed,
         mismatched channel bindings, a multi-round exchange)."""
@@ -228,6 +239,7 @@ def realm_list(value: Optional[str]) -> FrozenSet[str]:
                 keytab_file.write(self.keytab)
             return self._accept(token, f"FILE:{path}")
 
+    def _accept(self, token: bytes, keytab: str) -> AcceptedPrincipal:
         try:
             service_name = (
                 gssapi.Name(self.service, gssapi.NameType.kerberos_principal)

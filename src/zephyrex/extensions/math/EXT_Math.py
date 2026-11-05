@@ -53,6 +53,7 @@ def checked_variable(name: str) -> str:
     return name
 
 
+def checked_data(values: List[float], what: str) -> List[float]:
     if not values:
         raise InvalidInputExternalError(f"{what} is empty")
     if len(values) > MAX_DATA_POINTS:
@@ -106,6 +107,7 @@ def line_graph(x_data: List[float], y_data: List[float], title: str) -> bytes:
     return buffer.getvalue()
 
 
+class AbstractMathProvider(AbstractStaticProvider):
     """A mathematics engine."""
 
     name: ClassVar[str] = ""
@@ -163,6 +165,7 @@ def line_graph(x_data: List[float], y_data: List[float], title: str) -> bytes:
         return ["math", "symbolic_math"]
 
 
+class EXT_Math(AbstractStaticExtension):
     name: ClassVar[str] = "math"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

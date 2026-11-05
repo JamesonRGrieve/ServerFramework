@@ -32,6 +32,7 @@ from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
+class POP3Provider(IMAPProvider):
     """Generic POP3 (receive) + SMTP (send) email provider."""
 
     name: ClassVar[str] = "pop3"

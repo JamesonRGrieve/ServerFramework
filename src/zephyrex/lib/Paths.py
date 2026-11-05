@@ -41,11 +41,13 @@ def src_path() -> Path:
 _EXTENSIONS_ROOT_OVERRIDE: Optional[Path] = None
 
 
+def set_extensions_root(path: Optional[Union[str, os.PathLike]]) -> None:
     """Override the extensions root directory.
 
     Pass ``None`` to clear the override and fall back to the bundled
     ``<src_dir>/extensions`` directory.
     """
+    global _EXTENSIONS_ROOT_OVERRIDE
     if path is None:
         _EXTENSIONS_ROOT_OVERRIDE = None
         return
@@ -57,6 +59,7 @@ _EXTENSIONS_ROOT_OVERRIDE: Optional[Path] = None
     _EXTENSIONS_ROOT_OVERRIDE = resolved
 
 
+def extensions_dir(override: Optional[Union[str, os.PathLike]] = None) -> str:
     """Return the active extensions directory as a string.
 
     ``override`` takes precedence over any module-level override, which in
@@ -71,9 +74,11 @@ _EXTENSIONS_ROOT_OVERRIDE: Optional[Path] = None
     return str(_SRC_DIR / "extensions")
 
 
+def extensions_path(override: Optional[Union[str, os.PathLike]] = None) -> Path:
     """``extensions_dir`` as a ``pathlib.Path``."""
     return Path(extensions_dir(override))
 
 
+def extension_dir(name: str, override: Optional[Union[str, os.PathLike]] = None) -> str:
     """Return the directory for a specific extension by name."""
     return str(extensions_path(override) / name)

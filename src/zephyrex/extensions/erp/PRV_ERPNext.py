@@ -80,6 +80,7 @@ def webhook_signature(secret: str, body: bytes) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
+def _server_messages(body: Mapping[str, Any]) -> List[str]:
     """The messages of ``_server_messages``: a JSON list of JSON objects,
     each with a ``message`` (``frappe.utils.response.make_logs``)."""
     raw = body.get("_server_messages")
@@ -101,6 +102,7 @@ def webhook_signature(secret: str, body: bytes) -> str:
     return messages
 
 
+def frappe_refusal(payload: Any) -> str:
     """Frappe's reason in an error body: its messages, else the exception's
     type. The body may be cut short, so it is read as text when it is no
     longer JSON."""
@@ -120,6 +122,7 @@ def webhook_signature(secret: str, body: bytes) -> str:
     return cleaned[:MAX_REFUSAL_CHARACTERS]
 
 
+class PRV_ERPNext(AbstractERPProvider):
     name: ClassVar[str] = "erpnext"
     friendly_name: ClassVar[str] = "ERPNext"
     description: ClassVar[str] = "An account on an ERPNext (Frappe) site"

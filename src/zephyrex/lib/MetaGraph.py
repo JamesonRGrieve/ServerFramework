@@ -22,6 +22,7 @@ THREADS_GRAPH = "https://graph.threads.net/v1.0"
 _INVALID_TOKEN = 190
 
 
+class GraphCaller(Protocol):
     """A provider class: its name and its HTTP client."""
 
     name: str
@@ -30,6 +31,7 @@ _INVALID_TOKEN = 190
     def http(cls) -> Any: ...
 
 
+def graph_error_code(payload: Any) -> Optional[int]:
     """The ``error.code`` of a Graph API error body, None when absent."""
     try:
         code = json.loads(str(payload))["error"]["code"]
@@ -38,6 +40,16 @@ _INVALID_TOKEN = 190
     return int(code) if isinstance(code, int) else None
 
 
+async def meta_graph(
+    provider: GraphCaller,
+    method: str,
+    path: str,
+    token: str,
+    *,
+    base: str = FACEBOOK_GRAPH,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """``method`` ``base/path`` with ``token``: the decoded answer."""
     try:
         answer: Dict[str, Any] = await provider.http().request(

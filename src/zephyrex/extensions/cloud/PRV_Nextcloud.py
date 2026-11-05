@@ -28,6 +28,7 @@ _PROPFIND = (
 )
 
 
+class PRV_Nextcloud_Cloud(AbstractCloudProvider):
     name: ClassVar[str] = "nextcloud"
     friendly_name: ClassVar[str] = "Nextcloud"
     description: ClassVar[str] = "A Nextcloud account's files, over WebDAV"
@@ -52,6 +53,8 @@ _PROPFIND = (
         ),
     )
 
+    @classmethod
+    def _account(cls, instance: ProviderInstanceModel) -> Tuple[str, Dict[str, str]]:
         """``(the account's WebDAV root, auth headers)``."""
         base, user = cls.setting(instance, "base_url"), cls.setting(
             instance, "username"
@@ -117,6 +120,8 @@ _PROPFIND = (
         )
         return cls.entries(response.content, folder)
 
+    @classmethod
+    def entries(cls, body: bytes, folder: str) -> List[Dict[str, Any]]:
         """``folder``'s children from a PROPFIND (Depth: 1) answer."""
         entries = []
         for item in xml_fromstring(body).findall(f"{_DAV}response"):

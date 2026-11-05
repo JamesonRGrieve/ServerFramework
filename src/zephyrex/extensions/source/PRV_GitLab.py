@@ -32,6 +32,7 @@ def username(user: Optional[Mapping[str, Any]]) -> str:
     return str((user or {}).get("username", ""))
 
 
+class PRV_GitLab_Source(AbstractSourceProvider):
     name: ClassVar[str] = "gitlab"
     friendly_name: ClassVar[str] = "GitLab"
     description: ClassVar[str] = "GitLab.com or a self-managed GitLab"

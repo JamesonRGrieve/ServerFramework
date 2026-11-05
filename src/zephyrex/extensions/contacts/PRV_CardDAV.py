@@ -68,6 +68,7 @@ def _values(card: Any, key: str) -> List[str]:
     ]
 
 
+def _birthday(card: Any) -> Optional[str]:
     """A vCard BDAY as an ISO date: ``1990-04-12``, ``--04-12`` without a year."""
     found = _values(card, "bday")
     if not found:
@@ -104,6 +105,7 @@ def _replace(
             line.type_param = type_param
 
 
+def apply_fields(card: Any, fields: Dict[str, Any]) -> None:
     """Write the contacts extension's ``fields`` onto a vCard."""
     if "name" in fields:
         _replace(card, "fn", [fields["name"]])
@@ -145,6 +147,7 @@ def changed_vcard(text: str, changes: Dict[str, Any]) -> bytes:
     return str(card.serialize()).encode()
 
 
+class PRV_CardDAV_Contacts(AbstractContactsProvider):
     name: ClassVar[str] = "carddav"
     friendly_name: ClassVar[str] = "CardDAV"
     description: ClassVar[str] = (

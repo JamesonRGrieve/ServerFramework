@@ -72,19 +72,23 @@ class UserRecoveryQuestionModel(
         "Security questions for account recovery when a user forgets their password"
     )
 
+    class Create(BaseModel, UserModel.Reference.ID):
         question: str = Field(..., description="Recovery question")
         answer: str = Field(
             ..., description="Answer to recovery question (will be hashed)"
         )
 
+    class Update(BaseModel):
         question: Optional[str] = Field(None, description="Recovery question")
         answer: Optional[str] = Field(
             None, description="Answer to recovery question (will be hashed)"
         )
 
+    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
         question: Optional[StringSearchModel] = None
 
 
+class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
     _model = UserRecoveryQuestionModel
     prefix: ClassVar[Optional[str]] = "/v1/user/recovery-questions"
     tags: ClassVar[Optional[List[str]]] = ["Account Recovery"]
@@ -110,16 +114,23 @@ class UserRecoveryQuestionModel(
         LockoutPolicy(failures_per_window=5, window_seconds=900, lockout_seconds=1800)
     )
 
+    def create(self, **kwargs):
         if "answer" in kwargs:
             answer = kwargs.pop("answer")
             normalized_answer = _normalize_answer(answer)
+            salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+            kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
         return super().create(**kwargs)
 
+    def update(self, id: str, **kwargs):
         if "answer" in kwargs:
             answer = kwargs.pop("answer")
             normalized_answer = _normalize_answer(answer)
+            salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+            kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
         return super().update(id, **kwargs)
 
+    def verify_answer(self, question_id: str, answer: str) -> bool:
         requester = self.optional_requester
         actor_key = str(requester.id) if requester is not None else "anon"
         flow = "recovery_answer"
@@ -131,6 +142,7 @@ class UserRecoveryQuestionModel(
         question = UserRecoveryQuestionModel.DB(
             self.model_registry.DB.manager.Base
         ).get(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=question_id,
         )
@@ -138,6 +150,7 @@ class UserRecoveryQuestionModel(
             self._verify_lockout_tracker.record_failure(actor_key, flow)
             return False
         normalized_answer = _normalize_answer(answer)
+        ok = bcrypt.checkpw(normalized_answer.encode(), question.answer.encode())
         if ok:
             self._verify_lockout_tracker.clear(actor_key, flow)
         else:
@@ -153,6 +166,7 @@ UserRecoveryQuestionModel.Manager = UserRecoveryQuestionManager
 # ---------------------------------------------------------------------------
 
 
+def _merge_handler(ctx) -> None:
     """Delete the target user's recovery questions.
 
     Recovery answers are personal: migrating them onto the surviving
@@ -165,6 +179,7 @@ UserRecoveryQuestionModel.Manager = UserRecoveryQuestionManager
     QDB = UserRecoveryQuestionModel.DB(ctx.model_registry.DB.manager.Base)
     rows = (
         QDB.list(
+            requester_id=_env("ROOT_ID"),
             model_registry=ctx.model_registry,
             filters=[QDB.user_id == ctx.target_user_id],
             return_type="dto",
@@ -174,11 +189,13 @@ UserRecoveryQuestionModel.Manager = UserRecoveryQuestionManager
     )
     for row in rows:
         QDB.delete(
+            requester_id=_env("ROOT_ID"),
             model_registry=ctx.model_registry,
             id=row.id,
         )
 
 
+def register_merge_participation() -> None:
     try:
         from zephyrex.extensions.auth_merge.BLL_Auth_Merge import make_merge_registrar
     except ImportError:

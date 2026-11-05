@@ -19,6 +19,7 @@ from zephyrex.lib.Paths import (
 )
 
 
+class ScopedModuleImporter:
     """Discovers and imports ``<file_type>_*`` modules in dependency order.
 
     Holds the per-registry ``imports`` cache so repeated scoped imports with the
@@ -28,6 +29,9 @@ from zephyrex.lib.Paths import (
     def __init__(self, cache: Any) -> None:
         self._cache = cache
 
+    def _scoped_import(
+        self, file_type="DB", scopes=["database", "extensions"], clean=False
+    ):
         """
         Private method to safely import models with automatic dependency resolution.
         This functionality was moved from lib.Import to be contained within ModelRegistry.
@@ -67,6 +71,7 @@ from zephyrex.lib.Paths import (
             logger.debug(
                 "Using cached scoped_import result for %s", scoped_import_cache_key
             )
+            return self._cache[scoped_import_cache_key]
 
         # Get the source directory
         src_dir = _resolve_src_dir()
@@ -265,8 +270,10 @@ from zephyrex.lib.Paths import (
                             extensions_root, ext_name, file_stem
                         )
                     else:
+                        spec = importlib.util.spec_from_file_location(
                             module_name, file_path
                         )
+                        module = importlib.util.module_from_spec(spec)
                         sys.modules[module_name] = module
                         spec.loader.exec_module(module)
                 else:
@@ -286,9 +293,12 @@ from zephyrex.lib.Paths import (
                         # package ``__path__`` and its submodule imports resolve
                         # — ``spec_from_file_location`` on an ``__init__`` would
                         # not set up the package search path.
+                        module = importlib.import_module(module_name)
                     else:
+                        spec = importlib.util.spec_from_file_location(
                             module_name, file_path
                         )
+                        module = importlib.util.module_from_spec(spec)
                         sys.modules[module_name] = module
                         spec.loader.exec_module(module)
 
@@ -317,6 +327,7 @@ from zephyrex.lib.Paths import (
                 imported_file_paths.add(file_path)
                 logger.debug(f"Successfully imported {module_name}")
 
+            except Exception as e:
                 import_errors.append((file_path, str(e)))
                 logger.error(f"Error importing {file_path}: {e}")
 
@@ -336,14 +347,17 @@ from zephyrex.lib.Paths import (
         # Configure mappers to resolve any remaining issues
         try:
             configure_mappers()
+        except Exception as e:
             logger.error(f"Error configuring mappers: {e}")
 
         # Cache the result for future use
         result = (imported_modules, import_errors)
+        self._cache[scoped_import_cache_key] = result
         logger.debug("Cached scoped_import result for %s", scoped_import_cache_key)
 
         return result
 
+    def _build_dependency_graph(self, files_by_scope):
         """
         Private method to build a dependency graph of modules and determine import order.
 
@@ -377,6 +391,7 @@ from zephyrex.lib.Paths import (
                     module_imports[module_name] = imports
                     dependencies[module_name] = deps
                     all_defined_classes.update(classes)
+                except Exception as e:
                     parsing_errors.append((file_path, str(e)))
                     logger.error(f"Skipping {file_path} due to parsing error: {e}")
                     continue
@@ -461,6 +476,7 @@ from zephyrex.lib.Paths import (
 
         return ordered_files, module_graph, module_to_file
 
+    def _parse_imports_and_dependencies(self, file_path, scope="database"):
         """
         Private method to parse a Python file to identify its imports and class dependencies.
 
@@ -490,9 +506,11 @@ from zephyrex.lib.Paths import (
             defined_classes = {f"{current_module}.{cls}" for cls in classes}
 
             return current_module, dependencies, defined_classes, all_imports
+        except Exception as e:
             logger.error(f"Error parsing {file_path}: {e}")
             return current_module, set(), set(), set()
 
+    def _parse_module_ast(self, file_path):
         """
         Private method to parse a Python file using the AST module to extract imports and classes.
 
@@ -551,9 +569,11 @@ from zephyrex.lib.Paths import (
                         classes.append(node.name)
 
                 return imports, import_froms, classes
+            except Exception as e:
                 logger.error(f"Error parsing {file_path} with alternate encoding: {e}")
                 raise ValueError(
                     f"Failed to parse dependencies in {file_path}: {str(e)}"
                 )
+        except Exception as e:
             logger.error(f"Error parsing {file_path}: {e}")
             raise ValueError(f"Failed to parse dependencies in {file_path}: {str(e)}")

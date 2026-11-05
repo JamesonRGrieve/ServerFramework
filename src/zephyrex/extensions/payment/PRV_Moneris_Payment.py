@@ -42,10 +42,12 @@ ORDER_ID_CHARACTERS = 50
 TEMPORARY_TOKEN_PREFIX = "ot-"
 
 
+def _minor(money: Any) -> Tuple[int, str]:
     money = money if isinstance(money, Mapping) else {}
     return int(money.get("amount") or 0), str(money.get("currency") or "CAD")
 
 
+class PRV_Moneris_Payment(AbstractPaymentProvider):
     name: ClassVar[str] = "moneris"
     friendly_name: ClassVar[str] = "Moneris"
     description: ClassVar[str] = "A Moneris merchant account"
@@ -115,6 +117,10 @@ TEMPORARY_TOKEN_PREFIX = "ot-"
             customer_id=payment.get("customerId"),
         )
 
+    @classmethod
+    async def create_payment(
+        cls, instance: ProviderInstanceModel, request: PaymentRequest
+    ) -> Dict[str, Any]:
         if not request.capture:
             raise cls.cannot("hold a payment for later capture")
         token = request.payment_method_id
@@ -152,6 +158,10 @@ TEMPORARY_TOKEN_PREFIX = "ot-"
         )
         return cls.payment(instance, payment)
 
+    @classmethod
+    async def capture_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"idempotencyKey": action.idempotency_key}
         if action.amount is not None:
             body["amount"] = {
@@ -168,6 +178,10 @@ TEMPORARY_TOKEN_PREFIX = "ot-"
         payment = answer.get("payment")
         return cls.payment(instance, payment if isinstance(payment, dict) else answer)
 
+    @classmethod
+    async def refund_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
         """Moneris takes the amount on every refund: with none, all of it."""
         if action.amount is None:
             current = await cls.get_payment(instance, payment_id)

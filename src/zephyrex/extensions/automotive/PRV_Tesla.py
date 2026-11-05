@@ -35,6 +35,7 @@ _COMMANDS = {
 }
 
 
+class PRV_Tesla_Automotive(AbstractAutomotiveProvider):
     name: ClassVar[str] = "tesla"
     friendly_name: ClassVar[str] = "Tesla"
     description: ClassVar[str] = "Tesla vehicles, through the Fleet API"

@@ -76,15 +76,19 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+class ZephyrexError(Exception):
     """Base exception for all framework errors."""
 
 
+class StartupError(ZephyrexError):
     """Raised when the framework fails to start."""
 
 
+class ExtensionLoadError(ZephyrexError):
     """Raised when an extension fails to load."""
 
 
+class RouterRegistrationError(ZephyrexError):
     """Raised when a router fails to register."""
 
 
@@ -101,6 +105,7 @@ __all__ = [
 ]
 
 
+def get_framework_version() -> str:
     """Return the installed framework version from distribution metadata.
 
     Tries the ``zephyrex`` distribution first, then the legacy ``server``
@@ -108,6 +113,7 @@ __all__ = [
     running directly from a source checkout without ``pip install``).
     """
     try:
+        from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
         for _dist_name in ("zephyrex", "server"):
             try:
@@ -119,6 +125,7 @@ __all__ = [
     return "0.0.0"
 
 
+def set_extensions_root(path: Optional[Union[str, os.PathLike]]) -> None:
     """Configure the global extensions root.
 
     Equivalent to ``lib.Paths.set_extensions_root``; re-exported here so
@@ -129,6 +136,18 @@ __all__ = [
     _set_root(path)
 
 
+def run(
+    extensions: Optional[str] = None,
+    extensions_path: Optional[Union[str, os.PathLike]] = None,
+    host: str = "0.0.0.0",
+    port: int = 1996,
+    workers: Optional[int] = None,
+    reload: Optional[bool] = None,
+    log_level: Optional[str] = None,
+    proxy_headers: bool = True,
+    env_overrides: Optional[Dict[str, str]] = None,
+    **uvicorn_kwargs: Any,
+) -> None:
     """Boot the framework with uvicorn.
 
     This is the importable equivalent of running ``python app.py``: it
@@ -150,10 +169,13 @@ __all__ = [
     """
     if env_overrides:
         for key, value in env_overrides.items():
+            os.environ[key] = str(value)
 
     if extensions is not None:
+        os.environ["APP_EXTENSIONS"] = extensions
 
     if extensions_path is not None:
+        os.environ["EXTENSIONS_PATH"] = str(extensions_path)
         set_extensions_root(extensions_path)
 
     # Refresh the cached settings singleton so env() picks up the values

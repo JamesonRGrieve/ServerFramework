@@ -30,6 +30,7 @@ from zephyrex.extensions.database_memory.EXT_DatabaseMemory import (
 _logger = logging.getLogger(__name__)
 
 
+class PRV_Fake_DatabaseMemory(AbstractDatabaseMemoryProvider):
     """In-process fake in-memory-store provider for tests.
 
     The "client" is a per-instance dict; `streams` data lives in another
@@ -84,6 +85,7 @@ class _FakeClient:
         )
 
 
+class _FakeDatabaseMemoryStreamsTransport:
     """In-process `BrokerTransport`. Same shape as `_ValkeyStreamsTransport`
     in `PRV_Valkey.py`; per-topic isolation, swallowed handler errors."""
 

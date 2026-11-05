@@ -95,6 +95,8 @@ SUBSCRIPTION_MIRRORED = (
 LOGIN_CHECK_TIMEOUT_SECONDS = 20.0
 
 
+@extension_model(UserModel)
+class Payment_UserModel(BaseModel):
     """A user's customer record at a payment provider, set by the server."""
 
     external_payment_id: Optional[str] = Field(
@@ -104,6 +106,7 @@ LOGIN_CHECK_TIMEOUT_SECONDS = 20.0
         None, description="The payment account (provider instance) holding it"
     )
 
+    class Update(BaseModel):
         external_payment_id: Optional[str] = Field(
             None, description="Server-set: the customer id at the provider"
         )
@@ -111,11 +114,14 @@ LOGIN_CHECK_TIMEOUT_SECONDS = 20.0
             None, description="Server-set: the account holding the customer"
         )
 
+    class Search(BaseModel):
         external_payment_id: Optional[str] = Field(
             None, description="The user's customer id at the payment provider"
         )
 
 
+@hook_bll(UserManager.update, timing="before", priority=5)
+def link_is_server_set(context: HookContext) -> None:
     """Only ROOT and SYSTEM write a user's customer link."""
     named = sorted(set(LINK_FIELDS) & set(context.kwargs))
     if named and not server_side(context.manager.requester.id):
@@ -125,6 +131,7 @@ LOGIN_CHECK_TIMEOUT_SECONDS = 20.0
         )
 
 
+def linked_customer(user: Any) -> Optional[Tuple[str, str]]:
     """``(instance id, customer id)`` of the user's customer record, when
     the server linked one."""
     instance_id = getattr(user, "payment_instance_id", None)
@@ -134,14 +141,17 @@ LOGIN_CHECK_TIMEOUT_SECONDS = 20.0
     return None
 
 
+def link_customer(user_id: str, instance_id: str, customer_id: str) -> None:
     """Record ``customer_id`` at ``instance_id`` as ``user_id``'s."""
     from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
 
+    users = EXT_Payment.as_requester(UserManager, str(env("ROOT_ID")))
     users.update(
         user_id, external_payment_id=customer_id, payment_instance_id=instance_id
     )
 
 
+class ProviderFields(RouteModel):
     """Where a record came from at the provider, and when it was read."""
 
     provider: str = Field(..., description="The provider (stripe, square, …)")
@@ -178,6 +188,7 @@ class PaymentModel(
         "Payments (a local mirror of each provider's payment)"
     )
 
+    class Create(BaseModel):
         user_id: Optional[str] = None
         provider: str
         provider_instance_id: str
@@ -193,6 +204,7 @@ class PaymentModel(
         refreshed_at: datetime
 
     # product_id is absent: what a payment bought never changes after it is made.
+    class Update(BaseModel):
         external_id: Optional[str] = None
         status: Optional[str] = None
         provider_status: Optional[str] = None
@@ -237,6 +249,7 @@ class PaymentSubscriptionModel(
         "Subscriptions (a local mirror of each provider's subscription)"
     )
 
+    class Create(BaseModel):
         user_id: Optional[str] = None
         provider: str
         provider_instance_id: str
@@ -249,6 +262,7 @@ class PaymentSubscriptionModel(
         cancel_at_period_end: bool = False
         refreshed_at: datetime
 
+    class Update(BaseModel):
         plan_id: Optional[str] = None
         customer_id: Optional[str] = None
         status: Optional[str] = None
@@ -267,6 +281,7 @@ class PaymentSubscriptionModel(
         status: Optional[StringSearchModel] = None
 
 
+class MirrorManager(AbstractBLLManager):
     """A record owned by the user it was made for, mirroring the provider."""
 
     mirrored: ClassVar[Tuple[str, ...]] = ()
@@ -279,6 +294,7 @@ class PaymentSubscriptionModel(
         """An update never moves a record to another owner or team."""
         return super().update(id, **without(kwargs, OWNERSHIP_FIELDS))
 
+    def record(self, answer: Dict[str, Any], **extra: Any) -> Any:
         """A new record of the provider's ``answer``."""
         return self.create(
             provider=answer["provider"],
@@ -289,11 +305,13 @@ class PaymentSubscriptionModel(
             refreshed_at=datetime.now(UTC),
         )
 
+    def mirror(self, record: Any, answer: Dict[str, Any]) -> Any:
         """``record`` (which the requester could read) updated to the
         provider's ``answer``. The mirror is the server's to write, so it
         is written as ROOT: a record ROOT made for a user is otherwise
         closed to that user's writes."""
         server = type(self)(
+            model_registry=self.model_registry, requester_id=str(env("ROOT_ID"))
         )
         return server.update(
             record.id,
@@ -302,16 +320,21 @@ class PaymentSubscriptionModel(
         )
 
 
+class PaymentManager(MirrorManager, RouterMixin):
     _model = PaymentModel
     mirrored: ClassVar[Tuple[str, ...]] = PAYMENT_MIRRORED
     routes_to_register: ClassVar[Optional[List[RouteType]]] = READ_ONLY
 
 
+class PaymentSubscriptionManager(MirrorManager, RouterMixin):
     _model = PaymentSubscriptionModel
     mirrored: ClassVar[Tuple[str, ...]] = SUBSCRIPTION_MIRRORED
     routes_to_register: ClassVar[Optional[List[RouteType]]] = READ_ONLY
 
 
+async def refreshed(
+    subscriptions: PaymentSubscriptionManager, records: Sequence[Any]
+) -> List[Any]:
     """Each subscription read again from its provider and recorded; the
     last record where the provider cannot answer."""
     from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
@@ -332,6 +355,9 @@ class PaymentSubscriptionModel(
     return current
 
 
+async def refresh_named(
+    extension: Type["EXT_Payment"], event: Dict[str, Any]
+) -> Optional[str]:
     """The id of the record a verified notification names, read again from
     the provider; None when no record is kept of it."""
     kind, object_id = event.get("kind"), event.get("object_id")
@@ -340,6 +366,7 @@ class PaymentSubscriptionModel(
     manager_class: Type[MirrorManager] = (
         PaymentManager if kind == "payment" else PaymentSubscriptionManager
     )
+    manager = extension.as_requester(manager_class, str(env("ROOT_ID")))
     records = manager.list(
         provider_instance_id=event["provider_instance_id"], external_id=object_id
     )
@@ -362,6 +389,7 @@ async def current_within(
         return list(records)
 
 
+def require_active_subscription(user_id: str, model_registry: Any) -> None:
     """Refuse (402) a user whose subscriptions are all inactive: the check a
     login makes once the credentials are proven. Users with none, ROOT and
     SYSTEM are not checked; DISABLE_SUBSCRIPTION_VALIDATION=true turns it
@@ -373,6 +401,7 @@ async def current_within(
     if not user_id or server_side(str(user_id)):
         return
     subscriptions = PaymentSubscriptionManager(
+        model_registry=model_registry, requester_id=str(env("ROOT_ID"))
     )
     records = subscriptions.list(user_id=user_id)
     if not records:
@@ -397,6 +426,7 @@ ENDED_STATUSES = frozenset(
 )
 
 
+def end_billing(user_id: str, model_registry: Any) -> None:
     """A deleted account is billed no more: each of its subscriptions still
     running is cancelled at its provider, at the end of the period paid for
     where the provider can (``subscription_ends``), now where it cannot.
@@ -409,6 +439,7 @@ ENDED_STATUSES = frozenset(
     )
 
     subscriptions = PaymentSubscriptionManager(
+        model_registry=model_registry, requester_id=str(env("ROOT_ID"))
     )
     ends = {
         provider.name: provider.subscription_ends

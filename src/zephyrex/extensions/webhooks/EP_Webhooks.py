@@ -52,10 +52,17 @@ def _enforce_webhook_rate(extension: str, provider: str, peer: Optional[str]) ->
         return True
 
 
+def create_webhook_router() -> APIRouter:
     """Construct the public webhook ``APIRouter`` with the canonical mount."""
 
     router = APIRouter(prefix="/webhook", tags=["webhook"])
 
+    async def _dispatch(
+        extension: str,
+        provider: str,
+        event: Optional[str],
+        request: Request,
+    ) -> Response:
         # M-3 — per-(extension, provider, peer) budget. The per-IP global
         # `@rate_limit` is retained as an outer DoS gate but no longer
         # exhausts a provider's budget when a sibling provider is misbehaving.
@@ -110,6 +117,7 @@ def _enforce_webhook_rate(extension: str, provider: str, peer: Optional[str]) ->
             )
         try:
             ok = await maybe_await(verify_signature(headers, body_bytes))
+        except Exception as e:
             logger.warning(
                 f"Signature verification raised for {extension}/{provider}: {e}"
             )
@@ -150,6 +158,7 @@ def _enforce_webhook_rate(extension: str, provider: str, peer: Optional[str]) ->
             await maybe_await(result)
         except HTTPException:
             raise
+        except Exception as e:
             logger.error(f"Webhook handler {handler.__name__} raised: {e}")
             raise HTTPException(status_code=500, detail="Webhook handler error")
 

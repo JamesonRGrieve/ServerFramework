@@ -25,6 +25,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 STATUS_FIELD = "status"
 
 
+class PRV_Threads_Social(AbstractSocialProvider):
     name: ClassVar[str] = "threads"
     friendly_name: ClassVar[str] = "Threads"
     description: ClassVar[str] = "Threads"

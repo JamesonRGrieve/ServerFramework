@@ -26,6 +26,7 @@ from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependen
 from zephyrex.lib.Environment import env
 
 
+class EXT_LDAPConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "ldap_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (

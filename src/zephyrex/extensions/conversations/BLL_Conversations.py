@@ -146,6 +146,7 @@ class DirectMessageResponse(RouteModel):
     message: Optional["MessageModel"] = None
 
 
+class ConversationManager(AbstractBLLManager, RouterMixin):
     _model = ConversationModel
 
     prefix: ClassVar[Optional[str]] = "/v1/conversation"
@@ -213,6 +214,7 @@ class DirectMessageResponse(RouteModel):
         )
         return added
 
+    def remove_participant(self, conversation_id: str, user_id: str) -> None:
         """The owner removes anyone; a participant may leave."""
         conversation = self.get(id=conversation_id)
         if not server_side(self.requester.id) and self.requester.id not in (
@@ -236,6 +238,7 @@ class DirectMessageResponse(RouteModel):
                 detail="User is not a participant in this conversation",
             )
         root = ConversationUserManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
         for membership in memberships:
             # The route names the membership by two ids; it is held to the
@@ -247,10 +250,14 @@ class DirectMessageResponse(RouteModel):
     def get_participants(self, conversation_id: str) -> List[ConversationUserModel]:
         return self.conversation_users.list(conversation_id=conversation_id)
 
+    def create_direct_message(
+        self, other_user_id: str, initial_message: Optional[str] = None
+    ) -> Dict[str, Any]:
         """The direct conversation between the requester and
         ``other_user_id``, made if there is none, with ``initial_message``
         posted into it. The requester must see ``other_user_id``; nothing is
         written for a user they cannot."""
+        requester_id = self.requester.id
         if other_user_id == requester_id:
             raise HTTPException(
                 status_code=400, detail="A direct message needs another user"
@@ -321,6 +328,7 @@ class DirectMessageResponse(RouteModel):
         )
 
 
+class ConversationUserManager(AbstractBLLManager, RouterMixin):
     _model = ConversationUserModel
 
     prefix: ClassVar[Optional[str]] = "/v1/conversation/user"
@@ -334,6 +342,7 @@ class DirectMessageResponse(RouteModel):
             requester_id=self.requester.id, model_registry=self.model_registry
         ).get(id=entity.conversation_id)
 
+    def create(self, **kwargs: Any) -> Any:
         """Memberships with their grants: the same as adding participants.
         Every user named, singly or in a batch, must be one the requester
         can see, checked before any membership is written."""
@@ -347,6 +356,7 @@ class DirectMessageResponse(RouteModel):
                 _visible_user(self.model_registry, self.requester.id, user_id)
         result = super().create(**kwargs)
         conversations = ConversationManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
         for membership in created_records(result):
             owner = conversations.get(id=membership.conversation_id).user_id
@@ -423,6 +433,7 @@ class ThreadResponse(RouteModel):
     messages: List[MessageModel]
 
 
+class MessageManager(AbstractBLLManager, RouterMixin):
     _model = MessageModel
 
     prefix: ClassVar[Optional[str]] = "/v1/message"
@@ -473,12 +484,14 @@ class ThreadResponse(RouteModel):
             kwargs["edited_at"] = datetime.now(timezone.utc)
         return super().update(id, **kwargs)
 
+    def delete(self, id: str) -> None:
         """The author or the conversation's owner deletes a message."""
         message = self.get(id=id)
         if server_side(self.requester.id) or message.user_id == self.requester.id:
             super().delete(id)
             return
         conversation = ConversationManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
         ).get(id=message.conversation_id)
         if conversation.user_id != self.requester.id:
             raise HTTPException(
@@ -488,6 +501,7 @@ class ThreadResponse(RouteModel):
         # The database lets only a row's creator delete it; the owner's
         # moderation is authorized here, so the row goes as ROOT.
         MessageManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         ).delete(id)
 
     def get_thread(
@@ -603,6 +617,7 @@ class FeedbackModel(
         positive: Optional[bool] = None
 
 
+class FeedbackManager(AbstractBLLManager, RouterMixin):
     _model = FeedbackModel
 
     prefix: ClassVar[Optional[str]] = "/v1/feedback"
@@ -780,9 +795,11 @@ def _grant(model_registry: Any, conversation_id: str, user_id: str) -> None:
     )
 
 
+def _revoke(model_registry: Any, conversation_id: str, user_id: str) -> None:
     from zephyrex.extensions.acl_rbac.BLL_ACL import PermissionManager
 
     permissions = PermissionManager(
+        requester_id=env("ROOT_ID"), model_registry=model_registry
     )
     for grant in permissions.list(
         resource_type="conversations", resource_id=conversation_id, user_id=user_id

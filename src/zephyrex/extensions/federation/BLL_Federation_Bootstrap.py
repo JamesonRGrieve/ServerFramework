@@ -94,6 +94,7 @@ def _is_private_or_local(host: str) -> bool:
         return True
 
 
+def validate_upstream_url(url: str, *, allow_private: Optional[bool] = None) -> None:
     """Reject malformed URLs and (by default) URLs that point at private IPs.
 
     Raises ``ValueError`` describing the rejection reason; callers should
@@ -159,6 +160,7 @@ def _loaded_extensions(model_registry: Any) -> List[type]:
     return list(getattr(extension_registry, "extensions", None) or [])
 
 
+def _discover_gql_providers(model_registry: Any) -> List[type]:
     """The GraphQL providers of the app's extensions."""
 
     from zephyrex.extensions.AbstractGraphQLProvider import AbstractGraphQLProvider
@@ -290,6 +292,14 @@ class FederationCommitReport:
         self.errors: Dict[str, str] = {}
 
 
+def install_external_federation_sync(
+    *,
+    model_registry: Any,
+    providers: Optional[Iterable[Any]] = None,
+    rest_descriptors: Optional[Iterable[Mapping[str, Any]]] = None,
+    schema_registry: Optional[MergedSchemaRegistry] = None,
+    sources: Optional[Iterable[AbstractFederatedSource]] = None,
+) -> FederationCommitReport:
     """Synchronous federation pipeline that integrates with ModelRegistry.
 
     Four jobs, each over what is given or, when nothing is, what the app's
@@ -335,6 +345,7 @@ class FederationCommitReport:
             continue
         try:
             ingested = provider_cls.register_with_registry_sync(registry=target)  # type: ignore[union-attr]
+        except Exception as exc:
             logger.warning(
                 "GQL federation failed for %s: %s", provider_cls.__name__, exc
             )
@@ -342,6 +353,7 @@ class FederationCommitReport:
             continue
         try:
             lift = provider_cls.lift_to_pydantic(ingested)  # type: ignore[union-attr]
+        except Exception as exc:
             logger.warning(
                 "SDL→Pydantic lift failed for %s: %s", provider_cls.__name__, exc
             )
@@ -366,6 +378,7 @@ class FederationCommitReport:
                 )
                 report.rest_routers.append(router)
                 report.subgraphs[provider_cls.__name__] = sg
+            except Exception as exc:
                 logger.warning(
                     "GQL→REST projection failed for %s: %s",
                     provider_cls.__name__,
@@ -380,6 +393,7 @@ class FederationCommitReport:
                 model_registry=model_registry,
                 report=report,
             )
+        except Exception as exc:
             name = descriptor.get("name", "<unknown>")
             logger.warning("REST federation failed for %s: %s", name, exc)
             report.errors[str(name)] = str(exc)
@@ -566,6 +580,7 @@ def _synthesize_gql_external_model(
     return bound
 
 
+class _ProviderMethodsSession(FederatedSession):
     """Calls a lifted model's ``*_via_provider`` methods (the upstream's
     transport, synchronous) off the event loop. The upstream's credentials
     are the operator's: any signed-in requester is served."""
@@ -613,6 +628,7 @@ def _synthesize_gql_external_model(
         return made
 
 
+class _ProviderMethodsSource(AbstractFederatedSource):
     """A GraphQL or REST upstream whose types the federation lifted itself
     (from its SDL or OpenAPI document), served under the namespace of its
     provider's or descriptor's name."""

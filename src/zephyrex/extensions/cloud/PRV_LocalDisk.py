@@ -23,6 +23,7 @@ from zephyrex.extensions.ExternalErrors import (
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
+class PRV_LocalDisk_Cloud(AbstractCloudProvider):
     name: ClassVar[str] = "local_disk"
     friendly_name: ClassVar[str] = "Local disk"
     description: ClassVar[str] = "A directory on the server's own disk"

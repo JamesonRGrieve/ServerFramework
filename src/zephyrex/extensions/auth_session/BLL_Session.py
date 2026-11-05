@@ -46,6 +46,7 @@ from zephyrex.logic.BLL_Auth import (
 )
 
 
+def _invalidate_session_cache(session_key: str | None) -> None:
     """Best-effort invalidation of a session's Valkey cache entry."""
     if not session_key:
         return
@@ -60,9 +61,16 @@ from zephyrex.logic.BLL_Auth import (
             _cache_sync_run(
                 cache.invalidate("session", session_key, {"session_key": session_key})
             )
+    except Exception:
         pass
 
 
+class SessionModel(
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
+):
     """Persisted authentication-session row.
 
     Bound to a JWT via ``session_key`` (the JWT's ``jti`` claim). Verifying
@@ -123,6 +131,8 @@ from zephyrex.logic.BLL_Auth import (
         "Active user authentication sessions and related metadata"
     )
 
+    @classmethod
+    def user_has_all_access(cls, user_id, id, db, db_manager=None, model_registry=None):
         """Allow users to delete their own sessions even if a different
         actor created them (e.g. an admin minted the row on a remote device).
         """
@@ -153,6 +163,7 @@ from zephyrex.logic.BLL_Auth import (
     # hash, trust score, pending-state machine) is populated via
     # ``**kwargs`` from the session-management code paths and MUST NOT
     # be acceptable client input.
+    class Create(BaseModel, UserModel.Reference.ID):
         session_key: str = Field(
             ..., description="Unique session identifier used in JWT jti claim"
         )
@@ -193,6 +204,7 @@ from zephyrex.logic.BLL_Auth import (
     # known plaintext is account takeover. The fields kept here are
     # the lifecycle bits the framework legitimately mutates from
     # session-management code paths.
+    class Update(BaseModel):
         is_active: Optional[bool] = Field(None)
         last_activity: Optional[datetime] = Field(None)
         expires_at: Optional[datetime] = Field(None)
@@ -202,6 +214,7 @@ from zephyrex.logic.BLL_Auth import (
             Field(None)
         )
 
+    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
         session_key: Optional[StringSearchModel] = None
         is_active: Optional[bool] = None
         revoked: Optional[bool] = None
@@ -214,6 +227,7 @@ from zephyrex.logic.BLL_Auth import (
         pending_state: Optional[StringSearchModel] = None
 
 
+class SessionManager(AbstractBLLManager, RouterMixin):
     """CRUD + admin operations on the persisted session row.
 
     Endpoints under ``/v1/session``:
@@ -257,13 +271,16 @@ from zephyrex.logic.BLL_Auth import (
             model_registry=model_registry,
         )
 
+    def create_validation(self, entity) -> None:
         """Refuse a duplicate ``session_key``."""
         if self.Model.DB(self.model_registry.DB.manager.Base).exists(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             session_key=entity.session_key,
         ):
             raise HTTPException(status_code=400, detail="Session key already exists")
 
+    def revoke_session(self, id: str) -> Dict[str, str]:
         # Sessions are minted by the framework as ROOT (the user is not
         # yet known when the row is materialized in the login pipeline),
         # so the row's ``created_by_user_id`` is ROOT_ID. The DB layer's
@@ -275,6 +292,7 @@ from zephyrex.logic.BLL_Auth import (
 
         SessionDB = self.Model.DB(self.model_registry.DB.manager.Base)
         session = SessionDB.get(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=id,
             return_type="dto",
@@ -288,6 +306,7 @@ from zephyrex.logic.BLL_Auth import (
                 detail="Cannot revoke another user's session",
             )
         SessionDB.update(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=id,
             new_properties={"revoked": True, "is_active": False},
@@ -295,6 +314,7 @@ from zephyrex.logic.BLL_Auth import (
         _invalidate_session_cache(getattr(session, "session_key", None))
         return {"message": "Session revoked successfully"}
 
+    def revoke_all_user_sessions(self, user_id: str) -> Dict[str, Any]:
         # Same root-write pattern as ``revoke_session``: rows are
         # ROOT-owned, so we authenticate the caller (must be the user
         # themselves or ROOT) and then mutate as ROOT.
@@ -307,6 +327,7 @@ from zephyrex.logic.BLL_Auth import (
             )
         SessionDB = self.Model.DB(self.model_registry.DB.manager.Base)
         sessions = SessionDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             user_id=user_id,
             is_active=True,
@@ -321,6 +342,7 @@ from zephyrex.logic.BLL_Auth import (
                 else getattr(session, "session_key", None)
             )
             SessionDB.update(
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=session_id,
                 new_properties={"is_active": False, "revoked": True},
@@ -332,7 +354,9 @@ from zephyrex.logic.BLL_Auth import (
             "revoked_count": revoked_count,
         }
 
+    def update_activity(self, session_key: str) -> Dict[str, str]:
         sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             session_key=session_key,
         )
@@ -341,13 +365,16 @@ from zephyrex.logic.BLL_Auth import (
         session = sessions[0]
         session_id = session["id"] if isinstance(session, dict) else session.id
         self.Model.DB(self.model_registry.DB.manager.Base).update(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=session_id,
             new_properties={"last_activity": datetime.now(timezone.utc)},
         )
         return {"message": "Session activity updated successfully"}
 
+    def validate_session(self, session_key: str) -> bool:
         sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             session_key=session_key,
             is_active=True,
@@ -362,8 +389,10 @@ from zephyrex.logic.BLL_Auth import (
         expires_at = ensure_utc(expires_at)
         return expires_at > datetime.now(timezone.utc)
 
+    def cleanup_expired_sessions(self) -> Dict[str, Any]:
         current_time = datetime.now(timezone.utc)
         expired_sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             filters=[
                 self.Model.DB(self.model_registry.DB.manager.Base).expires_at
@@ -375,6 +404,7 @@ from zephyrex.logic.BLL_Auth import (
         for session in expired_sessions:
             session_id = session["id"] if isinstance(session, dict) else session.id
             self.Model.DB(self.model_registry.DB.manager.Base).update(
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=session_id,
                 new_properties={"is_active": False},
@@ -385,10 +415,14 @@ from zephyrex.logic.BLL_Auth import (
             "cleaned_count": cleaned_count,
         }
 
+    def get_user_sessions(
+        self, user_id: str, active_only: bool = True
+    ) -> List[SessionModel]:
         filters: Dict[str, Any] = {"user_id": user_id}
         if active_only:
             filters.update({"is_active": True, "revoked": False})
         return self.Model.DB(self.model_registry.DB.manager.Base).list(  # type: ignore[no-any-return]
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=SessionModel,
@@ -407,6 +441,16 @@ SessionModel.Manager = SessionManager
 # ---------------------------------------------------------------------------
 
 
+def issue_session(
+    *,
+    user_id: str,
+    model_registry: Any,
+    session_key: Optional[str] = None,
+    expiration_hours: int = 24,
+    device_type: str = "web",
+    grant_type: Optional[str] = None,
+    pending_state: Optional[str] = None,
+) -> str:
     """Persist a fresh ``SessionModel`` row and return its ``session_key``.
 
     Called by core ``UserManager.generate_jwt_token`` via the
@@ -420,11 +464,13 @@ SessionModel.Manager = SessionManager
     logger before being swallowed.
     """
     if session_key is None:
+        session_key = secrets.token_hex(16)
     if model_registry is None:
         return session_key
     now = datetime.now(timezone.utc)
     try:
         SessionModel.DB(model_registry.DB.manager.Base).create(
+            requester_id=user_id,
             model_registry=model_registry,
             user_id=user_id,
             session_key=session_key,
@@ -439,6 +485,7 @@ SessionModel.Manager = SessionManager
             grant_type=grant_type,
             pending_state=pending_state,
         )
+    except Exception:
         from zephyrex.lib.Logging import logger
 
         logger.exception(
@@ -448,6 +495,11 @@ SessionModel.Manager = SessionManager
     return session_key
 
 
+def enforce_not_revoked(
+    payload: Dict[str, Any],
+    model_registry: Any,
+    db: Any = None,
+) -> None:
     """Raise 401 if the JWT's bound session is missing/inactive/revoked.
 
     Called by core ``UserManager.verify_token`` via the
@@ -470,12 +522,14 @@ SessionModel.Manager = SessionManager
     db_manager = model_registry.DB.manager if model_registry is not None else None
     try:
         session_dto = SessionModel.DB(db_manager.Base).get(  # type: ignore[union-attr]
+            requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             db=db,
             filters=[
                 SessionModel.DB(db_manager.Base).session_key == session_key  # type: ignore[union-attr]
             ],
         )
+    except Exception:
         session_dto = None
     if session_dto is None:
         raise HTTPException(status_code=401, detail="Session has been revoked")
@@ -522,12 +576,14 @@ def session_manager_factory(
     )
 
 
+def revoke_session_key(*, session_key: str, model_registry: Any) -> None:
     """Revoke the session a token's ``jti`` names (logout). The caller has
     already authenticated that token, which is the authority to end it;
     rows are minted as ROOT, so the update runs as ROOT (see
     ``SessionManager.revoke_session``)."""
     SessionDB = SessionModel.DB(model_registry.DB.manager.Base)
     session = SessionDB.get(
+        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         session_key=session_key,
         return_type="dto",
@@ -536,6 +592,7 @@ def session_manager_factory(
     if session is None:
         return
     SessionDB.update(
+        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         id=session.id,
         new_properties={"revoked": True, "is_active": False},
@@ -543,21 +600,29 @@ def session_manager_factory(
     _invalidate_session_cache(session_key)
 
 
+def revoke_user_sessions(
+    *, user_id: str, requester_id: str, model_registry: Any
+) -> int:
     """Revoke every active/non-revoked session for ``user_id``. Returns
     the count for observability."""
     if model_registry is None:
         return 0
+    mgr = SessionManager(requester_id=requester_id, model_registry=model_registry)
     return mgr.revoke_sessions(user_id)
 
 
+def erase_sessions(user_id: str, model_registry: Any) -> None:
     """A deleted account's sign-in records: each session is revoked, so a
     token it issued stops working at once, then deleted with the account
     (and so purged with it, where the app purges). Registered with the
     privacy extension's erasers; safe to run twice."""
+    root_id = env("ROOT_ID")
     SessionDB = SessionModel.DB(model_registry.DB.manager.Base)
     rows: List[SessionModel] = (
         SessionDB.list(
+            requester_id=root_id,
             model_registry=model_registry,
+            filters=[SessionDB.user_id == user_id, SessionDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=SessionModel,
         )
@@ -565,10 +630,12 @@ def session_manager_factory(
     )
     for row in rows:
         SessionDB.update(
+            requester_id=root_id,
             model_registry=model_registry,
             id=row.id,
             new_properties={"revoked": True, "is_active": False},
         )
+        SessionDB.delete(requester_id=root_id, model_registry=model_registry, id=row.id)
         _invalidate_session_cache(row.session_key)
 
 
@@ -593,6 +660,7 @@ __all__ = [
 # any session-aware path runs, the hooks are wired. The ImportError guard
 # is for the framework-bootstrap window where ``BLL_Auth`` hasn't finished
 # importing yet.
+def register_hooks() -> None:
     """Wire this module's implementations into core's ``_session_hooks``."""
     from zephyrex.logic.BLL_Auth import register_session_hooks
 

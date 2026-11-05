@@ -27,6 +27,7 @@ OWNERSHIP_FIELDS = ("user_id", "team_id")
 Prepare = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
+def server_side(requester_id: Optional[str]) -> bool:
     """Whether the requester is ROOT or SYSTEM, who act on others' behalf;
     users (and no requester at all) act as themselves."""
     return bool(requester_id) and (
@@ -34,6 +35,7 @@ Prepare = Callable[[Dict[str, Any]], Dict[str, Any]]
     )
 
 
+def each_created(kwargs: Dict[str, Any], prepare: Prepare) -> Dict[str, Any]:
     """``kwargs`` for a create, or each of a batch's ``entities``, prepared.
     Every set of fields is copied before ``prepare`` sees it."""
     if isinstance(kwargs.get("entities"), list):
@@ -41,10 +43,17 @@ Prepare = Callable[[Dict[str, Any]], Dict[str, Any]]
     return prepare(dict(kwargs))
 
 
+def created_records(result: Any) -> List[Any]:
     """What a create made: one record, or a batch's."""
     return result if isinstance(result, list) else [result]
 
 
+def owned_by(
+    requester_id: str,
+    *,
+    server_may_leave_unowned: bool = False,
+    owner_never_internal: bool = False,
+) -> Prepare:
     """Fields whose ``user_id`` is the requester. ROOT and SYSTEM may name
     another owner; when they name none (absent or empty), it is theirs.
 
@@ -57,6 +66,7 @@ Prepare = Callable[[Dict[str, Any]], Dict[str, Any]]
     that would let whoever holds it sign in as its owner (a linked
     identity, a security key)."""
 
+    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
         if not server_side(requester_id):
             fields["user_id"] = requester_id
         elif server_may_leave_unowned:
@@ -73,6 +83,7 @@ Prepare = Callable[[Dict[str, Any]], Dict[str, Any]]
     return prepare
 
 
+def without(fields: Dict[str, Any], names: Iterable[str]) -> Dict[str, Any]:
     """``fields`` with each of ``names`` dropped, in place."""
     for name in names:
         fields.pop(name, None)

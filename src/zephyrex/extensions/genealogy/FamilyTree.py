@@ -30,6 +30,8 @@ class ParentEdge:
     discriminator: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class Kinship:
     """How two people are related through their nearest common ancestor.
 
     ``up_from_a`` and ``up_from_b`` count generations from each person up to
@@ -60,6 +62,7 @@ class ParentEdge:
         return self.up_from_a == 0 or self.up_from_b == 0
 
 
+class FamilyTree:
     """The parent/child graph of a set of ancestry relationships, optionally
     limited to some parent roles (``{"biological"}`` for blood kinship)."""
 
@@ -118,6 +121,7 @@ class ParentEdge:
         down to ``generations`` generations."""
         return self._walk(person_id, self._children, generations)
 
+    def kinship(self, a: str, b: str) -> Optional[Kinship]:
         """How ``a`` and ``b`` are related through their most recent common
         ancestors (those nearest in total generations), or None if they
         share no ancestor and neither descends from the other."""

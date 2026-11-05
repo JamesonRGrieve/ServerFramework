@@ -46,6 +46,7 @@ def _transaction_id(value: str) -> int:
     return int(value)
 
 
+class PRV_Helcim_Payment(AbstractPaymentProvider):
     name: ClassVar[str] = "helcim"
     friendly_name: ClassVar[str] = "Helcim"
     description: ClassVar[str] = "A Helcim merchant account"
@@ -69,6 +70,8 @@ def _transaction_id(value: str) -> int:
         InstanceSetting("api_base", "API address", default="https://api.helcim.com"),
     )
 
+    @classmethod
+    def refusal_detail(cls, payload: Any) -> str:
         try:
             errors = json.loads(str(payload)).get("errors")
         except (ValueError, AttributeError):
@@ -104,6 +107,10 @@ def _transaction_id(value: str) -> int:
             raise TransientExternalError("Helcim answered without a JSON object")
         return answer
 
+    @classmethod
+    def payment(
+        cls, instance: ProviderInstanceModel, transaction: Mapping[str, Any]
+    ) -> Dict[str, Any]:
         approved = str(transaction.get("status")).upper() == "APPROVED"
         kind = str(transaction.get("type") or "").lower()
         return cls.payment_answer(
@@ -124,6 +131,10 @@ def _transaction_id(value: str) -> int:
             )
         return customer_ip
 
+    @classmethod
+    async def create_payment(
+        cls, instance: ProviderInstanceModel, request: PaymentRequest
+    ) -> Dict[str, Any]:
         if not request.payment_method_id:
             raise InvalidInputExternalError(
                 "A Helcim payment needs payment_method_id: a card token",
@@ -212,6 +223,10 @@ def _transaction_id(value: str) -> int:
             currency=str(transaction.get("currency") or action.currency),
         )
 
+    @classmethod
+    async def verify_webhook(
+        cls, instance: ProviderInstanceModel, payload: bytes, headers: Dict[str, str]
+    ) -> Dict[str, Any]:
         try:
             key = base64.b64decode(
                 cls.required(instance, "verifier_token"), validate=True
@@ -233,6 +248,7 @@ def _transaction_id(value: str) -> int:
         expected = base64.b64encode(hmac_sha256(key, signed)).decode()
         if not one_matches(expected, signatures):
             raise InvalidInputExternalError("The notification's signature is wrong")
+        if not fresh(timestamp, time.time()):
             raise InvalidInputExternalError("The notification is too old")
         try:
             event = json.loads(payload)

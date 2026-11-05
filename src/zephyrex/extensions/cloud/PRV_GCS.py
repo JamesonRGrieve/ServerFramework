@@ -19,6 +19,7 @@ from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
+class PRV_GCS_Cloud(AbstractCloudProvider):
     name: ClassVar[str] = "gcs"
     friendly_name: ClassVar[str] = "Google Cloud Storage"
     description: ClassVar[str] = "A Google Cloud Storage bucket"
@@ -56,6 +57,8 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
         ]
     )
 
+    @classmethod
+    def _bucket(cls, instance: ProviderInstanceModel) -> Any:
         if not importable("google.cloud.storage"):
             raise TransientExternalError(
                 "google-cloud-storage package not installed", provider=cls.name

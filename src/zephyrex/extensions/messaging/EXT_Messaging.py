@@ -38,6 +38,7 @@ def history_limit(limit: int) -> int:
     return max(1, min(limit, MAX_HISTORY_LIMIT))
 
 
+class AbstractMessagingProvider(AbstractStaticProvider):
     """A chat platform. Every ability takes the rotated instance."""
 
     name: ClassVar[str] = ""
@@ -89,6 +90,7 @@ def history_limit(limit: int) -> int:
         return ["messaging"]
 
 
+class EXT_Messaging(AbstractStaticExtension):
     name: ClassVar[str] = "messaging"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

@@ -141,12 +141,14 @@ def _acs_path(idp_id: str) -> str:
     return f"{ROUTE_PREFIX}/{idp_id}/acs"
 
 
+def _origin(url: str) -> Optional[str]:
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return None
     return f"{parts.scheme}://{parts.netloc}".lower()
 
 
+def safe_return_to(value: Optional[str]) -> str:
     """Where to send the browser after signing in: a path on this server,
     or a URL on this server's or the app's origin (``SERVER_URI``,
     ``APP_URI``, ``APP_CORS_ALLOWED_ORIGINS``). Anything else is refused,
@@ -249,6 +251,7 @@ class SamlIdentityProviderModel(
     )
     is_system_entity: ClassVar[bool] = True
 
+    class Create(BaseModel, NameMixinModel):
         metadata_xml: str
         metadata_url: Optional[str] = None
         entity_id: Optional[str] = None
@@ -265,6 +268,7 @@ class SamlIdentityProviderModel(
         want_response_signed: bool = False
         is_enabled: bool = True
 
+    class Update(BaseModel, NameMixinModel.Optional):
         metadata_xml: Optional[str] = None
         metadata_url: Optional[str] = None
         entity_id: Optional[str] = None
@@ -315,6 +319,7 @@ class SamlIdentityModel(
         "Links a local user to the identity a SAML IdP asserts"
     )
 
+    class Create(BaseModel, UserModel.Reference.ID):
         identity_provider_id: str
         idp_entity_id: str
         subject: str
@@ -322,6 +327,7 @@ class SamlIdentityModel(
         asserted_email: Optional[str] = None
         last_login_at: Optional[datetime] = None
 
+    class Update(BaseModel):
         asserted_email: Optional[str] = None
         last_login_at: Optional[datetime] = None
 
@@ -334,6 +340,7 @@ class SamlIdentityModel(
         last_login_at: Optional[DateSearchModel] = None
 
 
+class SamlAuthnRequestModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """An AuthnRequest awaiting its response, bound to the browser that
     started it (the hash of its request cookie)."""
 
@@ -349,6 +356,7 @@ class SamlIdentityModel(
 
     table_comment: ClassVar[str] = "Outstanding SAML AuthnRequests"
 
+    class Create(BaseModel):
         request_id: str
         identity_provider_id: str
         return_to: str
@@ -356,6 +364,7 @@ class SamlIdentityModel(
         expires_at: datetime
 
 
+class SamlSpentMessageModel(ApplicationModel, metaclass=ModelMeta):
     """A request ID answered, or an assertion ID accepted: never again."""
 
     spent_key: str = Field(
@@ -371,6 +380,7 @@ class SamlIdentityModel(
         "SAML request and assertion IDs already used (replay protection)"
     )
 
+    class Create(BaseModel):
         spent_key: str
         expires_at: datetime
 
@@ -380,20 +390,24 @@ class SamlIdentityModel(
 # ---------------------------------------------------------------------------
 
 
+class SAMLPostBinding(RouteModel):
     """The fields the IdP's HTTP-POST binding form carries."""
 
     SAMLResponse: str = Field(..., max_length=MAX_RESPONSE_BYTES)
     RelayState: Optional[str] = Field(None, max_length=MAX_RETURN_TO_LENGTH)
 
 
+class IdentityProviderListing(RouteModel):
     id: str
     name: str
     login_url: str
 
 
+class IdentityProviderList(RouteModel):
     identity_providers: List[IdentityProviderListing]
 
 
+class IdentityProviderImport(RouteModel):
     """A new IdP from its metadata: fetched from ``metadata_url`` or given
     as ``metadata_xml``. The other fields are as on the IdP itself."""
 
@@ -413,9 +427,11 @@ class SamlIdentityModel(
     is_enabled: bool = True
 
 
+class MetadataRefresh(RouteModel):
     """Re-read the IdP's metadata from its ``metadata_url``."""
 
 
+class IdentityProviderSummary(RouteModel):
     id: str
     name: str
     entity_id: Optional[str]
@@ -432,6 +448,7 @@ class SamlIdentityModel(
 # ---------------------------------------------------------------------------
 
 
+class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
     _model = SamlIdentityProviderModel
 
     prefix: ClassVar[Optional[str]] = ROUTE_PREFIX
@@ -448,6 +465,7 @@ class SamlIdentityModel(
 
     # -- administration -----------------------------------------------------
 
+    def _require_server_side(self) -> None:
         requester = self.optional_requester
         if requester is None or not server_side(str(requester.id)):
             raise HTTPException(
@@ -455,10 +473,13 @@ class SamlIdentityModel(
                 detail="Only ROOT or SYSTEM manage SAML identity providers",
             )
 
+    def stored(self, idp_id: str) -> SamlIdentityProviderModel:
         """The IdP row with its secrets (read as ROOT, past the cache)."""
         IdPDB = self.DB
         found: List[SamlIdentityProviderModel] = IdPDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
+            filters=[IdPDB.id == idp_id, IdPDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=SamlIdentityProviderModel,
         )
@@ -468,6 +489,9 @@ class SamlIdentityModel(
             )
         return found[0]
 
+    def _prepared(
+        self, fields: Dict[str, Any], existing: Optional[SamlIdentityProviderModel]
+    ) -> Dict[str, Any]:
         """``fields`` with the server-computed ones set: the entity ID read
         from the metadata, the key pair checked and the key encrypted."""
         try:
@@ -503,6 +527,7 @@ class SamlIdentityModel(
             raise _bad_request(exc) from exc
         return fields
 
+    def create(self, **kwargs: Any) -> Any:
         self._require_server_side()
         if isinstance(kwargs.get("entities"), list):
             kwargs["entities"] = [
@@ -519,6 +544,7 @@ class SamlIdentityModel(
         self._require_server_side()
         super().delete(id)
 
+    def summary(self, idp: SamlIdentityProviderModel) -> IdentityProviderSummary:
         sp = self.service_provider(idp)
         return IdentityProviderSummary(
             id=str(idp.id),
@@ -532,6 +558,7 @@ class SamlIdentityModel(
             is_enabled=idp.is_enabled,
         )
 
+    async def fetch_metadata(self, url: str) -> str:
         """The metadata at ``url``, over HTTPS (plain HTTP only from a host
         the operator allow-listed in EGRESS_ALLOWED_HOSTS): unsigned
         metadata is only as trustworthy as the channel it came over."""
@@ -566,11 +593,14 @@ class SamlIdentityModel(
                 status_code=400, detail="IdP metadata is not UTF-8"
             ) from exc
 
+    @staticmethod
+    def _trusted_channel(url: str) -> bool:
         parts = urlsplit(url)
         if parts.scheme == "https":
             return True
         allowed = [
             h.strip().lower()
+            for h in (os.environ.get("EGRESS_ALLOWED_HOSTS") or "").split(",")
             if h.strip()
         ]
         host = (parts.hostname or "").lower()
@@ -580,6 +610,7 @@ class SamlIdentityModel(
 
     # -- the SP for an IdP ---------------------------------------------------
 
+    def enabled(self, idp_id: str) -> SamlIdentityProviderModel:
         idp = self.stored(idp_id)
         if not idp.is_enabled:
             raise HTTPException(
@@ -587,6 +618,7 @@ class SamlIdentityModel(
             )
         return idp
 
+    def service_provider(self, idp: SamlIdentityProviderModel) -> ServiceProvider:
         base = f"{_server_uri()}{ROUTE_PREFIX}/{idp.id}"
         return ServiceProvider(
             entity_id=idp.sp_entity_id or f"{base}/metadata",
@@ -605,6 +637,9 @@ class SamlIdentityModel(
     def _root_db(self, model: Any) -> Any:
         return model.DB(self.model_registry.DB.manager.Base)
 
+    async def begin_login(
+        self, idp_id: str, return_to: Optional[str]
+    ) -> RedirectResponse:
         idp = self.enabled(idp_id)
         destination = safe_return_to(return_to)
         sp = self.service_provider(idp)
@@ -617,7 +652,9 @@ class SamlIdentityModel(
             raise HTTPException(
                 status_code=503, detail="This identity provider is misconfigured"
             ) from exc
+        browser_key = secrets.token_urlsafe(BROWSER_KEY_BYTES)
         self._root_db(SamlAuthnRequestModel).create(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             request_id=request.request_id,
             identity_provider_id=str(idp.id),
@@ -638,15 +675,20 @@ class SamlIdentityModel(
         )
         return redirect
 
+    def _outstanding(
+        self, idp_id: str, browser_key: Optional[str]
+    ) -> Optional[SamlAuthnRequestModel]:
         """The unexpired request this browser started with this IdP."""
         if not browser_key:
             return None
         RequestDB = self._root_db(SamlAuthnRequestModel)
         rows: List[SamlAuthnRequestModel] = RequestDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 RequestDB.identity_provider_id == idp_id,
                 RequestDB.browser_key_hash == _sha256(browser_key),
+                RequestDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=SamlAuthnRequestModel,
@@ -654,10 +696,12 @@ class SamlIdentityModel(
         live = [row for row in rows if _aware(row.expires_at) > _now()]
         return live[0] if live else None
 
+    def _spend(self, spent_key: str, expires_at: datetime) -> None:
         """Record ``spent_key`` as used; refused if it already was. The
         unique column makes this atomic across workers."""
         try:
             self._root_db(SamlSpentMessageModel).create(
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 spent_key=spent_key,
                 expires_at=expires_at,
@@ -667,6 +711,13 @@ class SamlIdentityModel(
                 "replayed", f"{spent_key} was already used"
             ) from exc
 
+    async def complete_login(
+        self,
+        idp_id: str,
+        saml_response: str,
+        relay_state: Optional[str],
+        browser_key: Optional[str],
+    ) -> RedirectResponse:
         idp = self.enabled(idp_id)
         sp = self.service_provider(idp)
         outstanding = self._outstanding(str(idp.id), browser_key)
@@ -704,6 +755,9 @@ class SamlIdentityModel(
         except HTTPException:
             return DEFAULT_RETURN_TO
 
+    def _signed_in(
+        self, user: UserModel, destination: str, idp_id: str
+    ) -> RedirectResponse:
         """The session a passwordless grant issues, in the browser's
         cookies; or, for a user with a second factor, its challenge in the
         fragment of the destination, to complete at /v1/user/authorize/mfa."""
@@ -738,9 +792,20 @@ class SamlIdentityModel(
 
     # -- routes -----------------------------------------------------------------
 
+    @custom_route(
+        method="GET",
+        path="",
+        output_model=IdentityProviderList,
+        authentication_type="none",
+        expose_in=(ExposeIn.REST,),
+        summary="The SAML identity providers users can sign in through",
+    )
+    def list_enabled_route(self) -> IdentityProviderList:
         IdPDB = self.DB
         rows: List[SamlIdentityProviderModel] = IdPDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
+            filters=[IdPDB.is_enabled.is_(True), IdPDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=SamlIdentityProviderModel,
         )
@@ -850,6 +915,7 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
+class SamlIdentityManager(AbstractBLLManager, RouterMixin):
     """The caller's SAML identities: read them, or unlink one."""
 
     _model = SamlIdentityModel
@@ -876,9 +942,11 @@ def _aware(value: datetime) -> datetime:
         return super().update(id, **kwargs)
 
 
+class SamlAuthnRequestManager(AbstractBLLManager):
     _model = SamlAuthnRequestModel
 
 
+class SamlSpentMessageManager(AbstractBLLManager):
     _model = SamlSpentMessageModel
 
 
@@ -887,15 +955,19 @@ def _aware(value: datetime) -> datetime:
 # ---------------------------------------------------------------------------
 
 
+class SamlAccounts:
     """The local user an asserted identity signs in as, made or linked as
     the module doc describes."""
 
+    def __init__(self, model_registry: Any, idp: SamlIdentityProviderModel) -> None:
         self.model_registry = model_registry
         self.idp = idp
+        self.root_id = env("ROOT_ID")
 
     def _db(self, model: Any) -> Any:
         return model.DB(self.model_registry.DB.manager.Base)
 
+    def subject(self, identity: AssertedIdentity) -> Tuple[str, Optional[str]]:
         if self.idp.identity_attribute:
             value = identity.attribute([self.idp.identity_attribute])
             if not value:
@@ -910,6 +982,7 @@ def _aware(value: datetime) -> datetime:
             )
         return identity.name_id, identity.name_id_format
 
+    def user_for(self, identity: AssertedIdentity) -> UserModel:
         subject, subject_format = self.subject(identity)
         email = identity.email(self.idp.email_attribute)
         email = UserManager._normalize_identifier(email) if email else None
@@ -922,33 +995,41 @@ def _aware(value: datetime) -> datetime:
         self._link(user, identity, subject, subject_format, email)
         return user
 
+    def _linked(self, issuer: str, subject: str) -> Optional[SamlIdentityModel]:
         IdentityDB = self._db(SamlIdentityModel)
         rows: List[SamlIdentityModel] = IdentityDB.list(
+            requester_id=self.root_id,
             model_registry=self.model_registry,
             filters=[
                 IdentityDB.idp_entity_id == issuer,
                 IdentityDB.subject == subject,
+                IdentityDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=SamlIdentityModel,
         )
         return rows[0] if rows else None
 
+    def _user(self, **filters: Any) -> Optional[UserModel]:
         UserDB = self._db(UserModel)
         rows: List[UserModel] = UserDB.list(
+            requester_id=self.root_id,
             model_registry=self.model_registry,
+            filters=[UserDB.deleted_at.is_(None)]
             + [getattr(UserDB, k) == v for k, v in filters.items()],
             return_type="dto",
             override_dto=UserModel,
         )
         return rows[0] if rows else None
 
+    def _active_user(self, user_id: str) -> UserModel:
         refuse_internal_account(user_id)
         user = self._user(id=user_id)
         if user is None or user.active is False:
             raise HTTPException(status_code=403, detail="This account is disabled")
         return user
 
+    def _by_verified_email(self, email: Optional[str]) -> Optional[UserModel]:
         """The account an asserted email names. Linking to it needs the IdP
         to vouch for its emails; otherwise the email is taken."""
         user_id = UserManager.user_id_for_verified_email(email, self.model_registry)
@@ -961,6 +1042,9 @@ def _aware(value: datetime) -> datetime:
             )
         return self._active_user(user_id)
 
+    def _registered(
+        self, identity: AssertedIdentity, email: Optional[str]
+    ) -> UserModel:
         """A new account, as REGISTRATION_MODE allows."""
         # Read when it is needed: the settings object is replaced at boot.
         mode = Environment.settings.REGISTRATION_MODE
@@ -979,6 +1063,7 @@ def _aware(value: datetime) -> datetime:
                     status_code=403, detail="User registration requires an invitation"
                 )
         user: UserModel = self._db(UserModel).create(
+            requester_id=self.root_id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(UserModel),
@@ -1016,7 +1101,9 @@ def _aware(value: datetime) -> datetime:
             last_login_at=_now(),
         )
 
+    def _touch(self, linked: SamlIdentityModel, email: Optional[str]) -> None:
         self._db(SamlIdentityModel).update(
+            requester_id=self.root_id,
             model_registry=self.model_registry,
             id=linked.id,
             new_properties={"last_login_at": _now(), "asserted_email": email},

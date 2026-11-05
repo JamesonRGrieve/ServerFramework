@@ -27,6 +27,7 @@ DEFAULT_AUTH_PORT = 1812
 MAX_PORT = 65535
 
 
+class EXT_RADIUSProvider(AbstractStaticExtension):
     name: ClassVar[str] = "radius_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -55,12 +56,16 @@ MAX_PORT = 65535
         ]
     )
 
+    @classmethod
+    def auth_port(cls) -> int:
         raw = env("RADIUS_PROVIDER_AUTH_PORT") or str(DEFAULT_AUTH_PORT)
         port = int(raw)
         if not 0 <= port <= MAX_PORT:
             raise ValueError(f"RADIUS_PROVIDER_AUTH_PORT {raw} is not a UDP port")
         return port
 
+    @classmethod
+    def register_services(cls, model_registry: Any, requester_id: str) -> List[Any]:
         """The UDP listener, started by the framework's background services."""
         from zephyrex.extensions.radius_provider.SVC_RADIUSProvider import (
             RADIUSAuthService,
@@ -68,6 +73,7 @@ MAX_PORT = 65535
 
         return [
             RADIUSAuthService(
+                requester_id=requester_id,
                 model_registry=model_registry,
                 bind_address=env("RADIUS_PROVIDER_BIND_ADDRESS")
                 or DEFAULT_BIND_ADDRESS,
@@ -75,6 +81,8 @@ MAX_PORT = 65535
             )
         ]
 
+    @classmethod
+    def validate_config(cls) -> List[str]:
         issues: List[str] = []
         if (env("RUN_BACKGROUND_SERVICES") or "").strip().lower() != "true":
             issues.append(

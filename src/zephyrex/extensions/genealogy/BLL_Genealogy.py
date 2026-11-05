@@ -353,6 +353,7 @@ def register_sensitive_category(name: str) -> None:
     SENSITIVE_CATEGORIES.add(name)
 
 
+def _entries(rows: List[Any]) -> List[AttributeEntry]:
     return [
         AttributeEntry(
             id=r.id,
@@ -370,6 +371,7 @@ def register_sensitive_category(name: str) -> None:
     ]
 
 
+class PersonManager(AbstractBLLManager, RouterMixin):
     _model = PersonModel
 
     def self_person_id(self, user_id: str) -> Optional[str]:
@@ -480,14 +482,18 @@ def register_sensitive_category(name: str) -> None:
             ties, kinds, None if include_ended else datetime.now(timezone.utc)
         )
 
+    def _tree(self, owner: str, kinds: List[str], include_ended: bool) -> Tree:
         """``owner``'s tree, read as ROOT for merging: only what ``merge``
         lets through, by each person's visibility, leaves this manager."""
+        root = str(env("ROOT_ID"))
         people_db = self._db(PersonModel)
         persons = (
             people_db.list(
+                requester_id=root,
                 model_registry=self.model_registry,
                 filters=[
                     people_db.created_by_user_id == owner,
+                    people_db.deleted_at.is_(None),
                 ],
                 return_type="dto",
                 override_dto=PersonModel,
@@ -498,10 +504,12 @@ def register_sensitive_category(name: str) -> None:
         directed = set(directed_kinds())
         rows = (
             ties_db.list(
+                requester_id=root,
                 model_registry=self.model_registry,
                 filters=[
                     ties_db.created_by_user_id == owner,
                     ties_db.kind.in_(kinds),
+                    ties_db.deleted_at.is_(None),
                 ],
                 return_type="dto",
                 override_dto=RelationshipModel,
@@ -550,6 +558,7 @@ def register_sensitive_category(name: str) -> None:
             viewer, lambda owner: self._tree(owner, kinds, include_ended), kinds
         )
 
+    def reachable_accounts(self, kinds: List[str], since: datetime) -> Dict[str, int]:
         """Every account reachable from the requester through ties of
         ``kinds`` in effect at any time since ``since``, each with how many
         ties away it is (1: the requester's own partner). A step goes from an
@@ -569,6 +578,7 @@ def register_sensitive_category(name: str) -> None:
         def links(owner: str, other: str) -> bool:
             return bool(tree_of(owner).linked_to(other))
 
+        def contacts(account: str) -> Set[str]:
             tree = tree_of(account)
             own = tree.self_person()
             if own is None:
@@ -952,6 +962,7 @@ def register_sensitive_category(name: str) -> None:
         )
 
 
+def _families(relationships: List[Any]) -> List[ExportFamily]:
     """GEDCOM families from relationships: a child's parents in one role
     form a family, in pairs (a GEDCOM family has at most two partners);
     partners with no children form one of their own."""
@@ -1221,11 +1232,13 @@ class PersonAttributeManager(AbstractBLLManager, RouterMixin):
 
         return super().create(**each_created(kwargs, owned))
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         """A value in a sensitive category stays sealed, including a value
         moved into one (its category changed, its value unchanged)."""
         category = kwargs.get("category")
         if "value" in kwargs or category in SENSITIVE_CATEGORIES:
             current = PersonAttributeModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=id,
                 return_type="dto",
@@ -1252,15 +1265,19 @@ PersonAttributeModel.Manager = PersonAttributeManager
 # ---------------------------------------------------------------------------
 
 
+def erase_genealogy(user_id: str, model_registry: Any) -> None:
     """A deleted account's own tree goes (its people, ties, notes and profile);
     the records others keep of them stay theirs, returned to ghosts (no longer
     linked to the account). Safe to run twice."""
+    root = env("ROOT_ID")
     base = model_registry.DB.manager.Base
     for model in (PersonAttributeModel, RelationshipModel, PersonModel):
         db = model.DB(base)
         rows = (
             db.list(
+                requester_id=root,
                 model_registry=model_registry,
+                filters=[db.created_by_user_id == user_id, db.deleted_at.is_(None)],
                 return_type="dto",
                 override_dto=model,
             )
@@ -1268,13 +1285,16 @@ PersonAttributeModel.Manager = PersonAttributeManager
         )
         for row in rows:
             db.delete(
+                requester_id=root,
                 model_registry=model_registry,
                 filters=[db.id == row.id],
             )
     people = PersonModel.DB(base)
     linked = (
         people.list(
+            requester_id=root,
             model_registry=model_registry,
+            filters=[people.linked_user_id == user_id, people.deleted_at.is_(None)],
             return_type="dto",
             override_dto=PersonModel,
         )
@@ -1282,6 +1302,7 @@ PersonAttributeModel.Manager = PersonAttributeManager
     )
     for row in linked:
         people.update(
+            requester_id=root,
             model_registry=model_registry,
             new_properties={"linked_user_id": None},
             filters=[people.id == row.id],

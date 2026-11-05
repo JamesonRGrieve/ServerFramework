@@ -86,6 +86,7 @@ directive @tag(name: String!) repeatable on FIELD_DEFINITION | INTERFACE | OBJEC
 # ---------------------------------------------------------------------------
 
 
+def reconstruct_selection_set(selected_fields: Sequence[Any]) -> str:
     """Reconstruct a printable upstream selection set from Strawberry's
     ``info.selected_fields`` shape.
 
@@ -119,6 +120,7 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
+def _format_args(arguments: Any) -> str:
     """Render Strawberry-style arguments (``{name: value}``) into ``(...)``.
 
     Returns an empty string when the call site has no arguments so the
@@ -138,6 +140,7 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
     return f"({formatted})" if formatted else ""
 
 
+def _format_argument_value(value: Any) -> str:
     """Render an argument value as a GraphQL literal."""
 
     if value is None:
@@ -180,6 +183,7 @@ def build_query_document(
 # ---------------------------------------------------------------------------
 
 
+def _split_fields(body: str) -> List[str]:
     """Split a type body into individual field-definition strings.
 
     GraphQL field bodies can span lines or be inlined on one line; we tokenize
@@ -257,6 +261,8 @@ def build_query_document(
     return [f for f in out if f]
 
 
+@dataclass
+class SchemaTransformer:
     """Transform an upstream SDL on its way into the merged registry.
 
     The pipeline supports five composable transformations declared up-front
@@ -277,6 +283,7 @@ def build_query_document(
     mask_arguments: Dict[str, Dict[str, Set[str]]] = field(default_factory=dict)
     override_resolvers: Dict[str, Callable[..., Any]] = field(default_factory=dict)
 
+    def transform(self, sdl: str) -> str:
         """Apply the pipeline to ``sdl`` and return the new SDL string.
 
         Implementation note: we work at the SDL string level rather than via
@@ -327,6 +334,7 @@ def build_query_document(
 
     # --- internals ----------------------------------------------------------
 
+    def _compute_renames(self, document: gql_ast.DocumentNode) -> Dict[str, str]:
         out: Dict[str, str] = dict(self.rename)
         if self.prefix:
             for d in document.definitions:
@@ -351,6 +359,7 @@ def build_query_document(
                 out[name] = f"{self.prefix}{name}"
         return out
 
+    def _strip_fields(self, sdl: str, type_name: str, hidden: Set[str]) -> str:
         """Drop hidden fields from a type declaration in ``sdl``."""
 
         import re as _re
@@ -396,9 +405,11 @@ def build_query_document(
             _re.DOTALL,
         )
 
+        def _rewrite_body(m: "_re.Match[str]") -> str:
             head, body, tail = m.group(1), m.group(2), m.group(3)
             field_pat = _re.compile(r"(\b" + _re.escape(field_name) + r"\b)\(([^)]*)\)")
 
+            def _rewrite_field(fm: "_re.Match[str]") -> str:
                 args = fm.group(2)
                 kept: List[str] = []
                 for piece in args.split(","):
@@ -443,6 +454,7 @@ class IngestedSchema:
         return hashlib.sha256(self.sdl.encode("utf-8")).hexdigest()
 
 
+def detect_federation_directives(sdl: str) -> Dict[str, List[str]]:
     """Extract ``@key(fields: "...")`` directives from an Apollo subgraph SDL.
 
     Returns ``{type_name: [field_set, ...]}``. Empty dict means no
@@ -516,6 +528,7 @@ def cache_key(
     return hasher.hexdigest()
 
 
+class ResponseCache:
     """Per-request, in-memory response cache.
 
     Bound onto a contextvar by the inbound middleware so every resolver
@@ -592,6 +605,7 @@ def get_response_cache() -> Optional[ResponseCache]:
 # ---------------------------------------------------------------------------
 
 
+class _PersistentCache:
     """Tiny TTL cache used when an upstream type opts in via ``cache_ttls``.
 
     A real deployment swaps this out for Redis. The interface is intentionally
@@ -653,6 +667,7 @@ class _PendingBatch:
     transport_args: Dict[str, Any] = field(default_factory=dict)
 
 
+class BatchedFieldResolver:
     """Collects N parallel resolver invocations into a single upstream call.
 
     Bridges the framework's ``include`` mechanism (Item 9) to upstream batching
@@ -843,6 +858,7 @@ def reset_individual_semaphores() -> None:
         _individual_semaphores.clear()
 
 
+def _extract_items(response: Any, operation: str) -> List[Any]:
     """Pull the operation's result list out of a GraphQL response envelope."""
 
     if response is None:
@@ -900,6 +916,7 @@ class FederatedSubgraph:
     cache_ttls: Dict[str, float] = field(default_factory=dict)
 
 
+class MergedSchemaRegistry:
     """Holds the merged federated schema across all registered subgraphs.
 
     The merged schema is computed once at startup and on TTL refresh, not per
@@ -975,6 +992,7 @@ class FederatedSubgraph:
         with self._lock:
             return list(self._subgraphs.values())
 
+    def build(self) -> GraphQLSchema:
         """Compute the merged schema from all registered subgraphs."""
 
         with self._lock:
@@ -991,6 +1009,7 @@ class FederatedSubgraph:
             diff = self._diff_locked()
             self._merged = schema
             self._merged_hash = hashlib.sha256(merged_sdl.encode("utf-8")).hexdigest()
+            self._merged_built_at = time.time()
             self._previous_hashes = {
                 name: sg.sdl_hash for name, sg in self._subgraphs.items()
             }
@@ -998,6 +1017,7 @@ class FederatedSubgraph:
         for listener in listeners:
             try:
                 listener(schema, diff)
+            except Exception:
                 # Listener failures must not prevent schema construction.
                 continue
         return schema
@@ -1018,8 +1038,10 @@ class FederatedSubgraph:
 
     # --- internals ----------------------------------------------------------
 
+    def _needs_rebuild_locked(self) -> bool:
         if self._merged is None:
             return True
+        if (time.time() - self._merged_built_at) > self.SDL_TTL_SECONDS:
             return True
         for name, sg in self._subgraphs.items():
             if self._previous_hashes.get(name) != sg.sdl_hash:
@@ -1030,6 +1052,7 @@ class FederatedSubgraph:
                 return True
         return False
 
+    def _merge_sdls_locked(self) -> str:
         """Concatenate the registered SDLs, deduplicating shared roots.
 
         The merged SDL keeps each subgraph's types intact and emits a single
@@ -1110,6 +1133,7 @@ class FederatedSubgraph:
             out.append(print_ast(f))
         return out
 
+    def _diff_locked(self) -> Dict[str, str]:
         diff: Dict[str, str] = {}
         for name, sg in self._subgraphs.items():
             previous = self._previous_hashes.get(name)
@@ -1188,6 +1212,12 @@ class SDLToPydanticResult:
     inputs: Dict[str, type] = field(default_factory=dict)
 
 
+def sdl_to_pydantic_models(
+    sdl: str,
+    *,
+    prefix: Optional[str] = None,
+    include_inputs: bool = True,
+) -> SDLToPydanticResult:
     """Generate Pydantic model classes from a GraphQL SDL.
 
     Object types and interfaces become :class:`pydantic.BaseModel` subclasses.
@@ -1260,6 +1290,7 @@ class SDLToPydanticResult:
     # the in-progress dict so cycles are handled by `model_rebuild` later.
     models: Dict[str, type] = {}
 
+    def _resolve(annotation: Any) -> Any:
         if isinstance(annotation, str):
             if annotation in enums:
                 return enums[annotation]
@@ -1311,10 +1342,12 @@ class SDLToPydanticResult:
     for cls in models.values():
         try:
             cls.model_rebuild(_types_namespace=namespace)  # type: ignore[attr-defined]
+        except Exception:
             continue
     for cls in inputs.values():
         try:
             cls.model_rebuild(_types_namespace=namespace)  # type: ignore[attr-defined]
+        except Exception:
             continue
 
     return SDLToPydanticResult(models=models, enums=enums, inputs=inputs)
@@ -1352,6 +1385,7 @@ def _gql_type_to_python(
 # ---------------------------------------------------------------------------
 
 
+class GQLUpstreamTransport:
     """Send GraphQL operations to a federated upstream.
 
     The transport is a thin wrapper around ``ProviderHTTPClient`` that fixes
@@ -1415,6 +1449,7 @@ def build_proxy_resolver(
     is operating in stitching mode.
     """
 
+    async def _resolver(info: Any, **arguments: Any) -> Any:
         selection_body = reconstruct_selection_set(getattr(info, "selected_fields", ()))
         formatted_args = _format_args(arguments)
         document = build_query_document(
@@ -1520,6 +1555,7 @@ def project_gql_as_rest(
     return router
 
 
+def _default_selection_for(schema: GraphQLSchema, gql_type: Any) -> str:
     """Build a default selection set covering all scalar leaves of a type."""
 
     inner = _unwrap_type(gql_type)
@@ -1561,10 +1597,12 @@ def _mount_gql_to_rest_route(
 ) -> None:
     from fastapi import HTTPException, Request
 
+    async def handler(request: "Request") -> Any:
         params: Dict[str, Any] = {}
         if method == "POST":
             try:
                 body = await request.json()
+            except Exception:
                 body = {}
             if isinstance(body, Mapping):
                 params.update(body)
@@ -1581,6 +1619,7 @@ def _mount_gql_to_rest_route(
         )
         try:
             response = await transport(query=document, variables=None)
+        except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc))
         if isinstance(response, Mapping):
             errors = response.get("errors")

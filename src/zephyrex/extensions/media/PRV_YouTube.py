@@ -24,6 +24,7 @@ YOUTUBE_MAX_RESULTS = 50
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
+class PRV_YouTube_Media(AbstractMediaProvider):
     name: ClassVar[str] = "youtube"
     friendly_name: ClassVar[str] = "YouTube"
     description: ClassVar[str] = "YouTube videos (Data API v3)"

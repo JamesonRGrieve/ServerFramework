@@ -16,6 +16,7 @@ from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtensio
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 
 
+class EXT_ProxyAuthProvider(AbstractStaticExtension):
     name: ClassVar[str] = "proxy_auth_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (

@@ -51,6 +51,7 @@ NO_STORE_HEADERS: Mapping[str, str] = {
 }
 
 
+class OAuthError(Exception):
     """A refusal in the shape RFC 6749 §5.2 gives it: an ``error`` code, an
     optional human-readable description, the HTTP status and headers."""
 
@@ -67,6 +68,7 @@ NO_STORE_HEADERS: Mapping[str, str] = {
         self.status_code = status_code
         self.headers: Dict[str, str] = dict(headers or {})
 
+    def body(self) -> Dict[str, str]:
         body = {"error": self.error}
         if self.description:
             body["error_description"] = self.description
@@ -77,7 +79,9 @@ def invalid_request(description: str) -> OAuthError:
     return OAuthError("invalid_request", description)
 
 
+def mint_secret(prefix: str) -> str:
     """A new opaque credential: ``prefix`` and 256 random bits."""
+    return prefix + secrets.token_urlsafe(SECRET_BYTES)
 
 
 def digest(raw: str) -> str:
@@ -87,13 +91,16 @@ def digest(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def digest_matches(raw: str, stored: str) -> bool:
     """Constant-time comparison of ``raw`` against a stored digest."""
+    return hmac.compare_digest(digest(raw), stored)
 
 
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+def s256(verifier: str) -> str:
     return b64url(hashlib.sha256(verifier.encode("ascii")).digest())
 
 
@@ -101,17 +108,21 @@ def is_s256_challenge(challenge: str) -> bool:
     return bool(_S256_CHALLENGE.match(challenge))
 
 
+def pkce_verifies(verifier: Optional[str], challenge: str) -> bool:
     """Whether ``verifier`` proves the S256 ``challenge`` (RFC 7636 §4.6)."""
     if not verifier or not _VERIFIER.match(verifier):
         return False
+    return hmac.compare_digest(s256(verifier), challenge)
 
 
+def half_hash(value: str) -> str:
     """OIDC Core §3.1.3.6 ``at_hash``: the base64url of the left half of the
     SHA-256 of ``value`` (RS256 and ES256 both hash with SHA-256)."""
     full = hashlib.sha256(value.encode("ascii")).digest()
     return b64url(full[: len(full) // 2])
 
 
+def parse_scope(raw: Optional[str]) -> List[str]:
     """The scope tokens of a ``scope`` parameter, in order, each once."""
     if raw is None:
         return []
@@ -130,6 +141,7 @@ def join_scope(tokens: List[str]) -> str:
     return " ".join(tokens)
 
 
+def _is_loopback_host(host: Optional[str]) -> bool:
     if not host:
         return False
     try:
@@ -138,6 +150,7 @@ def join_scope(tokens: List[str]) -> str:
         return False
 
 
+def validate_redirect_uri(uri: str, application_type: str) -> str:
     """A redirect URI a client may register (RFC 9700 §2.1, §4.1.1 and
     RFC 8252 §7.3): absolute, without a fragment or user info, over HTTPS,
     except a native client's ``http`` loopback IP literal. Raises
@@ -167,12 +180,14 @@ def join_scope(tokens: List[str]) -> str:
     )
 
 
+def _without_port(uri: str) -> str:
     parts = urlsplit(uri)
     host = parts.hostname or ""
     netloc = f"[{host}]" if ":" in host else host
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
 
 
+def redirect_uri_registered(registered: List[str], presented: str) -> bool:
     """Exact string matching (RFC 9700 §4.1.3), with the one exception RFC
     8252 §7.3 makes: an ``http`` loopback redirect matches on any port."""
     if presented in registered:
@@ -189,6 +204,7 @@ def join_scope(tokens: List[str]) -> str:
     )
 
 
+def with_query(uri: str, params: Mapping[str, Optional[str]]) -> str:
     """``uri`` with ``params`` added to its query, keeping the query it
     already has (RFC 6749 §3.1.2)."""
     parts = urlsplit(uri)
@@ -199,6 +215,7 @@ def join_scope(tokens: List[str]) -> str:
     )
 
 
+def parse_basic_credentials(header: Optional[str]) -> Optional[Tuple[str, str]]:
     """The client id and secret of an HTTP Basic ``Authorization`` header,
     each form-urlencoded first as RFC 6749 §2.3.1 requires, or None when
     the header is not Basic. Raises ``OAuthError`` for a malformed one."""
@@ -221,6 +238,7 @@ def join_scope(tokens: List[str]) -> str:
     return unquote_plus(client_id), unquote_plus(secret)
 
 
+def string_parameters(raw: Mapping[str, object]) -> Dict[str, str]:
     """A request's parameters as strings, refusing any other JSON type and
     any parameter past the length cap. Empty values count as absent
     (RFC 6749 §3.1)."""
@@ -237,6 +255,7 @@ def join_scope(tokens: List[str]) -> str:
     return parameters
 
 
+def json_list(raw: Optional[str]) -> List[str]:
     """A JSON array of strings stored in a text column."""
     if not raw:
         return []

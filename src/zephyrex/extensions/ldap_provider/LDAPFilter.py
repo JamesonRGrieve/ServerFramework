@@ -52,17 +52,22 @@ NO_ATTRIBUTES = "1.1"
 ALL_OPERATIONAL_ATTRIBUTES = "+"
 
 
+class FilterRefused(ValueError):
     """A filter the directory will not evaluate: too large or too deep."""
 
 
+class FilterMalformed(FilterRefused):
     """A filter that is not a well-formed LDAP filter."""
 
 
+@dataclass(frozen=True)
+class DirectoryEntry:
     """One entry: its DN and its attributes (name -> values)."""
 
     dn: str
     attributes: Mapping[str, Tuple[str, ...]]
 
+    def values(self, name: str) -> Optional[Tuple[str, ...]]:
         """The values of attribute ``name`` (any case), or None."""
         wanted = name.lower()
         for attribute, found in self.attributes.items():
@@ -70,6 +75,12 @@ ALL_OPERATIONAL_ATTRIBUTES = "+"
                 return found
         return None
 
+    def released(
+        self,
+        released: FrozenSet[str],
+        selection: Sequence[str],
+        types_only: bool,
+    ) -> List[Tuple[str, Tuple[str, ...]]]:
         """The attributes to return for ``selection`` (the request's
         attribute list), limited to ``released`` (lower-case names)."""
         wanted = [name.lower() for name in selection]
@@ -88,6 +99,8 @@ ALL_OPERATIONAL_ATTRIBUTES = "+"
         return chosen
 
 
+@dataclass(frozen=True)
+class Node:
     """One filter node. ``kind`` is the RFC 4511 choice name; leaves carry
     ``attribute`` and their assertion, branches carry ``children``."""
 
@@ -100,6 +113,7 @@ ALL_OPERATIONAL_ATTRIBUTES = "+"
     children: Tuple["Node", ...] = field(default_factory=tuple)
 
 
+def _text(raw: Any) -> str:
     data = bytes(raw)
     if len(data) > MAX_ASSERTION_BYTES:
         raise FilterRefused(f"an assertion value is over {MAX_ASSERTION_BYTES} bytes")
@@ -109,9 +123,11 @@ ALL_OPERATIONAL_ATTRIBUTES = "+"
         raise FilterMalformed("an assertion value is not UTF-8") from exc
 
 
+class _Budget:
     def __init__(self) -> None:
         self.nodes = 0
 
+    def spend(self, depth: int) -> None:
         self.nodes += 1
         if self.nodes > MAX_FILTER_NODES:
             raise FilterRefused(f"the filter has over {MAX_FILTER_NODES} parts")
@@ -140,6 +156,7 @@ _KINDS: Dict[int, Tuple[str, Callable[[], Any]]] = {
 _EXTENSIBLE_MATCH = 0xA9
 
 
+def _decode(encoded: bytes, spec: Any) -> Any:
     try:
         value, rest = decoder.decode(encoded, asn1Spec=spec)
     except PyAsn1Error as exc:
@@ -149,6 +166,7 @@ _EXTENSIBLE_MATCH = 0xA9
     return value
 
 
+def _parse(encoded: bytes, budget: _Budget, depth: int) -> Node:
     budget.spend(depth)
     if not encoded:
         raise FilterMalformed("the filter is empty")
@@ -202,6 +220,7 @@ def _fold(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def _substring_match(node: Node, value: str) -> bool:
     text = _fold(value)
     position = 0
     if node.initial is not None:
@@ -220,6 +239,7 @@ def _fold(text: str) -> str:
     return True
 
 
+def _all(results: Iterable[Optional[bool]]) -> Optional[bool]:
     undefined = False
     for result in results:
         if result is False:
@@ -229,6 +249,7 @@ def _fold(text: str) -> str:
     return None if undefined else True
 
 
+def _any(results: Iterable[Optional[bool]]) -> Optional[bool]:
     undefined = False
     for result in results:
         if result is True:
@@ -238,6 +259,9 @@ def _fold(text: str) -> str:
     return None if undefined else False
 
 
+def evaluate(
+    node: Node, entry: DirectoryEntry, released: FrozenSet[str]
+) -> Optional[bool]:
     """``node`` against ``entry``: True, False, or None for Undefined."""
     if node.kind == "and":
         return _all(evaluate(child, entry, released) for child in node.children)

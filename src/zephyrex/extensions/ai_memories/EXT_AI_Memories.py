@@ -49,6 +49,7 @@ def _limit(limit: int) -> int:
     return limit
 
 
+class EXT_AI_Memories(AbstractStaticExtension):
     name: ClassVar[str] = "ai_memories"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (

@@ -56,6 +56,7 @@ def _safe_open(
     return os.fdopen(fd, mode, encoding=encoding, errors=errors)
 
 
+class LocalFileSystem(AbstractFileIOProvider):
     """
     LocalFileSystem provider for interacting with the local file system.
     Supports Windows, Linux, and macOS.
@@ -122,6 +123,7 @@ def _safe_open(
         else:
             return "Unknown"
 
+    async def get_filesystem_info(self) -> Dict[str, Any]:
         """
         Get information about the filesystem.
 
@@ -158,6 +160,7 @@ def _safe_open(
             }
 
             return info
+        except Exception as e:
             logging.error(f"Error getting filesystem info: {str(e)}")
             return {
                 "error": f"Failed to get filesystem info: {str(e)}",
@@ -165,6 +168,7 @@ def _safe_open(
                 "os_type": self.os_type,
             }
 
+    def _get_mounted_volumes(self) -> List[Dict[str, Any]]:
         """Get list of mounted volumes/drives."""
         mounted_volumes = []
 
@@ -200,10 +204,12 @@ def _safe_open(
 
                 mounted_volumes.append(volume_info)
 
+        except Exception as e:
             logging.error(f"Error getting mounted volumes: {str(e)}")
 
         return mounted_volumes
 
+    def _get_network_drives(self) -> List[Dict[str, Any]]:
         """Get list of network drives."""
         network_drives = []
 
@@ -250,10 +256,12 @@ def _safe_open(
                             }
                         )
 
+        except Exception as e:
             logging.error(f"Error getting network drives: {str(e)}")
 
         return network_drives
 
+    def _get_removable_storage(self) -> List[Dict[str, Any]]:
         """Get list of removable storage devices."""
         removable_storage = []
 
@@ -269,6 +277,7 @@ def _safe_open(
                         "get",
                         "deviceid,volumename,description,size,freespace",
                     ]
+                    output = subprocess.check_output(cmd, text=True)
 
                     lines = output.strip().split("\n")[1:]  # Skip header
                     for line in lines:
@@ -284,6 +293,7 @@ def _safe_open(
                                         "type": "removable",
                                     }
                                 )
+                except Exception as e:
                     logging.error(f"Error getting Windows removable storage: {str(e)}")
 
             elif self.os_type == "Linux":
@@ -310,6 +320,7 @@ def _safe_open(
                                             "type": "removable",
                                         }
                                     )
+                except Exception as e:
                     logging.error(f"Error getting Linux removable storage: {str(e)}")
 
             elif self.os_type == "macOS":
@@ -330,12 +341,15 @@ def _safe_open(
                                         "type": "removable",
                                     }
                                 )
+                except Exception as e:
                     logging.error(f"Error getting macOS removable storage: {str(e)}")
 
+        except Exception as e:
             logging.error(f"Error getting removable storage: {str(e)}")
 
         return removable_storage
 
+    async def list_directory(self, directory: str = ".") -> List[Dict[str, Any]]:
         """
         List contents of a directory.
 
@@ -400,9 +414,11 @@ def _safe_open(
                     continue
 
             return result
+        except Exception as e:
             logging.error(f"Error listing directory: {str(e)}")
             return [{"error": f"Failed to list directory: {str(e)}"}]
 
+    async def read_file(self, file_path: str, offset: int = 0, length: int = -1) -> str:
         """
         Read contents of a file.
 
@@ -441,9 +457,13 @@ def _safe_open(
             return content  # type: ignore[no-any-return]
         except UnicodeDecodeError:
             return f"File {file_path} contains binary data and cannot be read as text."
+        except Exception as e:
             logging.error(f"Error reading file: {str(e)}")
             return f"Failed to read file: {str(e)}"
 
+    async def write_file(
+        self, file_path: str, content: str, overwrite: bool = True
+    ) -> str:
         """
         Write content to a file.
 
@@ -483,9 +503,11 @@ def _safe_open(
                 f.write(content)
 
             return f"Successfully wrote {len(content)} characters to {file_path}"
+        except Exception as e:
             logging.error(f"Error writing file: {str(e)}")
             return f"Failed to write file: {str(e)}"
 
+    async def append_to_file(self, file_path: str, content: str) -> str:
         """
         Append content to a file.
 
@@ -522,9 +544,11 @@ def _safe_open(
                 f.write(content)
 
             return f"Successfully appended {len(content)} characters to {file_path}"
+        except Exception as e:
             logging.error(f"Error appending to file: {str(e)}")
             return f"Failed to append to file: {str(e)}"
 
+    async def delete_file(self, file_path: str) -> str:
         """
         Delete a file.
 
@@ -550,9 +574,13 @@ def _safe_open(
             resolved_path.unlink()
 
             return f"Successfully deleted file {file_path}"
+        except Exception as e:
             logging.error(f"Error deleting file: {str(e)}")
             return f"Failed to delete file: {str(e)}"
 
+    async def copy_file(
+        self, source_path: str, destination_path: str, overwrite: bool = False
+    ) -> str:
         """
         Copy a file from source to destination.
 
@@ -606,9 +634,11 @@ def _safe_open(
             shutil.copy2(source_resolved, dest_resolved, follow_symlinks=False)
 
             return f"Successfully copied {source_path} to {destination_path}"
+        except Exception as e:
             logging.error(f"Error copying file: {str(e)}")
             return f"Failed to copy file: {str(e)}"
 
+    async def create_directory(self, directory_path: str, exist_ok: bool = True) -> str:
         """
         Create a directory.
 
@@ -642,9 +672,13 @@ def _safe_open(
             resolved_path.mkdir(parents=True, exist_ok=exist_ok)
 
             return f"Successfully created directory {directory_path}"
+        except Exception as e:
             logging.error(f"Error creating directory: {str(e)}")
             return f"Failed to create directory: {str(e)}"
 
+    async def delete_directory(
+        self, directory_path: str, recursive: bool = False
+    ) -> str:
         """
         Delete a directory.
 
@@ -678,9 +712,11 @@ def _safe_open(
                 resolved_path.rmdir()
 
             return f"Successfully deleted directory {directory_path}"
+        except Exception as e:
             logging.error(f"Error deleting directory: {str(e)}")
             return f"Failed to delete directory: {str(e)}"
 
+    async def get_file_info(self, file_path: str) -> Dict[str, Any]:
         """
         Get information about a file.
 
@@ -748,9 +784,13 @@ def _safe_open(
                     info["text_file"] = False
 
             return info
+        except Exception as e:
             logging.error(f"Error getting file info: {str(e)}")
             return {"error": f"Failed to get file info: {str(e)}"}
 
+    async def execute_file(
+        self, file_path: str, arguments: List[str] | None = None
+    ) -> str:
         """
         Execute a file with given arguments.
 
@@ -782,6 +822,8 @@ def _safe_open(
                 cmd.extend(arguments)
 
             _EXEC_TIMEOUT = 30
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
 
             try:
@@ -805,6 +847,7 @@ def _safe_open(
                 result += f"Standard error:\n{stderr.decode('utf-8', errors='replace')}"
 
             return result.strip()
+        except Exception as e:
             logging.error(f"Error executing file: {str(e)}")
             return f"Failed to execute file: {str(e)}"
 

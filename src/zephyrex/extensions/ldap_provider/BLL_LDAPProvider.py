@@ -38,6 +38,7 @@ MIN_SECRET_LENGTH = 16
 MAX_SECRET_BYTES = 72
 
 
+def _valid_name(name: Optional[str]) -> str:
     if not name or not SERVICE_ACCOUNT_NAME.match(name):
         raise HTTPException(
             status_code=422,
@@ -46,6 +47,7 @@ MAX_SECRET_BYTES = 72
     return name
 
 
+def _secret_hash(secret: Optional[str]) -> str:
     if not isinstance(secret, str) or len(secret) < MIN_SECRET_LENGTH:
         raise HTTPException(
             status_code=422,
@@ -57,14 +59,18 @@ MAX_SECRET_BYTES = 72
             status_code=422,
             detail=f"A service account secret is at most {MAX_SECRET_BYTES} bytes",
         )
+    return bcrypt.hashpw(raw, bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode()
 
 
+def secret_matches(secret: str, secret_hash: Optional[str]) -> bool:
     """Whether ``secret`` is the one hashed as ``secret_hash``. Without a
     hash the same bcrypt work is done, so an unknown account takes as long
     to refuse as a wrong secret."""
     raw = secret.encode()
     if not secret_hash or len(raw) > MAX_SECRET_BYTES:
+        bcrypt.checkpw(raw[:MAX_SECRET_BYTES], _DUMMY_BCRYPT_HASH)
         return False
+    return bcrypt.checkpw(raw, secret_hash.encode())
 
 
 class LdapServiceAccountModel(
@@ -87,6 +93,7 @@ class LdapServiceAccountModel(
     )
     is_system_entity: ClassVar[bool] = True
 
+    class Create(BaseModel, NameMixinModel):
         description: Optional[str] = None
         enabled: bool = True
         secret: Optional[str] = Field(
@@ -95,6 +102,7 @@ class LdapServiceAccountModel(
         # Server-computed from ``secret``; whatever a caller sends is replaced.
         secret_hash: Optional[str] = None
 
+    class Update(BaseModel):
         description: Optional[str] = None
         enabled: Optional[bool] = None
         secret: Optional[str] = Field(
@@ -109,6 +117,7 @@ class LdapServiceAccountModel(
         enabled: Optional[bool] = None
 
 
+class LdapServiceAccountManager(AbstractBLLManager, RouterMixin):
     _model = LdapServiceAccountModel
 
     prefix: ClassVar[Optional[str]] = "/v1/ldap/service-account"
@@ -122,12 +131,16 @@ class LdapServiceAccountModel(
                 detail="LDAP service accounts are configured by the server only",
             )
 
+    def _named(self, name: str) -> List[Any]:
         Account = LdapServiceAccountModel.DB(self.model_registry.DB.manager.Base)
         found: List[Any] = Account.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
+            filters=[Account.name == name, Account.deleted_at.is_(None)],
         )
         return found
 
+    def _prepared(self, fields: Dict[str, Any]) -> Dict[str, Any]:
         name = _valid_name(fields.get("name"))
         if self._named(name):
             raise HTTPException(
@@ -136,6 +149,7 @@ class LdapServiceAccountModel(
         fields["secret_hash"] = _secret_hash(fields.pop("secret", None))
         return fields
 
+    def create(self, **kwargs: Any) -> Any:
         self._require_server_side()
         if isinstance(kwargs.get("entities"), list):
             names = [entity.get("name") for entity in kwargs["entities"]]
@@ -147,6 +161,7 @@ class LdapServiceAccountModel(
             return super().create(**kwargs)
         return super().create(**self._prepared(dict(kwargs)))
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         self._require_server_side()
         kwargs.pop("secret_hash", None)
         if "secret" in kwargs:

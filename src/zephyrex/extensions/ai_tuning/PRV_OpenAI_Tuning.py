@@ -41,6 +41,7 @@ def _error_text(error: Any) -> Optional[str]:
     return f"{code}: {error['message']}" if code else str(error["message"])
 
 
+def openai_job(job: Any) -> Dict[str, Any]:
     """A ``fine_tuning.job`` object in the shared job shape."""
     if not isinstance(job, dict) or not isinstance(job.get("id"), str):
         raise TransientExternalError("OpenAI answered without a fine-tuning job")
@@ -91,6 +92,7 @@ def _rows(page: Any) -> List[Mapping[str, Any]]:
     return [row for row in data if isinstance(row, dict)]
 
 
+def _upstream_message(error: InvalidInputExternalError) -> Optional[str]:
     """The message in an OpenAI error body: ``{"error": {"message"}}``."""
     try:
         body = json.loads(str(error.upstream_payload or ""))
@@ -102,6 +104,7 @@ def _rows(page: Any) -> List[Mapping[str, Any]]:
     return None
 
 
+class PRV_OpenAI_Tuning(AbstractTuningProvider):
     name: ClassVar[str] = "openai_fine_tuning"
     friendly_name: ClassVar[str] = "OpenAI fine-tuning"
     description: ClassVar[str] = "Fine-tunes OpenAI models on an OpenAI account"

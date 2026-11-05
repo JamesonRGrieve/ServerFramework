@@ -50,6 +50,7 @@ _RECOVERY_CODE_SHAPE = re.compile(
 )
 
 
+def _totp_digest(algorithm: str) -> Callable[..., Any]:
     """The hashlib constructor pyotp needs for a stored algorithm name
     ("SHA1"); pyotp's provisioning URI calls it, so a bare name fails."""
     digest = getattr(hashlib, algorithm.lower(), None)
@@ -61,12 +62,14 @@ _RECOVERY_CODE_SHAPE = re.compile(
 
 
 # MFA method type constants
+class MultifactorMethodType:
     TOTP = "totp"
     EMAIL = "email"
     SMS = "sms"
 
 
 # Security and audit hooks for MFA operations
+def security_validation_hook(context: HookContext) -> None:
     """Security validation for all MFA manager operations."""
     manager = context.manager
     method_name = context.method_name
@@ -86,9 +89,11 @@ _RECOVERY_CODE_SHAPE = re.compile(
             )
 
 
+def audit_mfa_operations(context: HookContext) -> None:
     """Audit logging for all MFA operations."""
     manager = context.manager
     method_name = context.method_name
+    requester_id = manager.requester.id
 
     if context.timing == HookTiming.BEFORE:
         # Log operation start
@@ -130,6 +135,7 @@ _MFA_VERIFY_LOCKOUT = LockoutTracker(
 )
 
 
+def mfa_rate_limiting_hook(context: HookContext) -> None:
     """Lockout-tracker brake on MFA verification attempts.
 
     5 verification attempts within a 60s sliding window from the same
@@ -200,6 +206,7 @@ class MultifactorMethodModel(
             )
         return self
 
+    class Create(BaseModel, UserModel.Reference.ID.Optional):
         method_type: str = Field(
             ..., description="Type of MFA method (totp, email, sms)"
         )
@@ -233,6 +240,8 @@ class MultifactorMethodModel(
             30, description="TOTP code validity period in seconds"
         )
 
+        @model_validator(mode="after")
+        def validate_method_type_and_identifier(self):
             # Validate method type
             valid_methods = [
                 MultifactorMethodType.TOTP,
@@ -257,6 +266,7 @@ class MultifactorMethodModel(
 
     # A method can't be moved to another user, and disabling one is the
     # code-gated POST /{id}/disable, not a field update.
+    class Update(BaseModel):
         identifier: Optional[str] = Field(
             None, description="Phone number or email for SMS/email methods"
         )
@@ -278,6 +288,7 @@ class MultifactorMethodModel(
         last_used: Optional[DateSearchModel] = None
 
 
+class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
     _model = MultifactorMethodModel
 
     # RouterMixin configuration
@@ -387,6 +398,7 @@ class MultifactorMethodModel(
             )
         }
 
+    def totp_provisioning_route(self, mfa_method_id: str) -> Dict[str, str]:
         """GET /v1/user/mfa/{id}/totp/provisioning — what an authenticator
         app needs to enrol. Available only until the method is verified;
         after that the seed is never readable again."""
@@ -430,6 +442,9 @@ class MultifactorMethodModel(
         self.recovery_codes.revoke_all(mfa_method_id)
         self.delete(id=mfa_method_id)
 
+    def _require_code_if_verified(
+        self, mfa_method_id: str, body: Optional[Dict[str, Any]]
+    ) -> None:
         method = self.get(id=mfa_method_id)
         if not method.verification:
             return
@@ -441,6 +456,7 @@ class MultifactorMethodModel(
         if not self.verify_code_or_recovery(mfa_method_id, code):
             raise HTTPException(status_code=403, detail="Invalid MFA code")
 
+    def verify_code_or_recovery(self, mfa_method_id: str, code: str) -> bool:
         """Check ``code`` as a recovery code when it has that shape, else as
         the method's own code, so one wrong entry is one lockout failure."""
         recovery = code.strip().upper()
@@ -455,9 +471,11 @@ class MultifactorMethodModel(
         proven by a first correct code."""
         return self.list(user_id=self.requester.id, is_enabled=True, verification=True)
 
+    def _set_state(self, mfa_method_id: str, **properties: Any) -> None:
         """Write server-owned method state (verification, is_enabled,
         last_used): never client-updatable, so it bypasses the Update body."""
         self.DB.update(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=mfa_method_id,
             new_properties=properties,
@@ -486,22 +504,28 @@ class MultifactorMethodModel(
         )
         self._recovery_codes = None
 
+    @property
+    def recovery_codes(self) -> "MultifactorRecoveryCodeManager":
         """Get the recovery codes manager for this MFA method manager."""
         if self._recovery_codes is None:
             self._recovery_codes = MultifactorRecoveryCodeManager(  # type: ignore[assignment]
+                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._recovery_codes  # type: ignore[return-value]
 
+    def create_validation(self, entity):
         """Validate MFA method creation"""
         # Check if user exists (Keep proper layer separation, leveraging UserManager permissions logic)
         if entity.user_id:
             try:
                 UserManager(
+                    requester_id=self.requester.id,
                     model_registry=self.model_registry,
                 ).get(id=entity.user_id)
+            except Exception as e:
                 logger.error(f"Error validating user existence: {e}")
                 raise HTTPException(status_code=404, detail="User not found")
 
@@ -533,6 +557,7 @@ class MultifactorMethodModel(
                     # Use the manager's update method instead of direct DB access
                     self.update(method_id, is_primary=False)
 
+    def create(self, **kwargs):
         """Create new MFA method.
 
         M-4 — refuse a client-supplied ``totp_secret``. The seed is
@@ -563,6 +588,7 @@ class MultifactorMethodModel(
             kwargs["user_id"] = kwargs.get("user_id") or self.requester.id
         return super().create(**kwargs)
 
+    def update(self, id: str, **kwargs):
         """Update MFA method.
 
         M-4 — refuse a client-supplied ``totp_secret`` rotation. To
@@ -583,8 +609,10 @@ class MultifactorMethodModel(
             kwargs["totp_secret"] = encrypt_totp_secret(kwargs["totp_secret"])
         return super().update(id, **kwargs)
 
+    def generate_totp_secret(self) -> str:
         """Generate a secure TOTP secret"""
         # Generate 32 random bytes and encode as base32
+        secret_bytes = secrets.token_bytes(32)
         import base64
 
         return base64.b32encode(secret_bytes).decode("utf-8")
@@ -621,6 +649,14 @@ class MultifactorMethodModel(
 
         return get_replay_cache().is_used(cls._replay_key(secret_fingerprint, code))
 
+    def verify_totp_code(
+        self,
+        secret: str,
+        code: str,
+        algorithm: str = "SHA1",
+        digits: int = 6,
+        period: int = 30,
+    ) -> bool:
         """Verify a TOTP code against a secret.
 
         Replay-protected: a code that has already been accepted for the
@@ -646,9 +682,11 @@ class MultifactorMethodModel(
                 return False
             self._record_used_totp(fingerprint, code)
             return True
+        except Exception as e:
             logger.error(f"Error verifying TOTP code: {e}")
             return False
 
+    def send_mfa_code(self, method_id: str) -> Dict[str, str]:
         """Send MFA code for email/SMS methods"""
         method = self.get(id=method_id)
 
@@ -672,6 +710,7 @@ class MultifactorMethodModel(
         # Implementation would integrate with SMS provider
         raise HTTPException(status_code=501, detail="SMS MFA not yet implemented")
 
+    def verify_mfa_code(self, method_id: str, code: str) -> bool:
         """Verify MFA code for any method type"""
         method = self.get(id=method_id)
         requester = self.optional_requester
@@ -740,6 +779,7 @@ class MultifactorRecoveryCodeModel(
         None, description="IP address where code was created"
     )
 
+    class Create(BaseModel, MultifactorMethodModel.Reference.ID):
         created_ip: Optional[str] = Field(
             None, description="IP address where code was created"
         )
@@ -748,6 +788,7 @@ class MultifactorRecoveryCodeModel(
             ..., description="Salt used for hashing the recovery code"
         )
 
+    class Update(BaseModel):
         is_used: Optional[bool] = Field(
             None, description="Whether this recovery code has been used"
         )
@@ -765,6 +806,7 @@ class MultifactorRecoveryCodeModel(
         used_at: Optional[DateSearchModel] = None
 
 
+class MultifactorRecoveryCodeManager(AbstractBLLManager):
     _model = MultifactorRecoveryCodeModel
 
     # RouterMixin configuration
@@ -794,6 +836,9 @@ class MultifactorRecoveryCodeModel(
             model_registry=model_registry,
         )
 
+    def generate_recovery_codes(
+        self, multifactor_method_id: str, count: int = 10
+    ) -> List[str]:
         """Generate recovery codes for an MFA method.
 
         Format: ``XXXXX-XXXXX`` (10 alphanumeric chars + dash). 36^10 ≈
@@ -808,6 +853,7 @@ class MultifactorRecoveryCodeModel(
         for _ in range(count):
             code = "-".join(
                 "".join(
+                    secrets.choice(_RECOVERY_CODE_ALPHABET)
                     for _ in range(_RECOVERY_CODE_GROUP_LENGTH)
                 )
                 for _ in range(_RECOVERY_CODE_GROUPS)
@@ -818,6 +864,8 @@ class MultifactorRecoveryCodeModel(
             # constant so cost stays consistent across releases.
             from zephyrex.logic.BLL_Auth import _BCRYPT_ROUNDS as _ROUNDS
 
+            salt = bcrypt.gensalt(rounds=_ROUNDS)
+            code_hash = bcrypt.hashpw(code.encode(), salt).decode()
 
             self.create(
                 multifactor_method_id=multifactor_method_id,
@@ -829,6 +877,7 @@ class MultifactorRecoveryCodeModel(
 
         return codes
 
+    def revoke_all(self, multifactor_method_id: str) -> None:
         """Retire every unused recovery code of a method."""
         for recovery_code in self.list(
             multifactor_method_id=multifactor_method_id, is_used=False
@@ -837,6 +886,7 @@ class MultifactorRecoveryCodeModel(
                 recovery_code.id, is_used=True, used_at=datetime.now(timezone.utc)
             )
 
+    def verify_recovery_code(self, multifactor_method_id: str, code: str) -> bool:
         """Verify and mark a recovery code as used"""
         requester = self.optional_requester
         actor_key = str(requester.id) if requester and requester.id else None
@@ -847,6 +897,7 @@ class MultifactorRecoveryCodeModel(
         )
 
         for recovery_code in recovery_codes:
+            if recovery_code.code_hash and bcrypt.checkpw(
                 code.encode(), recovery_code.code_hash.encode()
             ):
                 self.update(
@@ -864,6 +915,7 @@ class MultifactorRecoveryCodeModel(
 
 
 # TOTP secret validation hook function
+def totp_secret_validation_hook(context: HookContext) -> None:
     """Ensure TOTP secrets are properly generated and validated."""
     kwargs = context.kwargs
 
@@ -933,9 +985,11 @@ MultifactorMethodModel.Manager = MultifactorMethodManager
 # Password login consults these to demand and check a second factor. Both run
 # as the user logging in, so the verification lockout keys on them. The source
 # table is process-global, so each checks that this app bound auth_mfa.
+def _login_methods(user_id: str, model_registry: Any) -> List[Dict[str, str]]:
     if not model_registry.is_model_bound(MultifactorMethodModel):
         return []
     manager = MultifactorMethodManager(
+        requester_id=user_id, model_registry=model_registry
     )
     return [
         {"id": method.id, "method_type": method.method_type}
@@ -943,9 +997,11 @@ MultifactorMethodModel.Manager = MultifactorMethodManager
     ]
 
 
+def _verify_login_code(user_id: str, code: str, model_registry: Any) -> bool:
     if not model_registry.is_model_bound(MultifactorMethodModel):
         return False
     manager = MultifactorMethodManager(
+        requester_id=user_id, model_registry=model_registry
     )
     return any(
         manager.verify_code_or_recovery(method.id, code)

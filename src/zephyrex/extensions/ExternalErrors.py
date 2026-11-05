@@ -83,6 +83,7 @@ class TransientExternalError(BaseExternalError):
     )
 
 
+class AuthExternalError(BaseExternalError):
     """401 / 403 with auth-failure semantics. Marks the provider unhealthy
     for a cool-down window and advances without consuming retry budget."""
 
@@ -100,6 +101,7 @@ class InvalidInputExternalError(BaseExternalError):
     )
 
 
+class RateLimitExternalError(BaseExternalError):
     """429-shaped failures. Honors `Retry-After` (or per-provider parser
     equivalent) and backs off against the same provider with exponential
     delay and jitter; does not advance the chain.

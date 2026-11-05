@@ -51,6 +51,7 @@ _STATUSES = {
 }
 
 
+def amazon_order(found: Mapping[str, Any]) -> Dict[str, Any]:
     total = (found.get("proceeds") or {}).get("grandTotal") or {}
     status = (found.get("fulfillment") or {}).get("fulfillmentStatus")
     return order(
@@ -75,6 +76,7 @@ _STATUSES = {
     )
 
 
+def amazon_product(listing: Mapping[str, Any]) -> Dict[str, Any]:
     summary = (listing.get("summaries") or [{}])[0]
     offer = (listing.get("offers") or [{}])[0]
     price = offer.get("price") or {}
@@ -91,6 +93,7 @@ _STATUSES = {
     )
 
 
+class PRV_Amazon_ECommerce(AbstractEcommerceProvider):
     name: ClassVar[str] = "amazon"
     friendly_name: ClassVar[str] = "Amazon"
     description: ClassVar[str] = "An Amazon seller account (SP-API)"
@@ -120,10 +123,13 @@ _STATUSES = {
     def _marketplace(cls, instance: ProviderInstanceModel) -> str:
         return str(cls.setting(instance, "marketplace_id") or DEFAULT_MARKETPLACE)
 
+    @classmethod
+    async def _token(cls, instance: ProviderInstanceModel) -> str:
         client = cls.required(instance, "api_key")
         secret = cls.required(instance, "client_secret")
         refresh = cls.required(instance, "refresh_token")
 
+        async def fetch() -> Tuple[str, float]:
             answer = await cls.http().post(
                 TOKEN_URL,
                 data={

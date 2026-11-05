@@ -7,6 +7,7 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 
 
+class AuthRecoveryQuestionsExtension(AbstractStaticExtension):
     name: ClassVar[str] = "auth_recovery_questions"
     description: ClassVar[str] = (
         "Per-user security questions for account recovery (extracted from core)"

@@ -81,6 +81,7 @@ MAX_TEXT = 200
 CHECK_WINDOW = timedelta(days=1)
 
 
+class CalendarAccountModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["CalendarManager"]]
     provider: str = Field(
         ..., description="caldav, google_calendar or microsoft_calendar"
@@ -114,6 +115,7 @@ CHECK_WINDOW = timedelta(days=1)
         provider: Optional[StringSearchModel] = None
 
 
+class AvailabilityShareModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["CalendarManager"]]
     viewer_user_id: str = Field(..., description="Who sees when the owner is busy")
     can_book: bool = Field(
@@ -251,6 +253,7 @@ def provider_class(name: str) -> Type[AbstractCalendarProvider]:
     raise HTTPException(status_code=422, detail=f"No calendar service called {name!r}")
 
 
+async def account_settings(account: Any, model_registry: Any) -> Dict[str, str]:
     """What the provider reads for ``account``: CalDAV's own settings, or a
     current access token from the owner's linked sign-in."""
     if account.provider == "caldav":
@@ -307,6 +310,7 @@ def _view(account: Any) -> AccountView:
     )
 
 
+class CalendarManager(AbstractBLLManager, RouterMixin):
     """``/v1/calendars``: a user's own calendars, whom they share their
     availability with, and finding and booking a time together."""
 
@@ -371,6 +375,17 @@ def _view(account: Any) -> AccountView:
             ]
         )
 
+    @custom_route(
+        method="POST",
+        path="/accounts",
+        input_model=NewAccount,
+        output_model=AccountView,
+        authentication_type="jwt",
+        openapi_tags=("Calendars",),
+        summary="Connect a calendar of yours; it is read once to check it answers",
+        expose_in=(ExposeIn.REST,),
+    )
+    async def connect_route(self, body: NewAccount) -> AccountView:
         if len(self._accounts(self._me)) >= MAX_ACCOUNTS:
             raise HTTPException(
                 status_code=422, detail=f"At most {MAX_ACCOUNTS} calendars"
@@ -414,6 +429,7 @@ def _view(account: Any) -> AccountView:
                 status_code=422, detail="The calendar did not answer; check its address"
             ) from err
         account = CalendarAccountModel.DB(self.model_registry.DB.manager.Base).create(
+            requester_id=self._me,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=CalendarAccountModel,

@@ -37,6 +37,7 @@ PATCH_OPERATIONS = frozenset({"add", "remove", "replace"})
 MAX_OPERATIONS = 1000
 
 
+def _identity(value: Any) -> str:
     """What makes two values of a multi-valued attribute the same one."""
     if isinstance(value, Mapping):
         key = lookup(value, "value")
@@ -45,10 +46,14 @@ MAX_OPERATIONS = 1000
     return json.dumps(value, sort_keys=True, default=str)
 
 
+def _merge(target: MutableMapping[str, Any], value: Mapping[str, Any]) -> None:
     for name, item in value.items():
         target[lookup(target, name) or name] = item
 
 
+def _container(
+    resource: Dict[str, Any], patch_path: PatchPath, read_only: FrozenSet[str]
+) -> MutableMapping[str, Any]:
     urn = patch_path.path.urn
     if urn is None or urn.lower() in CORE_URNS:
         if patch_path.path.attribute.lower() in read_only:
@@ -67,6 +72,12 @@ def _require(value: Any, operation: str) -> Any:
     return value
 
 
+def _apply_without_filter(
+    container: MutableMapping[str, Any],
+    operation: str,
+    patch_path: PatchPath,
+    value: Any,
+) -> None:
     name = patch_path.path.attribute
     key = lookup(container, name) or name
     current = container.get(key)
@@ -113,6 +124,13 @@ def _require(value: Any, operation: str) -> Any:
         container[key] = copy.deepcopy(value)
 
 
+def _apply_with_filter(
+    container: MutableMapping[str, Any],
+    operation: str,
+    patch_path: PatchPath,
+    value_filter: Filter,
+    value: Any,
+) -> None:
     name = patch_path.path.attribute
     key = lookup(container, name) or name
     current = container.get(key)
@@ -177,6 +195,9 @@ def _apply_path(
         )
 
 
+def _apply_operation(
+    resource: Dict[str, Any], raw: Any, read_only: FrozenSet[str]
+) -> None:
     if not isinstance(raw, Mapping):
         raise bad_request(INVALID_SYNTAX, "each operation is an object")
     op_key = lookup(raw, "op")
@@ -211,6 +232,9 @@ def _apply_path(
         _apply_path(resource, operation, parse_patch_path(name), item, read_only)
 
 
+def apply_patch(
+    resource: Mapping[str, Any], body: Mapping[str, Any], read_only: FrozenSet[str]
+) -> Dict[str, Any]:
     """``resource`` with the PatchOp ``body`` applied, all or nothing
     (``resource`` itself is left unchanged). ``read_only`` names the
     attributes no operation may touch."""

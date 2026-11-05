@@ -25,6 +25,7 @@ from zephyrex.lib.Logging import logger
 from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
 
 
+class CacheManager:
     """Manages caching with consistent patterns across all Pydantic utilities."""
 
     def __init__(self):
@@ -40,8 +41,14 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         self._caches.clear()
 
 
+class NameProcessor:
     """Handles all name processing, sanitization, and generation operations."""
 
+    @staticmethod
+    @lru_cache(maxsize=1024)
+    def sanitize_name(
+        name: str, reserved_names: Optional[frozenset] | None = None
+    ) -> str:
         if not name:
             return "UnnamedType"
 
@@ -59,6 +66,11 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
 
         return sanitized or "UnnamedType"
 
+    @staticmethod
+    @lru_cache(maxsize=1024)
+    def extract_base_name(
+        class_name: str, remove_suffixes: Optional[tuple] | None = None
+    ) -> str:
         if not remove_suffixes:
             remove_suffixes = ("Manager", "Model")
         for suffix in remove_suffixes:
@@ -73,6 +85,13 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         snake_case_name = stringcase.snakecase(base_name)
         return inflection.plural(snake_case_name) if use_plural else snake_case_name
 
+    @staticmethod
+    def generate_unique_name(
+        base_name: str,
+        existing_names: Set[str],
+        context: Optional[str] | None = None,
+        use_hash: bool = True,
+    ) -> str:
         if base_name not in existing_names:
             return base_name
 
@@ -115,6 +134,9 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
             counter += 1
         return f"{base_name}{counter}"
 
+    @staticmethod
+    @lru_cache(maxsize=512)
+    def handle_nested_class_name(qualname: str) -> str:
         if "." not in qualname:
             return qualname
 
@@ -134,6 +156,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         return f"{parent_name}{child_name}" if child_name else parent_name
 
 
+class TypeIntrospector:
     """Handles type introspection and analysis operations."""
 
     SCALAR_TYPES = frozenset({str, int, float, bool, dict, list})
@@ -142,6 +165,8 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         self.cache_manager = cache_manager or CacheManager()
         self._cache = self.cache_manager.get_cache("type_introspection")
 
+    @lru_cache(maxsize=1024)
+    def is_scalar_type(self, field_type: Any) -> bool:
         if field_type in self.SCALAR_TYPES:
             return True
         inner = unwrap_optional(field_type)
@@ -151,6 +176,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
     def is_optional_type(self, field_type: Any) -> bool:
         return is_optional(field_type)
 
+    def extract_optional_inner_type(self, field_type: Any) -> Any:
         return (
             next(
                 (arg for arg in get_args(field_type) if arg is not type(None)),
@@ -164,6 +190,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
     def is_list_type(self, field_type: Any) -> bool:
         return get_origin(field_type) in (list, List)
 
+    def extract_list_inner_type(self, field_type: Any) -> Optional[Any]:
         return (
             get_args(field_type)[0]
             if self.is_list_type(field_type) and get_args(field_type)
@@ -178,11 +205,14 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
     def is_union_type(self, field_type: Any) -> bool:
         return is_union(field_type)
 
+    @lru_cache(maxsize=1024)
+    def is_enum_type(self, field_type: Any) -> bool:
         try:
             return isinstance(field_type, type) and issubclass(field_type, Enum)
         except (TypeError, AttributeError):
             return False
 
+    def is_pydantic_model(self, field_type: Any) -> bool:
         try:
             return (
                 isinstance(field_type, type)
@@ -197,6 +227,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         return getattr(type_, "__name__", str(type_).replace("typing.", ""))
 
 
+class FieldProcessor:
     """Handles field processing operations for Pydantic models."""
 
     READONLY_FIELDS = frozenset(
@@ -216,10 +247,17 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         self.type_introspector = TypeIntrospector(cache_manager)
         self._cache = self.cache_manager.get_cache("model_fields")
 
+    def get_model_fields(
+        self,
+        model: Type[BaseModel],
+        include_inherited: bool = True,
+        process_refs: bool = False,
+    ) -> Dict[str, Any]:
         model_fields_cache_key = (
             f"{model.__module__}.{model.__name__}_{include_inherited}_{process_refs}"
         )
         if model_fields_cache_key in self._cache:
+            return self._cache[model_fields_cache_key]  # type: ignore[no-any-return]
 
         fields = {}
         if hasattr(model, "model_fields"):
@@ -239,8 +277,12 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
                         }
                     )
 
+        self._cache[model_fields_cache_key] = fields
         return fields
 
+    def extract_field_info(
+        self, field_name: str, field_type: Any, field_info: Any | None = None
+    ) -> Dict[str, Any]:
         info = {
             "name": field_name,
             "type": field_type,
@@ -277,6 +319,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
             elif hasattr(field_info, "default_factory") and field_info.default_factory:
                 try:
                     metadata["default"] = field_info.default_factory()
+                except Exception:
                     pass
 
             if getattr(field_info, "unique", False) or (
@@ -290,6 +333,9 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
 
         return info
 
+    def should_skip_field(
+        self, field_name: str, field_type: Any | None = None, context: str | None = None
+    ) -> bool:
         return (
             field_name.startswith("_")  # type: ignore[return-value]
             or (
@@ -321,6 +367,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
             if not self.should_skip_field(k, v, context if exclude_readonly else None)
         }
 
+    def clean_model_for_fastapi(self, model_class: Type[BaseModel]) -> Type[BaseModel]:
         if not hasattr(model_class, "model_fields"):
             return model_class
 
@@ -341,6 +388,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
                     )
                 else:
                     clean_fields[field_name] = field_info
+            except Exception as e:
                 logger.warning(
                     f"Skipping problematic field {field_name} in {model_class.__name__}: {e}"
                 )
@@ -379,6 +427,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         return clean_class
 
 
+class ReferenceResolver:
     """Handles forward reference resolution and model lookups."""
 
     def __init__(self, cache_manager: Optional[CacheManager] | None = None):
@@ -386,6 +435,9 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         self._model_registry: Dict[str, Type[BaseModel]] = {}
         self._cache = self.cache_manager.get_cache("string_refs")
 
+    def register_model(
+        self, model: Type[BaseModel], name: Optional[str] | None = None
+    ) -> None:
         if name:
             model_name = name.lower()
         else:
@@ -403,6 +455,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
             if model_name and model_name not in self._model_registry:
                 self._model_registry[model_name] = model
 
+    def find_model_by_name(self, name: str) -> Optional[Type[BaseModel]]:
         normalized = name.lower()
 
         if normalized in self._model_registry:
@@ -421,10 +474,14 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
             None,
         )
 
+    def resolve_string_reference(
+        self, ref_str: str, module_context=None
+    ) -> Optional[Type]:
         string_ref_cache_key = (
             f"{ref_str}:{module_context.__name__ if module_context else 'None'}"
         )
         if string_ref_cache_key in self._cache:
+            return self._cache[string_ref_cache_key]  # type: ignore[no-any-return]
 
         clean_ref = ref_str.strip("\"'")
         lower_name = stringcase.snakecase(NameProcessor.extract_base_name(clean_ref))
@@ -449,6 +506,7 @@ from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
         else:
             result = None
 
+        self._cache[string_ref_cache_key] = result
         return result
 
 
@@ -460,6 +518,7 @@ default_field_processor = FieldProcessor(default_cache_manager)
 default_reference_resolver = ReferenceResolver(default_cache_manager)
 
 
+def clear_all_caches():
     """Clear all shared caches."""
     default_cache_manager.clear_all_caches()
     # Clear lru_cache decorators
@@ -475,8 +534,12 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
 # ===== ABSTRACT BASE CLASSES AND MIXINS =====
 
 
+class ModelDiscoveryMixin:
     """Provides model discovery functionality for converters."""
 
+    def discover_models_in_modules(
+        self, modules: List[str], file_type: str = "BLL"
+    ) -> Dict[str, Type]:
         """
         Discover models in the specified modules.
 
@@ -509,10 +572,12 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
                     discovered.update(
                         self._extract_models_from_module(module, module_name)
                     )
+                except Exception as e:
                     logger.debug(f"Error processing module {module_name}: {e}")
 
         return discovered
 
+    def _extract_models_from_module(self, module, module_name: str) -> Dict[str, Type]:
         """Extract model classes from a module."""
         models = {}
 
@@ -542,6 +607,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         )
 
 
+class ErrorHandlerMixin:
     """Provides consistent error handling across converters."""
 
     def safe_operation(
@@ -576,6 +642,9 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
                 raise
             return fallback
 
+    def batch_safe_operation(
+        self, operations: Dict[str, Callable], strict: bool = False
+    ) -> Dict[str, Any]:
         """
         Execute multiple operations with error handling.
 
@@ -592,6 +661,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
             try:
                 results[name] = operation()
                 logger.debug(f"Successfully completed {name}")
+            except Exception as e:
                 logger.error(f"Failed to complete {name}: {e}")
                 if strict:
                     raise
@@ -600,12 +670,14 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         return results
 
 
+class RelationshipAnalyzer:
     """Analyzes relationships between Pydantic models."""
 
     def __init__(self, cache_manager: CacheManager):
         self.cache_manager = cache_manager
         self._relationship_cache = cache_manager.get_cache("relationships")
 
+    def analyze_model_relationships(self, model: Type[BaseModel]) -> Dict[str, Any]:
         """
         Analyze relationships for a model.
 
@@ -618,6 +690,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         model_relationships_cache_key = f"{model.__module__}.{model.__name__}"
 
         if model_relationships_cache_key in self._relationship_cache:
+            return self._relationship_cache[model_relationships_cache_key]  # type: ignore[no-any-return]
 
         relationships = {
             "foreign_keys": self._find_foreign_keys(model),
@@ -626,8 +699,10 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
             "reverse_relationships": self._find_reverse_relationships(model),
         }
 
+        self._relationship_cache[model_relationships_cache_key] = relationships
         return relationships
 
+    def _find_foreign_keys(self, model: Type[BaseModel]) -> List[Dict[str, str]]:
         """Find foreign key fields (fields ending with _id)."""
         foreign_keys = []
 
@@ -644,6 +719,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
 
         return foreign_keys
 
+    def _find_model_references(self, model: Type[BaseModel]) -> List[Dict[str, Any]]:
         """Find direct references to other Pydantic models."""
         references = []
 
@@ -668,6 +744,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
 
         return references
 
+    def _find_collection_fields(self, model: Type[BaseModel]) -> List[Dict[str, Any]]:
         """Find fields that contain collections of other models."""
         collections = []
 
@@ -698,6 +775,9 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         # For now, return empty list - could be enhanced later
         return []
 
+    def extract_relationship_info(
+        self, field_name: str, field_type: Any, model: Type[BaseModel] | None = None
+    ) -> Dict[str, Any]:
         """Extract comprehensive relationship information from a field."""
         info = {
             "field_name": field_name,
@@ -752,11 +832,19 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         return info
 
 
+class TemplateGenerator:
     """Generates code templates for different target systems."""
 
     def __init__(self, name_processor: NameProcessor | None = None):
         self.name_processor = name_processor or default_name_processor
 
+    def generate_class_template(
+        self,
+        model: Type[BaseModel],
+        template_type: str,
+        base_classes: List[str] | None = None,
+        additional_imports: List[str] | None = None,
+    ) -> str:
         """
         Generate a class template for a model.
 
@@ -830,6 +918,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
 
         return "\n".join(attributes)
 
+    def _generate_init_method(self, template_type: str) -> str:
         """Generate __init__ method."""
         if template_type == "manager":
             return '''    def __init__(
@@ -841,6 +930,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
     ):
         """Initialize the manager."""
         super().__init__(
+            requester_id=requester_id,
             target_id=target_id,
             target_team_id=target_team_id,
             model_registry=model_registry,
@@ -851,6 +941,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         super().__init__()'''
 
 
+class AbstractPydanticConverter(ABC):
     """
     Abstract base class for all Pydantic model converters.
 
@@ -859,6 +950,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
     (SQLAlchemy, FastAPI, GraphQL, etc.).
     """
 
+    def __init__(self, model_registry=None):
         """Initialize the converter with shared utilities."""
         # Import here to avoid circular imports
         from zephyrex.pydantic2.registry import ModelRegistry
@@ -903,6 +995,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         """
         pass
 
+    def extract_model_metadata(self, model: Type[BaseModel]) -> Dict[str, Any]:
         """
         Extract common metadata from a Pydantic model.
 
@@ -924,6 +1017,9 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
             "config": getattr(model, "model_config", None),
         }
 
+    def cached_conversion(
+        self, model: Type[BaseModel], conversion_func: Callable, **options
+    ) -> Any:
         """
         Perform a cached conversion operation.
 
@@ -941,10 +1037,13 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         )
 
         if model_conversion_cache_key in self._conversion_cache:
+            return self._conversion_cache[model_conversion_cache_key]
 
         result = conversion_func()
+        self._conversion_cache[model_conversion_cache_key] = result
         return result
 
+    def validate_model_compatibility(self, model: Type[BaseModel]) -> List[str]:
         """
         Validate that a model is compatible with this converter.
 
@@ -973,8 +1072,10 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
 
 
 # Enhanced mixin versions that inherit from the abstract base
+class CacheManagerMixin:
     """Provides consistent caching functionality."""
 
+    def get_cache(self, cache_name: str) -> Dict:
         """Get a named cache."""
         if hasattr(self, "cache_manager"):
             return self.cache_manager.get_cache(cache_name)  # type: ignore[no-any-return]
@@ -985,6 +1086,7 @@ default_reference_resolver = ReferenceResolver(default_cache_manager)
         else:
             return default_cache_manager.get_cache(cache_name)
 
+    def cached_operation(self, cache_name: str, key: str, operation: Callable) -> Any:
         """Perform a cached operation."""
         cache = self.get_cache(cache_name)
         if key not in cache:

@@ -60,15 +60,18 @@ def clear_send_listeners() -> None:
 # ---------------------------------------------------------------------------
 
 
+class MagicLinkRequest(BaseModel):
     email: str = Field(..., description="The email address to send a magic link to")
 
 
+class MagicLinkResponse(BaseModel):
     """Identical shape regardless of whether the email is registered, so the
     response cannot be used to enumerate accounts."""
 
     status: str = Field("accepted", description="Always 'accepted'")
 
 
+class MagicLinkVerify(BaseModel):
     token: str = Field(..., description="The raw magic-link token from the email URL")
     email: Optional[str] = Field(
         None,
@@ -76,6 +79,7 @@ def clear_send_listeners() -> None:
     )
 
 
+class MagicLinkVerifyResponse(BaseModel):
     """Either a session (``token`` and the session fields) or, for a user
     with a verified second factor, an MFA challenge (``mfa_required``,
     ``challenge_token``, ``methods``) to complete at POST
@@ -98,6 +102,12 @@ def clear_send_listeners() -> None:
 # ---------------------------------------------------------------------------
 
 
+class AuthMagicLinkTokenModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    OneTimeTokenMixin,
+    metaclass=ModelMeta,
+):
     """Magic-link tokens. Stored hashed; the raw code reaches the user only
     via email."""
 
@@ -110,6 +120,7 @@ def clear_send_listeners() -> None:
         "Magic-link one-time tokens (Item 58 passwordless email auth)"
     )
 
+    class Create(BaseModel):
         user_id: str
         requested_email: str
         code_hash: str
@@ -120,9 +131,11 @@ def clear_send_listeners() -> None:
         used_at: Optional[datetime] = None
         created_ip: Optional[str] = None
 
+    class Update(BaseModel):
         is_used: Optional[bool] = None
         used_at: Optional[datetime] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         user_id: Optional[StringSearchModel] = None
         requested_email: Optional[StringSearchModel] = None
         is_used: Optional[bool] = None
@@ -134,6 +147,7 @@ def clear_send_listeners() -> None:
 # ---------------------------------------------------------------------------
 
 
+class MagicLinkManager(AbstractBLLManager, RouterMixin):
     _model = AuthMagicLinkTokenModel
 
     prefix: ClassVar[Optional[str]] = "/v1/auth/magic-link"
@@ -144,13 +158,17 @@ def clear_send_listeners() -> None:
     def _ttl_minutes(self) -> int:
         return int(env("MAGIC_LINK_TTL_MINUTES") or 15)
 
+    def _base_url(self) -> str:
         return env("MAGIC_LINK_BASE_URL") or ""
 
+    def _resolve_user_by_email(self, email: str) -> Optional[UserModel]:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         users: List[UserModel] = UserDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 UserDB.email == email,
+                UserDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=UserModel,
@@ -159,6 +177,7 @@ def clear_send_listeners() -> None:
             return None
         return users[0]
 
+    def _send_magic_link(self, email: str, raw_token: str) -> None:
         """Email the link through the email extension (when this app loaded
         it) and notify any registered listeners, the test seam.
 
@@ -184,6 +203,7 @@ def clear_send_listeners() -> None:
             "If you did not ask to sign in, you can ignore this email.",
         )
 
+    def request_magic_link(self, email: str) -> MagicLinkResponse:
         """Issue a magic link for ``email`` if a user matches. Always returns
         the same ``accepted`` response - no enumeration."""
         user = self._resolve_user_by_email(email)
@@ -193,6 +213,7 @@ def clear_send_listeners() -> None:
             )
             TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
             TokenDB.create(
+                requester_id=user.id,
                 model_registry=self.model_registry,
                 user_id=user.id,
                 requested_email=email,
@@ -208,6 +229,9 @@ def clear_send_listeners() -> None:
 
         return MagicLinkResponse(status="accepted")
 
+    def verify_magic_link(
+        self, token: str, email: Optional[str] = None
+    ) -> MagicLinkVerifyResponse:
         # H-5 — indexed lookup via the HMAC fingerprint. Replaces the
         # bcrypt-against-every-unused-token loop that was a CPU DoS
         # primitive against unauthenticated callers. The shared resolver
@@ -218,6 +242,7 @@ def clear_send_listeners() -> None:
         matched = OneTimeTokenMixin.resolve(
             TokenDB,
             lambda filters: TokenDB.list(
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 filters=filters,
                 return_type="dto",
@@ -232,6 +257,7 @@ def clear_send_listeners() -> None:
 
         now = datetime.now(timezone.utc)
         TokenDB.update(
+            requester_id=matched.user_id,
             model_registry=self.model_registry,
             id=matched.id,
             new_properties={"is_used": True, "used_at": now},
@@ -260,8 +286,10 @@ def clear_send_listeners() -> None:
             expires_at=session.expires_at,
         )
 
+    def _invalidate_other_tokens(self, user_id: str, current_id: str) -> None:
         TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
         tokens = TokenDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 TokenDB.user_id == user_id,
@@ -274,6 +302,7 @@ def clear_send_listeners() -> None:
         now = datetime.now(timezone.utc)
         for t in tokens or []:
             TokenDB.update(
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=t.id,
                 new_properties={"is_used": True, "used_at": now},

@@ -48,10 +48,14 @@ _TOKEN = re.compile(
 )
 
 
+@dataclass(frozen=True)
+class Token:
     kind: str
     text: str
 
 
+@dataclass(frozen=True)
+class AttrPath:
     """``[urn:]attribute[.subAttribute]``."""
 
     urn: Optional[str]
@@ -65,25 +69,37 @@ _TOKEN = re.compile(
         return self.attribute.lower()
 
 
+@dataclass(frozen=True)
+class Compare:
     path: AttrPath
     operator: str
     value: Any
 
 
+@dataclass(frozen=True)
+class Present:
     path: AttrPath
 
 
+@dataclass(frozen=True)
+class And:
     left: "Filter"
     right: "Filter"
 
 
+@dataclass(frozen=True)
+class Or:
     left: "Filter"
     right: "Filter"
 
 
+@dataclass(frozen=True)
+class Not:
     inner: "Filter"
 
 
+@dataclass(frozen=True)
+class ValuePath:
     """``attribute[filter]``: some value of a multi-valued attribute
     satisfies ``inner``, whose paths name its sub-attributes."""
 
@@ -94,6 +110,8 @@ _TOKEN = re.compile(
 Filter = Union[Compare, Present, And, Or, Not, ValuePath]
 
 
+@dataclass(frozen=True)
+class PatchPath:
     """A PATCH ``path``: ``attrPath`` or ``valuePath[.subAttribute]``."""
 
     path: AttrPath
@@ -101,6 +119,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     sub_attribute: Optional[str] = None
 
 
+def _tokens(text: str, error_type: str) -> List[Token]:
     if len(text) > MAX_FILTER_LENGTH:
         raise bad_request(error_type, f"longer than {MAX_FILTER_LENGTH} characters")
     found: List[Token] = []
@@ -116,6 +135,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     return found
 
 
+def parse_attr_path(text: str, error_type: str = INVALID_FILTER) -> AttrPath:
     """``urn:…:User:name.givenName`` → urn, ``name``, ``givenName``."""
     urn: Optional[str] = None
     rest = text
@@ -128,6 +148,8 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     return AttrPath(urn, parts[0], parts[1] if len(parts) == 2 else None)
 
 
+class _Parser:
+    def __init__(self, tokens: Sequence[Token], error_type: str) -> None:
         self.tokens = tokens
         self.position = 0
         self.depth = 0
@@ -136,10 +158,12 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     def fail(self, detail: str) -> ScimError:
         return bad_request(self.error_type, detail)
 
+    def peek(self) -> Optional[Token]:
         if self.position < len(self.tokens):
             return self.tokens[self.position]
         return None
 
+    def take(self) -> Token:
         token = self.peek()
         if token is None:
             raise self.fail("ends too soon")
@@ -150,6 +174,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
         if self.take().kind != kind:
             raise self.fail(f"expected {kind}")
 
+    def keyword(self, *words: str) -> Optional[str]:
         token = self.peek()
         if token is not None and token.kind == "word" and token.text.lower() in words:
             return token.text.lower()
@@ -163,18 +188,21 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     def done(self) -> bool:
         return self.peek() is None
 
+    def disjunction(self) -> Filter:
         left = self.conjunction()
         while self.keyword("or"):
             self.take()
             left = Or(left, self.conjunction())
         return left
 
+    def conjunction(self) -> Filter:
         left = self.unary()
         while self.keyword("and"):
             self.take()
             left = And(left, self.unary())
         return left
 
+    def unary(self) -> Filter:
         if self.keyword("not"):
             self.take()
             self.nested()
@@ -193,6 +221,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
             return inner
         return self.attribute_expression()
 
+    def attribute_expression(self) -> Filter:
         token = self.take()
         if token.kind != "word":
             raise self.fail("expected an attribute")
@@ -210,6 +239,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
         _check_operands(name, value)
         return Compare(path, name, value)
 
+    def value_path(self, path: AttrPath) -> ValuePath:
         if path.sub_attribute:
             raise self.fail("a value filter follows an attribute, not a sub-attribute")
         self.expect("lbracket")
@@ -219,6 +249,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
         self.depth -= 1
         return ValuePath(path, inner)
 
+    def value(self) -> Any:
         token = self.take()
         if token.kind == "string":
             try:
@@ -234,6 +265,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
         raise self.fail(f"{token.text!r} is not a value")
 
 
+def parse_filter(text: str) -> Filter:
     """A ``filter`` expression, or a 400 ``invalidFilter``."""
     parser = _Parser(_tokens(text, INVALID_FILTER), INVALID_FILTER)
     if parser.done():
@@ -244,6 +276,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     return expression
 
 
+def parse_patch_path(text: str) -> PatchPath:
     """A PATCH ``path``, or a 400 ``invalidPath``."""
     parser = _Parser(_tokens(text, INVALID_PATH), INVALID_PATH)
     token = parser.take()
@@ -269,6 +302,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     return PatchPath(path, value_path.inner, sub_attribute)
 
 
+def lookup(container: Mapping[str, Any], name: str) -> Optional[str]:
     """The key ``container`` holds for ``name``, ignoring case."""
     if name in container:
         return name
@@ -279,12 +313,14 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     return None
 
 
+def get(container: Any, name: str) -> Any:
     if not isinstance(container, Mapping):
         return None
     key = lookup(container, name)
     return None if key is None else container[key]
 
 
+def base_of(resource: Mapping[str, Any], path: AttrPath) -> Any:
     """Where ``path``'s attribute lives: the resource for core attributes,
     the extension's object for an extension schema's."""
     if path.urn is None or path.urn.lower() in CORE_URNS:
@@ -292,6 +328,7 @@ Filter = Union[Compare, Present, And, Or, Not, ValuePath]
     return get(resource, path.urn)
 
 
+def values_at(resource: Mapping[str, Any], path: AttrPath) -> List[Any]:
     """The leaf values ``path`` names: a multi-valued complex attribute
     without a sub-attribute stands for its ``value`` sub-attribute."""
     value = get(base_of(resource, path), path.attribute)
@@ -315,6 +352,7 @@ def _present(value: Any) -> bool:
     return value not in (None, "", [], {})
 
 
+def _check_operands(operator: str, expected: Any) -> None:
     """Refuse an operator that cannot apply to the value's type."""
     if expected is None or isinstance(expected, bool):
         if operator not in ("eq", "ne"):
@@ -328,6 +366,7 @@ def _present(value: Any) -> bool:
         raise bad_request(INVALID_FILTER, f"cannot compare with {expected!r}")
 
 
+def _compare_one(actual: Any, operator: str, expected: Any, case_exact: bool) -> bool:
     """Whether one attribute value is ``operator`` ``expected`` (an
     equality test for ``ne``, which the caller negates)."""
     if isinstance(expected, bool) or isinstance(actual, bool):
@@ -358,6 +397,7 @@ def _present(value: Any) -> bool:
     return _ordered(actual, operator, expected)
 
 
+def _ordered(left: Any, operator: str, right: Any) -> bool:
     if operator == "gt":
         return bool(left > right)
     if operator == "ge":
@@ -367,6 +407,7 @@ def _present(value: Any) -> bool:
     return bool(left <= right)
 
 
+def _compare(resource: Mapping[str, Any], node: Compare, parent: Optional[str]) -> bool:
     values = values_at(resource, node.path)
     if node.value is None:
         return bool(values) if node.operator == "ne" else not values
@@ -376,6 +417,9 @@ def _present(value: Any) -> bool:
     return not hits if node.operator == "ne" else hits
 
 
+def matches(
+    expression: Filter, resource: Mapping[str, Any], parent: Optional[str] = None
+) -> bool:
     """Whether ``resource`` satisfies ``expression``. ``parent`` names the
     multi-valued attribute when ``resource`` is one of its values."""
     if isinstance(expression, And):
@@ -401,6 +445,7 @@ def _present(value: Any) -> bool:
     return _compare(resource, expression, parent)
 
 
+def equality_seed(expression: Filter) -> Optional[Dict[str, Any]]:
     """The values a filter of ``a eq x [and b eq y …]`` pins, so a PATCH
     that targets a value no element holds yet can add that element (as
     ``emails[type eq "work"].value`` adds the work address); None for any
@@ -423,6 +468,11 @@ def _present(value: Any) -> bool:
 SORT_ORDERS = frozenset({"ascending", "descending"})
 
 
+def sort_resources(
+    resources: Sequence[Dict[str, Any]],
+    sort_by: Optional[str],
+    sort_order: Optional[str],
+) -> Tuple[Dict[str, Any], ...]:
     """``resources`` ordered by ``sortBy``'s first value (RFC 7644
     §3.4.2.3): ascending unless ``sortOrder`` says descending, strings
     ignoring case except on case-exact attributes, resources without a
@@ -435,6 +485,7 @@ SORT_ORDERS = frozenset({"ascending", "descending"})
     path = parse_attr_path(sort_by.strip(), INVALID_VALUE)
     case_exact = path.dotted in CASE_EXACT
 
+    def first(resource: Dict[str, Any]) -> Any:
         values = values_at(resource, path)
         if not values or isinstance(values[0], (dict, list)):
             return None

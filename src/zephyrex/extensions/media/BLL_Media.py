@@ -60,6 +60,7 @@ HTTP_SERVER_ERROR = 500
 CATALOGUE_SILENT = "The film catalogue did not answer; try again shortly"
 
 
+class WatchListModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["WatchListManager"]]
     name: str = Field(..., description="What the list is called, e.g. 'Movie night'")
 
@@ -77,6 +78,7 @@ CATALOGUE_SILENT = "The film catalogue did not answer; try again shortly"
         name: Optional[StringSearchModel] = None
 
 
+class WatchListMemberModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["WatchListManager"]]
     list_id: str = Field(..., description="The list")
     user_id: str = Field(..., description="An account the list is shared with")
@@ -94,6 +96,7 @@ CATALOGUE_SILENT = "The film catalogue did not answer; try again shortly"
         list_id: Optional[StringSearchModel] = None
 
 
+class WatchListTitleModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["WatchListManager"]]
     list_id: str = Field(..., description="The list")
     media_id: str = Field(..., description="The catalogue's id, e.g. tmdb:movie:603")
@@ -125,6 +128,7 @@ CATALOGUE_SILENT = "The film catalogue did not answer; try again shortly"
         list_id: Optional[StringSearchModel] = None
 
 
+class WatchListWantModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["WatchListManager"]]
     title_id: str = Field(..., description="The title someone wants to see")
 
@@ -245,6 +249,7 @@ def _delete(model: Any, model_registry: Any, row_id: str) -> None:
     )
 
 
+def tonight(titles: List[TitleEntry], people: int, list_id: str, today: date) -> Pick:
     """Tonight's pick from ``titles``: unwatched ones everyone (``people``)
     wants, else those the most want; among equals, one chosen by the day, so
     everyone on the list sees the same pick until tomorrow."""
@@ -261,6 +266,7 @@ def _delete(model: Any, model_registry: Any, row_id: str) -> None:
     seed = int(
         hashlib.sha256(f"{list_id}:{today.isoformat()}".encode()).hexdigest(), 16
     )
+    chosen = random.Random(seed).choice(best)
     return Pick(title=chosen, everyone=most >= people, wanted_by=most, of=people)
 
 
@@ -299,6 +305,7 @@ def _item(found: Dict[str, Any]) -> MediaItem:
     )
 
 
+class WatchListManager(AbstractBLLManager, RouterMixin):
     """``/v1/watch-lists``: the lists someone keeps or is on."""
 
     _model = WatchListModel
@@ -352,6 +359,7 @@ def _item(found: Dict[str, Any]) -> MediaItem:
             raise HTTPException(status_code=404, detail="Title not found") from err
         return found[0], everyone
 
+    def _titles(self, list_id: str) -> List[TitleEntry]:
         titles = _rows(
             WatchListTitleModel, self.model_registry, lambda db: [db.list_id == list_id]
         )
@@ -661,6 +669,7 @@ WatchListTitleModel.Manager = WatchListManager
 WatchListWantModel.Manager = WatchListManager
 
 
+def erase_watch_lists(user_id: str, model_registry: Any) -> None:
     """A deleted account's lists go with their titles, members and wants;
     it leaves the lists it was on, and its wants go. Titles it added to
     others' lists stay theirs. Safe to run twice."""

@@ -20,6 +20,7 @@ from zephyrex.lib.ProviderHTTPClient import path_segment
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
+class PRV_WhatsApp_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "whatsapp"
     friendly_name: ClassVar[str] = "WhatsApp"
     description: ClassVar[str] = "WhatsApp Business Cloud API"

@@ -55,11 +55,13 @@ def primary_write_seen() -> bool:
     return _primary_write_seen_var.get()
 
 
+def should_route_to_replica() -> bool:
     """Decision rule: route to replica iff read_only is set AND no
     primary write has occurred in this request."""
     return get_read_only() and not primary_write_seen()
 
 
+def read_only(fn: Callable) -> Callable:
     """Mark a BLL method as safe to route to a replica.
 
     The session binder consults the marker at dispatch time and binds
@@ -74,12 +76,16 @@ def primary_write_seen() -> bool:
     """
     fn._read_only = True  # type: ignore[attr-defined]
 
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
         token = _read_only_var.set(True)
         try:
             return fn(*args, **kwargs)
         finally:
             _read_only_var.reset(token)
 
+    @functools.wraps(fn)
+    async def async_wrapper(*args, **kwargs):
         token = _read_only_var.set(True)
         try:
             return await fn(*args, **kwargs)
@@ -100,12 +106,15 @@ def is_read_only(fn: Callable) -> bool:
 
 # Replica-pool registry (parsed from env vars at startup; populated by
 # the session binder).
+class ReplicaPool:
     """Round-robin replica selector; health-aware."""
 
+    def __init__(self, urls: List[str]) -> None:
         self._urls = list(urls)
         self._next = 0
         self._unhealthy: set = set()
 
+    def next_url(self) -> Optional[str]:
         """Return the next healthy replica URL, or None if no replicas
         are configured / all are unhealthy. Caller falls back to
         primary on None."""
@@ -118,8 +127,10 @@ def is_read_only(fn: Callable) -> bool:
                 return url
         return None
 
+    def mark_unhealthy(self, url: str) -> None:
         self._unhealthy.add(url)
 
+    def mark_healthy(self, url: str) -> None:
         self._unhealthy.discard(url)
 
 

@@ -28,6 +28,7 @@ MONGODB_SERVER_SELECTION_TIMEOUT_MS = 5000
 MONGODB_OPERATIONS = {"find", "count", "aggregate", "insert", "update", "delete"}
 
 
+class PRV_MongoDB(AbstractDatabaseProvider):
     """MongoDB document database provider (static, rotation-compatible)."""
 
     name: ClassVar[str] = "MongoDB"
@@ -57,6 +58,8 @@ MONGODB_OPERATIONS = {"find", "count", "aggregate", "insert", "update", "delete"
             ),
         }
 
+    @classmethod
+    def _get_client(cls, config: Dict[str, Any]) -> Any:
         """A MongoClient for the resolved configuration, verified reachable."""
         cls.require_driver(_pymongo_available, "pymongo")
         cls.require_config(config, "database_name")
@@ -78,6 +81,7 @@ MONGODB_OPERATIONS = {"find", "count", "aggregate", "insert", "update", "delete"
                 uri, serverSelectionTimeoutMS=MONGODB_SERVER_SELECTION_TIMEOUT_MS
             )
             client.admin.command("ping")
+        except Exception as exc:
             raise cls.connection_failed(exc) from exc
         return client
 

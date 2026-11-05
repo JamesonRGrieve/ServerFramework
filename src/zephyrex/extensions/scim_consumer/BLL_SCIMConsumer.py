@@ -155,11 +155,13 @@ class ScimConnectionModel(
         "SCIM 2.0 identity-provider connections provisioning into this server"
     )
 
+    class Create(BaseModel, NameMixinModel, RoleModel.Reference.ID.Optional):
         auto_create_users: bool = True
         link_existing_users: bool = False
         delete_on_deprovision: bool = False
         is_enabled: bool = True
 
+    class Update(BaseModel, NameMixinModel.Optional, RoleModel.Reference.ID.Optional):
         auto_create_users: Optional[bool] = None
         link_existing_users: Optional[bool] = None
         delete_on_deprovision: Optional[bool] = None
@@ -190,11 +192,13 @@ class ScimResourceModel(
     table_comment: ClassVar[str] = "Users and teams each SCIM connection provisions"
     permission_references: ClassVar[List[str]] = ["scim_connection"]
 
+    class Create(BaseModel, ScimConnectionModel.Reference.ID):
         resource_type: str
         local_id: str
         external_id: Optional[str] = None
         deprovisioned_at: Optional[datetime] = None
 
+    class Update(BaseModel):
         external_id: Optional[str] = None
         deprovisioned_at: Optional[datetime] = None
 
@@ -227,6 +231,7 @@ class ScimProvisioningLogModel(
     table_comment: ClassVar[str] = "Provisioning requests SCIM connections made"
     permission_references: ClassVar[List[str]] = ["scim_connection"]
 
+    class Create(BaseModel, ScimConnectionModel.Reference.ID):
         resource_type: str
         operation: str
         scim_id: Optional[str] = None
@@ -235,6 +240,7 @@ class ScimProvisioningLogModel(
         error_detail: Optional[str] = None
         received_at: Optional[datetime] = None
 
+    class Update(BaseModel):
         pass
 
     class Search(
@@ -254,6 +260,7 @@ class ScimProvisioningLogModel(
 # ---------------------------------------------------------------------------
 
 
+class ScimConnectionRegistration(RouteModel):
     name: str = Field(..., description="The identity provider, for people")
     role_id: Optional[str] = Field(
         None, description="Members' role in provisioned teams (default: user)"
@@ -263,9 +270,11 @@ class ScimProvisioningLogModel(
     delete_on_deprovision: bool = False
 
 
+class ScimTokenRotation(RouteModel):
     """No fields: the server makes the token."""
 
 
+class ScimTokenIssued(RouteModel):
     """Returned once: the server keeps only the token's digest."""
 
     id: str
@@ -274,15 +283,18 @@ class ScimProvisioningLogModel(
     base_path: str = Field(..., description="Where the SCIM endpoints are")
 
 
+class ScimBody(RouteModel):
     """A SCIM request body, kept whole for the protocol code to read."""
 
     model_config = ConfigDict(extra="allow")
 
 
+class ScimResponse(JSONResponse):
     """A SCIM response: ``application/scim+json``, empty when ``None``."""
 
     media_type = SCIM_MEDIA_TYPE
 
+    def render(self, content: Any) -> bytes:
         if content is None:
             return b""
         rendered: bytes = super().render(content)
@@ -298,12 +310,14 @@ def _error_response(error: ScimError) -> ScimResponse:
 # ---------------------------------------------------------------------------
 
 
+def _require_root(requester_id: str) -> None:
     if not is_root_id(requester_id):
         raise HTTPException(
             status_code=403, detail="Only root manages SCIM connections"
         )
 
 
+class ScimConnectionManager(AbstractBLLManager, RouterMixin):
     """Root's identity-provider connections. Registered (and their tokens
     rotated) through custom routes, so the server makes every token."""
 
@@ -326,19 +340,24 @@ def _error_response(error: ScimError) -> ScimResponse:
             detail="Register a connection: POST /v1/scim/connection/register",
         )
 
+    def _check_role(self, role_id: Optional[str]) -> None:
         if role_id is None:
             return
         RoleDB = RoleModel.DB(self.model_registry.DB.manager.Base)
         if not RoleDB.exists(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=role_id,
         ):
             raise HTTPException(status_code=404, detail="Role not found")
 
+    def register(self, **fields: Any) -> ScimTokenIssued:
         _require_root(self.requester.id)
         registration = ScimConnectionRegistration(**fields)
         self._check_role(registration.role_id)
+        raw = TOKEN_PREFIX + secrets.token_urlsafe(TOKEN_BYTES)
         record = self.DB.create(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -350,10 +369,13 @@ def _error_response(error: ScimError) -> ScimResponse:
             id=record.id, name=record.name, token=raw, base_path=SCIM_PREFIX
         )
 
+    def rotate_token(self, id: str) -> ScimTokenIssued:
         """A new token for the connection; the old one stops working."""
         _require_root(self.requester.id)
         connection = self.get(id=id)
+        raw = TOKEN_PREFIX + secrets.token_urlsafe(TOKEN_BYTES)
         self.DB.update(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=id,
             new_properties={"token_hash": token_digest(raw)},
@@ -362,6 +384,7 @@ def _error_response(error: ScimError) -> ScimResponse:
             id=id, name=connection.name, token=raw, base_path=SCIM_PREFIX
         )
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         _require_root(self.requester.id)
         self._check_role(kwargs.get("role_id"))
         return super().update(id, **kwargs)
@@ -399,6 +422,7 @@ def _error_response(error: ScimError) -> ScimResponse:
         return self.rotate_token(connection_id)
 
 
+class ScimProvisioningLogManager(AbstractBLLManager, RouterMixin):
     """Read-only: the log is written by the protocol endpoints."""
 
     _model = ScimProvisioningLogModel
@@ -425,10 +449,12 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
     return display
 
 
+class ScimDirectory:
     """What one connection provisioned, read and changed for it. Accounts
     are read and written as root (the connection is root's), teams as
     system; nothing outside the connection's links is reachable."""
 
+    def __init__(self, model_registry: Any, connection: Any, base: str) -> None:
         self.registry = model_registry
         self.connection = connection
         self.base = base
@@ -437,12 +463,17 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
         self.teams_db = TeamModel.DB(declarative)
         self.memberships_db = UserTeamModel.DB(declarative)
         self.links_db = ScimResourceModel.DB(declarative)
+        self.root_id = env("ROOT_ID")
+        self.system_id = env("SYSTEM_ID")
 
     # -- reading ----------------------------------------------------------
 
+    def _rows(self, db: Any, *filters: Any) -> List[Dict[str, Any]]:
         """Live rows (root's reads include deleted ones unless told not to)."""
         rows: List[Dict[str, Any]] = db.list(
+            requester_id=self.root_id,
             model_registry=self.registry,
+            filters=[db.deleted_at.is_(None), *filters],
             return_type="dict",
         )
         return rows
@@ -450,6 +481,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
     def location(self, resource_type: str, identifier: str) -> str:
         return f"{self.base}/{resource_type}s/{identifier}"
 
+    def links(self, resource_type: str, ended: bool = False) -> List[Dict[str, Any]]:
         """The connection's links of ``resource_type``, oldest first; with
         ``ended``, also those the provider deleted."""
         rows = self._rows(
@@ -461,15 +493,20 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             rows = [row for row in rows if row.get("deprovisioned_at") is None]
         return sorted(rows, key=lambda row: (str(row.get("created_at")), row["id"]))
 
+    def link(self, resource_type: str, local_id: str) -> Dict[str, Any]:
         for row in self.links(resource_type):
             if row["local_id"] == local_id:
                 return row
         raise ScimError(404, f"{resource_type} {local_id} not found")
 
+    def _by_id(self, db: Any, ids: Set[str]) -> Dict[str, Dict[str, Any]]:
         if not ids:
             return {}
         return {row["id"]: row for row in self._rows(db, db.id.in_(sorted(ids)))}
 
+    def _memberships(
+        self, team_ids: Set[str], user_ids: Set[str]
+    ) -> List[Dict[str, Any]]:
         if not team_ids or not user_ids:
             return []
         return self._rows(
@@ -478,6 +515,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             self.memberships_db.user_id.in_(sorted(user_ids)),
         )
 
+    def render_users(self, links: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         users = self._by_id(self.users_db, {link["local_id"] for link in links})
         teams = self._by_id(
             self.teams_db, {link["local_id"] for link in self.links(GROUP)}
@@ -501,6 +539,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             if link["local_id"] in users
         ]
 
+    def render_groups(self, links: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         teams = self._by_id(self.teams_db, {link["local_id"] for link in links})
         users = self._by_id(
             self.users_db, {link["local_id"] for link in self.links(USER)}
@@ -524,11 +563,13 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             if link["local_id"] in teams
         ]
 
+    def resources(self, resource_type: str) -> List[Dict[str, Any]]:
         links = self.links(resource_type)
         if resource_type == USER:
             return self.render_users(links)
         return self.render_groups(links)
 
+    def resource(self, resource_type: str, local_id: str) -> Dict[str, Any]:
         links = [self.link(resource_type, local_id)]
         rendered = (
             self.render_users(links)
@@ -548,6 +589,9 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
         ):
             raise ScimError(412, "The resource has changed since that version")
 
+    def _external_id_free(
+        self, resource_type: str, external_id: Optional[str], local_id: Optional[str]
+    ) -> None:
         if external_id is None:
             return
         for row in self.links(resource_type):
@@ -570,7 +614,9 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             external_id=external_id,
         )
 
+    def _update_link(self, link_id: str, **properties: Any) -> None:
         self.links_db.update(
+            requester_id=self.root_id,
             model_registry=self.registry,
             id=link_id,
             new_properties=properties,
@@ -601,9 +647,12 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
         )
         return [row for row in rows if row["id"] != other_than]
 
+    def _write_user(self, user_id: str, fields: UserFields) -> None:
+        UserManager(requester_id=self.root_id, model_registry=self.registry).update(
             id=user_id, **fields.columns()
         )
 
+    def create_user(self, payload: Any) -> Dict[str, Any]:
         fields = self._valid(parse_user(payload))
         self._external_id_free(USER, fields.external_id, None)
         accounts = self._accounts(fields, None)
@@ -619,6 +668,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             )
         else:
             created = self.users_db.create(
+                requester_id=self.root_id,
                 model_registry=self.registry,
                 return_type="dict",
                 **fields.columns(),
@@ -627,6 +677,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             self._create_link(USER, account_id, fields.external_id)
         return self.resource(USER, account_id)
 
+    def _adopt(self, account_id: str, fields: UserFields) -> str:
         """Link an existing account: one this connection provisioned before
         (and the provider deleted), or, when the connection adopts
         accounts, any account but the internal ones."""
@@ -652,6 +703,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             self._create_link(USER, account_id, fields.external_id)
         return account_id
 
+    def _store_user(self, user_id: str, fields: UserFields) -> Dict[str, Any]:
         link = self.link(USER, user_id)
         if self._accounts(fields, user_id):
             raise ScimError(
@@ -677,22 +729,27 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
         patched = apply_patch(current, payload, USER_READ_ONLY)
         return self._store_user(user_id, self._valid(parse_user(patched)))
 
+    def delete_user(self, user_id: str, if_match: Optional[str]) -> None:
         self.precondition(self.resource(USER, user_id), if_match)
         link = self.link(USER, user_id)
         for team_link in self.links(GROUP):
             self._set_members(team_link["local_id"], remove={user_id})
+        UserManager(requester_id=self.root_id, model_registry=self.registry).update(
             id=user_id, active=False
         )
         self._update_link(link["id"], deprovisioned_at=_now())
         if self.connection.delete_on_deprovision:
             self.users_db.delete(
+                requester_id=self.root_id, model_registry=self.registry, id=user_id
             )
 
     # -- groups -----------------------------------------------------------
 
+    def _role_id(self) -> str:
         role: str = self.connection.role_id or env("USER_ROLE_ID")
         return role
 
+    def _check_group(self, fields: GroupFields, team_id: Optional[str]) -> Set[str]:
         """The members' ids, once the name, externalId and members check."""
         try:
             TeamModel.Update(name=fields.display_name)
@@ -716,6 +773,12 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             )
         return set(fields.member_ids)
 
+    def _set_members(
+        self,
+        team_id: str,
+        wanted: Optional[Set[str]] = None,
+        remove: Optional[Set[str]] = None,
+    ) -> None:
         """Make the connection's users in the team exactly ``wanted``, or
         take ``remove`` out; members the connection did not provision are
         left as they are."""
@@ -729,6 +792,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
             else set(held) & (remove or set())
         )
         memberships = UserTeamManager(
+            requester_id=self.root_id, model_registry=self.registry
         )
         for user_id in sorted(leaving):
             for membership_id in held[user_id]:
@@ -738,11 +802,13 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
                 team_id=team_id, user_id=user_id, role_id=self._role_id()
             )
 
+    def create_group(self, payload: Any) -> Dict[str, Any]:
         fields = parse_group(payload)
         members = self._check_group(fields, None)
         # Created as system, not through TeamManager, which would make the
         # creator an admin member of every provisioned team.
         team = self.teams_db.create(
+            requester_id=self.system_id,
             model_registry=self.registry,
             return_type="dict",
             name=fields.display_name,
@@ -751,8 +817,10 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
         self._set_members(team["id"], wanted=members)
         return self.resource(GROUP, team["id"])
 
+    def _store_group(self, team_id: str, fields: GroupFields) -> Dict[str, Any]:
         link = self.link(GROUP, team_id)
         members = self._check_group(fields, team_id)
+        TeamManager(requester_id=self.system_id, model_registry=self.registry).update(
             id=team_id, name=fields.display_name
         )
         if link.get("external_id") != fields.external_id:
@@ -774,10 +842,12 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
         patched = apply_patch(current, payload, GROUP_READ_ONLY)
         return self._store_group(team_id, parse_group(patched))
 
+    def delete_group(self, team_id: str, if_match: Optional[str]) -> None:
         self.precondition(self.resource(GROUP, team_id), if_match)
         link = self.link(GROUP, team_id)
         self._set_members(team_id, wanted=set())
         self.teams_db.delete(
+            requester_id=self.system_id, model_registry=self.registry, id=team_id
         )
         self._update_link(link["id"], deprovisioned_at=_now())
 
@@ -787,6 +857,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _scim_route(method: str, path: str, summary: str, body: bool = False) -> Any:
     """``@custom_route`` for a SCIM endpoint: public at the framework's
     door (the connection's bearer token is checked here), REST only, and
     answering SCIM's own media type."""
@@ -805,6 +876,7 @@ def _member_display(user: Dict[str, Any]) -> Optional[str]:
 Action = Callable[[ScimDirectory], ScimResponse]
 
 
+class ScimResourceManager(AbstractBLLManager, RouterMixin):
     """The SCIM 2.0 protocol, for the connection whose token is presented."""
 
     _model = ScimResourceModel
@@ -814,6 +886,7 @@ Action = Callable[[ScimDirectory], ScimResponse]
     auth_type: ClassVar[AuthType] = AuthType.NONE
     routes_to_register: ClassVar[Optional[List[RouteType]]] = []
 
+    def _connection(self, request: Request) -> Any:
         scheme, _, credential = request.headers.get("authorization", "").partition(" ")
         refused = ScimError(
             401,
@@ -825,13 +898,16 @@ Action = Callable[[ScimDirectory], ScimResponse]
         digest = token_digest(credential.strip())
         ConnectionDB = ScimConnectionModel.DB(self.model_registry.DB.manager.Base)
         found = ConnectionDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 ConnectionDB.token_hash == digest,
+                ConnectionDB.deleted_at.is_(None),
             ],
             return_type="db",
         )
         for connection in found:
+            if connection.is_enabled and hmac.compare_digest(
                 connection.token_hash or "", digest
             ):
                 return connection
@@ -859,6 +935,7 @@ Action = Callable[[ScimDirectory], ScimResponse]
     ) -> ScimResponse:
         """``_serve`` for a change, logged whichever way it goes."""
 
+        def logged(directory: ScimDirectory) -> ScimResponse:
             try:
                 response = action(directory)
             except ScimError as error:
@@ -909,8 +986,10 @@ Action = Callable[[ScimDirectory], ScimResponse]
             headers["Location"] = resource["meta"]["location"]
         return ScimResponse(resource, status_code=status_code, headers=headers)
 
+    def _list(self, request: Request, resource_type: str) -> ScimResponse:
         query = request.query_params
 
+        def answer(directory: ScimDirectory) -> ScimResponse:
             start, size = page_bounds(query.get("startIndex"), query.get("count"))
             selected = filter_resources(
                 directory.resources(resource_type), query.get("filter")
@@ -926,8 +1005,10 @@ Action = Callable[[ScimDirectory], ScimResponse]
 
         return self._serve(request, answer)
 
+    def _get(self, request: Request, resource_type: str, local_id: str) -> ScimResponse:
         query = request.query_params
 
+        def answer(directory: ScimDirectory) -> ScimResponse:
             resource = directory.resource(resource_type, local_id)
             version = resource["meta"]["version"]
             if etag_matches(request.headers.get("if-none-match"), version):

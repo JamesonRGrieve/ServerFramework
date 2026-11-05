@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterator, Optional, Tuple
 from zephyrex.lib.Metrics import MetricsBackend, _current_span_id_var
 
 
+class PrometheusMetricsBackend(MetricsBackend):
     """Adapts the framework's metrics surface to ``prometheus_client``.
 
     The dependency is optional — instantiating this backend without
@@ -151,6 +152,7 @@ from zephyrex.lib.Metrics import MetricsBackend, _current_span_id_var
         return (self._client.generate_latest(), self._client.CONTENT_TYPE_LATEST)
 
 
+class OpenTelemetryMetricsBackend(MetricsBackend):
     """Adapts the framework's metrics surface to the OpenTelemetry SDK.
 
     Both ``opentelemetry.metrics`` and ``opentelemetry.trace`` are imported

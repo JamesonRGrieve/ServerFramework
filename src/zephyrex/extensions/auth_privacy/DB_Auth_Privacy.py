@@ -5,6 +5,7 @@ from zephyrex.database.Base import Base
 from zephyrex.database.DB_Auth import TeamRefMixin, UserRefMixin
 
 
+class DataRegion(Base, BaseMixin, UpdateMixin):
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     is_available = Column(Boolean, default=True)

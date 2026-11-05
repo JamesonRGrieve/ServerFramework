@@ -55,12 +55,14 @@ CUSTOM_ID_CHARACTERS = 127
 DESCRIPTION_CHARACTERS = 127
 
 
+def _link(resource: Mapping[str, Any], *relations: str) -> Optional[str]:
     for link in resource.get("links") or []:
         if isinstance(link, Mapping) and link.get("rel") in relations:
             return str(link.get("href"))
     return None
 
 
+def _total(entries: List[Any]) -> Decimal:
     return sum(
         (
             Decimal(str((entry.get("amount") or {}).get("value") or "0"))
@@ -72,6 +74,7 @@ DESCRIPTION_CHARACTERS = 127
     )
 
 
+def _moment(text: Any) -> Optional[datetime]:
     if not isinstance(text, str):
         return None
     try:
@@ -80,6 +83,7 @@ DESCRIPTION_CHARACTERS = 127
         return None
 
 
+class PRV_PayPal_Payment(AbstractPaymentProvider):
     name: ClassVar[str] = "paypal"
     friendly_name: ClassVar[str] = "PayPal"
     description: ClassVar[str] = "A PayPal business account (a REST app)"
@@ -135,9 +139,12 @@ DESCRIPTION_CHARACTERS = 127
         "description",
     )
 
+    @classmethod
+    async def token(cls, instance: ProviderInstanceModel) -> str:
         client_id = cls.required(instance, "client_id")
         secret = cls.required(instance, "api_key")
 
+        async def exchange() -> Tuple[str, float]:
             basic = base64.b64encode(f"{client_id}:{secret}".encode()).decode()
             try:
                 answer = await cls.call(
@@ -189,6 +196,10 @@ DESCRIPTION_CHARACTERS = 127
             raise TransientExternalError("PayPal answered without a JSON object")
         return answer
 
+    @classmethod
+    def payment(
+        cls, instance: ProviderInstanceModel, order: Mapping[str, Any]
+    ) -> Dict[str, Any]:
         unit = (order.get("purchase_units") or [{}])[0]
         money = unit.get("amount") or {}
         currency = str(money.get("currency_code") or "USD")
@@ -211,6 +222,10 @@ DESCRIPTION_CHARACTERS = 127
             approval_url=_link(order, "approve", "payer-action"),
         )
 
+    @classmethod
+    async def create_payment(
+        cls, instance: ProviderInstanceModel, request: PaymentRequest
+    ) -> Dict[str, Any]:
         unit: Dict[str, Any] = {
             "amount": {
                 "currency_code": request.currency,
@@ -254,6 +269,10 @@ DESCRIPTION_CHARACTERS = 127
         order = await cls.paypal(instance, "GET", cls._order_path(payment_id))
         return cls.payment(instance, order)
 
+    @classmethod
+    async def capture_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
         """An approved order's payment taken: captured at once (intent
         CAPTURE, all of it), or authorized and then captured (intent
         AUTHORIZE, all of it or ``amount``)."""
@@ -305,6 +324,10 @@ DESCRIPTION_CHARACTERS = 127
         )
         return await cls.get_payment(instance, payment_id)
 
+    @classmethod
+    async def refund_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
         order = await cls.paypal(instance, "GET", cls._order_path(payment_id))
         unit = (order.get("purchase_units") or [{}])[0]
         captures = [
@@ -364,6 +387,10 @@ DESCRIPTION_CHARACTERS = 127
             f"{path_segment(subscription_id, 'subscription id')}"
         )
 
+    @classmethod
+    async def create_subscription(
+        cls, instance: ProviderInstanceModel, request: SubscriptionRequest
+    ) -> Dict[str, Any]:
         if request.trial_days is not None:
             raise cls.cannot("add a trial: the plan's billing cycles set it")
         body: Dict[str, Any] = {
@@ -394,6 +421,10 @@ DESCRIPTION_CHARACTERS = 127
         )
         return cls.subscription(instance, subscription)
 
+    @classmethod
+    async def cancel_subscription(
+        cls, instance: ProviderInstanceModel, subscription_id: str, at_period_end: bool
+    ) -> Dict[str, Any]:
         if at_period_end:
             raise cls.cannot("end a subscription at the period's end, only now")
         path = cls._subscription_path(subscription_id)
@@ -405,6 +436,10 @@ DESCRIPTION_CHARACTERS = 127
         )
         return await cls.get_subscription(instance, subscription_id)
 
+    @classmethod
+    async def verify_webhook(
+        cls, instance: ProviderInstanceModel, payload: bytes, headers: Dict[str, str]
+    ) -> Dict[str, Any]:
         webhook_id = cls.required(instance, "webhook_id")
         signed = {field: headers.get(header) for field, header in _SIGNED.items()}
         if not all(signed.values()):

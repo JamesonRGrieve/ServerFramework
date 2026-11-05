@@ -57,6 +57,7 @@ import sys as _sys
 from types import ModuleType as _ModuleType
 
 
+class _AbstractLogicManagerPackage(_ModuleType):
     """Package module type exposing ``_entity_cache`` as a live view of the
     single source of truth defined in ``manager``.
 

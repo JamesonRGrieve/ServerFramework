@@ -61,6 +61,7 @@ class Connection:
     discriminator: Optional[str]
 
 
+class SocialGraph:
     """The undirected graph of ``ties`` of the given ``kinds`` that are in
     effect ``at`` a moment; every moment when ``at`` is None."""
 
@@ -118,6 +119,7 @@ class Connection:
                     found.setdefault(metamour, set()).add(partner)
         return found
 
+    def ties_among(self, person_ids: Iterable[str]) -> List[Tie]:
         """Each tie between two of ``person_ids``, once whichever way it was
         stored, ordered by its ends then kind: the edges to draw a network. A
         symmetric tie's ends are sorted; a directed one keeps its subject
@@ -146,6 +148,7 @@ class Connection:
             )
         ]
 
+    def network(self, person_id: str, depth: Optional[int] = None) -> Dict[str, int]:
         """Everyone reachable from ``person_id`` with their distance (1 = a
         direct tie), up to ``depth`` steps away."""
         found: Dict[str, int] = {}

@@ -30,6 +30,7 @@ from zephyrex.lib.SecretEncryption import (
 )
 
 
+class EXT_SAMLConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "saml_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = "Sign in through external SAML 2.0 identity providers"

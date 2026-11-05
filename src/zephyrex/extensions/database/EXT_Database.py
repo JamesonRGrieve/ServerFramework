@@ -30,6 +30,7 @@ class DatabaseConnection(AbstractProviderInstance):
         self.config = config
 
 
+class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
     """Abstract base class for database service providers.
 
     Providers are static; the connection settings belong to the rotated
@@ -294,6 +295,8 @@ class DatabaseConnection(AbstractProviderInstance):
 
         return cls.db_type
 
+    @classmethod
+    def get_db_classifications(cls) -> Set[str]:
         """Get the classifications for this database type."""
 
         if cls.extension and hasattr(cls.extension, "get_database_classifications"):
@@ -303,6 +306,7 @@ class DatabaseConnection(AbstractProviderInstance):
                     db_type=db_type
                 )
                 return set(classifications.keys())
+            except Exception as exc:
                 logger.debug(
                     f"Error getting database classifications from extension for {cls.db_type}: {exc}"
                 )
@@ -369,6 +373,7 @@ class DatabaseConnection(AbstractProviderInstance):
         }
 
 
+class EXT_Database(AbstractStaticExtension):
     """
     Database extension for AGInfrastructure.
 

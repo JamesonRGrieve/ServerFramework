@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Dict, List
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticProvider
 
 
+class AbstractSearchProvider(AbstractStaticProvider):
     """Abstract search index provider.
 
     Concrete implementations declare their settings via the typed

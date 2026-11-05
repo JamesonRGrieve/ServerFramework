@@ -123,10 +123,13 @@ _UNVERIFIED_EMAIL = (
 Result = TypeVar("Result")
 
 
+def _digest(secret: str) -> str:
     """SHA-256 of a random secret: what is stored in its place."""
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
+def _same_digest(stored: Optional[str], secret: Optional[str]) -> bool:
+    return bool(stored and secret) and hmac.compare_digest(
         str(stored), _digest(str(secret))
     )
 
@@ -140,6 +143,12 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+class OAuthIdentityModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference,
+    metaclass=ModelMeta,
+):
     """A local user's account at an identity provider. The provider's
     tokens are encrypted, and never serialized."""
 
@@ -172,6 +181,7 @@ def _now() -> datetime:
         "A local user's account at an external identity provider (OAuth/OIDC)"
     )
 
+    class Create(BaseModel, UserModel.Reference.ID.Optional):
         provider_instance_id: str
         provider: str
         issuer: Optional[str] = None
@@ -186,6 +196,7 @@ def _now() -> datetime:
         last_login_at: Optional[datetime] = None
 
     # Written by the sign-in flow only: no update route exists.
+    class Update(BaseModel):
         email: Optional[str] = None
         email_verified: Optional[bool] = None
         display_name: Optional[str] = None
@@ -207,6 +218,7 @@ def _now() -> datetime:
         last_login_at: Optional[DateSearchModel] = None
 
 
+class OAuthLoginStateModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """A sign-in begun and not yet finished. The state and the browser
     binding are stored as their SHA-256; the PKCE verifier encrypted."""
 
@@ -228,6 +240,7 @@ def _now() -> datetime:
 
     table_comment: ClassVar[str] = "OAuth sign-ins begun and not yet completed"
 
+    class Create(BaseModel):
         state_hash: str
         binding_hash: str
         provider_instance_id: str
@@ -238,8 +251,10 @@ def _now() -> datetime:
         expires_at: datetime
         consumed_at: Optional[datetime] = None
 
+    class Update(BaseModel):
         consumed_at: Optional[datetime] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         provider_instance_id: Optional[StringSearchModel] = None
         expires_at: Optional[DateSearchModel] = None
 
@@ -249,15 +264,18 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+class OAuthProviderEntry(RouteModel):
     name: str = Field(..., description="What to pass as `provider`")
     provider: str = Field(..., description="The provider's public name")
     friendly_name: str
     kind: str = Field(..., description="oidc or oauth2")
 
 
+class OAuthProviderList(RouteModel):
     providers: List[OAuthProviderEntry]
 
 
+class OAuthAuthorizeRequest(RouteModel):
     provider: str = Field(..., description="A name from GET /v1/auth/oauth/providers")
     redirect_uri: Optional[str] = Field(
         None,
@@ -266,10 +284,12 @@ def _now() -> datetime:
     )
 
 
+class OAuthAuthorizeResponse(RouteModel):
     authorize_url: str = Field(..., description="Send the browser here")
     state: str = Field(..., description="The state the callback returns")
 
 
+class OAuthCallbackRequest(RouteModel):
     provider: str
     code: str = Field(..., description="The authorization code from the redirect")
     state: str = Field(..., description="The state from the redirect")
@@ -281,6 +301,7 @@ def _now() -> datetime:
     )
 
 
+class OAuthCallbackResponse(RouteModel):
     """A password login's answer: the session (``token``, also set in the
     ``zx_session``/``zx_csrf`` cookies), or for a user with a verified
     second factor the MFA challenge to complete at POST
@@ -299,6 +320,7 @@ def _now() -> datetime:
     methods: Optional[List[Dict[str, str]]] = None
 
 
+class OAuthIdentityView(RouteModel):
     id: str
     provider_instance_id: str
     provider: str
@@ -322,6 +344,7 @@ def _now() -> datetime:
         )
 
 
+class OAuthAccessToken(RouteModel):
     access_token: str
     expires_at: Optional[datetime] = None
     scopes: Optional[str] = None
@@ -332,18 +355,23 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ConfiguredProvider:
     """A provider instance someone can sign in with, and its provider."""
 
     instance: ProviderInstanceModel
     provider: Type[AbstractIdentityProvider]
 
 
+def configured_providers(model_registry: Any) -> List[ConfiguredProvider]:
     """Every enabled, undeleted instance of this extension's providers that names
     enough (a client id; an issuer) to sign anyone in."""
     from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
         EXT_OAuthConsumer,
     )
 
+    root_id = env("ROOT_ID")
+    providers = ProviderManager(model_registry=model_registry, requester_id=root_id)
     InstanceDB = ProviderInstanceModel.DB(model_registry.DB.manager.Base)
     found: List[ConfiguredProvider] = []
     for provider in EXT_OAuthConsumer.providers:
@@ -355,9 +383,11 @@ def _now() -> datetime:
             continue
         # Read as root, which sees deleted rows unless told not to.
         rows: List[ProviderInstanceModel] = InstanceDB.list(
+            requester_id=root_id,
             model_registry=model_registry,
             filters=[
                 InstanceDB.provider_id == record.id,
+                InstanceDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=ProviderInstanceModel,
@@ -371,6 +401,7 @@ def _now() -> datetime:
     return found
 
 
+def public_names(configured: List[ConfiguredProvider]) -> Dict[str, str]:
     """What clients call each instance (by id): the provider's public name
     when it is the only one configured and no instance is named that,
     else its own name."""
@@ -389,6 +420,7 @@ def _now() -> datetime:
     }
 
 
+def resolve_provider(model_registry: Any, key: str) -> ConfiguredProvider:
     """The configured provider ``key`` names: an instance's name, or a
     provider's public name when one instance of it is configured."""
     if not _PROVIDER_KEY.match(key or ""):
@@ -403,6 +435,7 @@ def _now() -> datetime:
     raise HTTPException(status_code=400, detail="Unknown OAuth provider")
 
 
+async def upstream(call: Awaitable[Result]) -> Result:
     """``call`` to a provider, its typed failures as HTTP: the caller's (a
     refused code, an invalid ID token) 400 with the reason; anything else
     502, its detail logged only."""
@@ -423,6 +456,7 @@ def _now() -> datetime:
         ) from None
 
 
+def _binding_cookie_scope(request: Request) -> Dict[str, Any]:
     """The binding cookie is sent to these routes only and never readable
     by page scripts."""
     return {
@@ -439,6 +473,7 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+class OAuthIdentityManager(AbstractBLLManager, RouterMixin):
     """A user's identities at providers: listed and unlinked over REST
     (``/v1/auth/oauth/identity``); created by the sign-in flow."""
 
@@ -460,14 +495,19 @@ def _now() -> datetime:
         owned = owned_by(self.requester.id, owner_never_internal=True)
         return super().create(**each_created(kwargs, owned))
 
+    def find(
+        self, provider_instance_id: str, subject: str
+    ) -> Optional[OAuthIdentityModel]:
         """The live identity for (provider instance, subject), whoever owns
         it (read as root: the sign-in has no user yet)."""
         IdentityDB = OAuthIdentityModel.DB(self.model_registry.DB.manager.Base)
         rows: List[OAuthIdentityModel] = IdentityDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 IdentityDB.provider_instance_id == provider_instance_id,
                 IdentityDB.subject == subject,
+                IdentityDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=OAuthIdentityModel,
@@ -475,6 +515,7 @@ def _now() -> datetime:
         return rows[0] if rows else None
 
 
+class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
     """The sign-in flow's routes, over pending sign-ins."""
 
     _model = OAuthLoginStateModel
@@ -486,13 +527,20 @@ def _now() -> datetime:
 
     # -- helpers -------------------------------------------------------------
 
+    @property
+    def _identities(self) -> OAuthIdentityManager:
         return OAuthIdentityManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
 
     @property
     def _StateDB(self) -> Any:
         return OAuthLoginStateModel.DB(self.model_registry.DB.manager.Base)
 
+    @staticmethod
+    def _redirect_uri(
+        configured: ConfiguredProvider, key: str, requested: Optional[str]
+    ) -> str:
         """``requested`` when it is a registered redirect URI, exactly (RFC
         9700 §4.1.3: no prefix or pattern matching); without one, the one
         for this provider. Unregistered: 400."""
@@ -506,22 +554,28 @@ def _now() -> datetime:
             raise HTTPException(status_code=400, detail="redirect_uri not registered")
         return target
 
+    def _purge_lapsed(self) -> None:
         """Drop pending sign-ins whose state lapsed (spent or not)."""
         StateDB = self._StateDB
         session = self.model_registry.DB.session()
         try:
+            session.execute(delete(StateDB).where(StateDB.expires_at < _now()))
+            session.commit()
         finally:
             session.close()
 
+    def _claim(self, state: str) -> Optional[OAuthLoginStateModel]:
         """Spend ``state``: the pending sign-in it names, marked consumed by
         a single conditional update so that, of concurrent callbacks, one
         wins; None when it names none, or was spent."""
         StateDB = self._StateDB
         rows: List[OAuthLoginStateModel] = StateDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 StateDB.state_hash == _digest(state),
                 StateDB.consumed_at.is_(None),
+                StateDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=OAuthLoginStateModel,
@@ -530,19 +584,31 @@ def _now() -> datetime:
             return None
         session = self.model_registry.DB.session()
         try:
+            claimed = session.execute(
                 update(StateDB)
                 .where(StateDB.id == rows[0].id, StateDB.consumed_at.is_(None))
                 .values(consumed_at=_now())
             ).rowcount
+            session.commit()
         finally:
             session.close()
         return rows[0] if claimed == 1 else None
 
+    async def begin(
+        self,
+        key: str,
+        requested_redirect: Optional[str],
+        link_user_id: Optional[str],
+    ) -> Tuple[OAuthAuthorizeResponse, str]:
         """Record a pending sign-in; the authorization URL and state, and
         the browser-binding secret for its cookie."""
         configured = resolve_provider(self.model_registry, key)
         redirect_uri = self._redirect_uri(configured, key, requested_redirect)
         endpoints = await upstream(configured.provider.endpoints(configured.instance))
+        state = secrets.token_urlsafe(_SECRET_BYTES)
+        binding = secrets.token_urlsafe(_SECRET_BYTES)
+        verifier = secrets.token_urlsafe(_VERIFIER_BYTES)
+        nonce = secrets.token_urlsafe(_SECRET_BYTES)
         authorize_url = configured.provider.authorization_url(
             configured.instance,
             endpoints,
@@ -553,6 +619,7 @@ def _now() -> datetime:
         )
         self._purge_lapsed()
         self._StateDB.create(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=OAuthLoginStateModel,
@@ -567,6 +634,12 @@ def _now() -> datetime:
         )
         return OAuthAuthorizeResponse(authorize_url=authorize_url, state=state), binding
 
+    async def finish(
+        self,
+        body: OAuthCallbackRequest,
+        binding: Optional[str],
+        link_user_id: Optional[str],
+    ) -> Tuple[ConfiguredProvider, Identity, TokenSet]:
         """Spend the state, check it was issued for this provider, redirect
         URI, browser and purpose, and exchange the code with its verifier:
         the account the provider vouched for."""
@@ -599,6 +672,8 @@ def _now() -> datetime:
         )
         return configured, identity, tokens
 
+    @staticmethod
+    def _check_issuer(endpoints: Endpoints, iss: Optional[str]) -> None:
         """RFC 9207 mix-up defence: a redirect naming an issuer must name
         this provider's, and a provider that promises to name itself must."""
         issuer = endpoints.issuer
@@ -609,9 +684,12 @@ def _now() -> datetime:
         if (
             issuer is not None
             and "{" not in issuer
+            and not hmac.compare_digest(iss, issuer)
         ):
             raise HTTPException(status_code=400, detail="Issuer mismatch")
 
+    @staticmethod
+    def _stored_tokens(identity: Identity, tokens: TokenSet) -> Dict[str, Any]:
         """The identity's fields a sign-in refreshes. A refresh token is
         kept until the provider issues another."""
         fields: Dict[str, Any] = {
@@ -647,8 +725,10 @@ def _now() -> datetime:
         )
         return created
 
+    def _user(self, user_id: str) -> UserModel:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         user: Optional[UserModel] = UserDB.get(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=user_id,
             return_type="dto",
@@ -658,6 +738,7 @@ def _now() -> datetime:
             raise InvalidGrantError(detail="The linked user no longer exists")
         return user
 
+    def _assert_signup_allowed(self, email: str) -> None:
         """``REGISTRATION_MODE``: open and sso create; invite needs a pending
         invitation addressed to ``email``; closed refuses."""
         mode = Environment.settings.REGISTRATION_MODE
@@ -674,6 +755,7 @@ def _now() -> datetime:
             status_code=403, detail="User registration is currently closed"
         )
 
+    def _username_for(self, identity: Identity) -> Optional[str]:
         """The provider's username, when no live local user signs in by it.
         Usernames and emails are one namespace: a username equal to another
         user's email would make login match two users and lock that user out."""
@@ -683,9 +765,11 @@ def _now() -> datetime:
         taken = UserManager._identifier_taken(username, self.model_registry)
         return None if taken else username
 
+    def _create_user(self, identity: Identity, email: str) -> UserModel:
         """A passwordless local user from the provider's profile."""
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         user: UserModel = UserDB.create(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             override_dto=self.model_registry.apply(UserModel),
             return_type="dto",
@@ -698,6 +782,9 @@ def _now() -> datetime:
         )
         return user
 
+    def sign_in_user(
+        self, configured: ConfiguredProvider, identity: Identity, tokens: TokenSet
+    ) -> Tuple[str, bool]:
         """The local user ``identity`` signs in as, and whether it was
         created: the one it is linked to; else, with a verified email, the
         user with that email, or a new one where registration allows."""
@@ -721,6 +808,7 @@ def _now() -> datetime:
         self._link(configured, identity, tokens, str(user.id))
         return str(user.id), True
 
+    def session_for(self, user_id: str, new_user: bool) -> OAuthCallbackResponse:
         """A session for ``user_id``, or the MFA challenge its second
         factor stands for (the provider proves the first factor only)."""
         challenge = UserManager.mfa_challenge(user_id, self.model_registry)
@@ -744,6 +832,13 @@ def _now() -> datetime:
             new_user=new_user,
         )
 
+    def link_identity(
+        self,
+        configured: ConfiguredProvider,
+        identity: Identity,
+        tokens: TokenSet,
+        user_id: str,
+    ) -> OAuthIdentityModel:
         """Link ``identity`` to ``user_id`` (refreshing it when it already
         is); 409 when another user has it."""
         linked = self._identities.find(str(configured.instance.id), identity.subject)
@@ -758,6 +853,7 @@ def _now() -> datetime:
         )
         return updated
 
+    def providers_list(self) -> OAuthProviderList:
         configured = configured_providers(self.model_registry)
         names = public_names(configured)
         return OAuthProviderList(
@@ -886,6 +982,9 @@ def _now() -> datetime:
         return OAuthIdentityView.of(linked)
 
 
+async def current_access_token(
+    manager: OAuthIdentityManager, identity_id: str
+) -> OAuthAccessToken:
     """A current access token for an identity the manager's requester can
     see: the stored one, refreshed with the refresh token once it lapsed."""
     identity: OAuthIdentityModel = manager.get(id=identity_id)
@@ -928,6 +1027,7 @@ def _now() -> datetime:
     if tokens.refresh_token is not None:
         fields["refresh_token"] = encrypt_secret(tokens.refresh_token)
     OAuthIdentityManager(
+        requester_id=env("ROOT_ID"), model_registry=manager.model_registry
     ).update(id=identity_id, **fields)
     return OAuthAccessToken(
         access_token=tokens.access_token,
@@ -941,12 +1041,15 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+def assert_may_sign_in(user: UserModel) -> None:
     """An internal account (ROOT, SYSTEM, the template user), or an inactive
     or deleted one, signs in by no provider."""
     refuse_internal_account(user.id)
+    if user.active is False or getattr(user, "deleted_at", None) is not None:
         raise HTTPException(status_code=403, detail="User account is disabled")
 
 
+def oauth_consumer_grant_validator(payload: UserIdGrantPayload) -> UserModel:
     """The user an ``oauth_consumer`` grant signs in, while it may."""
     if payload.model_registry is None:
         raise InvalidGrantError(
@@ -954,6 +1057,7 @@ def _now() -> datetime:
         )
     UserDB = UserModel.DB(payload.model_registry.DB.manager.Base)
     user: Optional[UserModel] = UserDB.get(
+        requester_id=env("ROOT_ID"),
         model_registry=payload.model_registry,
         id=payload.user_id,
         return_type="dto",
@@ -973,13 +1077,18 @@ PasswordlessGrantRegistry.register(GRANT_TYPE, oauth_consumer_grant_validator)
 # ---------------------------------------------------------------------------
 
 
+def _merge_handler(ctx: Any) -> None:
     """Move the merged-away user's identities to the surviving user. An
     identity both hold (the same provider account) stays the survivor's;
     the other copy is removed."""
+    root_id = env("ROOT_ID")
     IdentityDB = OAuthIdentityModel.DB(ctx.model_registry.DB.manager.Base)
 
+    def identities_of(user_id: str) -> List[OAuthIdentityModel]:
         rows: List[OAuthIdentityModel] = IdentityDB.list(
+            requester_id=root_id,
             model_registry=ctx.model_registry,
+            filters=[IdentityDB.user_id == user_id, IdentityDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=OAuthIdentityModel,
         )
@@ -992,23 +1101,29 @@ PasswordlessGrantRegistry.register(GRANT_TYPE, oauth_consumer_grant_validator)
     for row in identities_of(ctx.target_user_id):
         if (row.provider_instance_id, row.subject) in kept:
             IdentityDB.delete(
+                requester_id=root_id, model_registry=ctx.model_registry, id=row.id
             )
         else:
             IdentityDB.update(
+                requester_id=root_id,
                 model_registry=ctx.model_registry,
                 id=row.id,
                 new_properties={"user_id": ctx.initiating_user_id},
             )
 
 
+def erase_oauth_identities(user_id: str, model_registry: Any) -> None:
     """A deleted account's provider accounts are unlinked: each identity's
     tokens are wiped, then the identity is deleted, so no copy that could
     reach the provider is kept even in the deleted row. Registered with the
     privacy extension's erasers; safe to run twice."""
+    root_id = env("ROOT_ID")
     IdentityDB = OAuthIdentityModel.DB(model_registry.DB.manager.Base)
     rows: List[OAuthIdentityModel] = (
         IdentityDB.list(
+            requester_id=root_id,
             model_registry=model_registry,
+            filters=[IdentityDB.user_id == user_id, IdentityDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=OAuthIdentityModel,
         )
@@ -1016,6 +1131,7 @@ PasswordlessGrantRegistry.register(GRANT_TYPE, oauth_consumer_grant_validator)
     )
     for row in rows:
         IdentityDB.update(
+            requester_id=root_id,
             model_registry=model_registry,
             id=row.id,
             new_properties={
@@ -1025,12 +1141,14 @@ PasswordlessGrantRegistry.register(GRANT_TYPE, oauth_consumer_grant_validator)
             },
         )
         IdentityDB.delete(
+            requester_id=root_id, model_registry=model_registry, id=row.id
         )
 
 
 register_eraser("oauth_consumer", erase_oauth_identities)
 
 
+def register_merge_participation() -> None:
     """Join account merges when the auth_merge extension is installed."""
     try:
         from zephyrex.extensions.auth_merge.BLL_Auth_Merge import make_merge_registrar

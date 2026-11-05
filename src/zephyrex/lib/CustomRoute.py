@@ -66,6 +66,7 @@ _PATH_PARAMETER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}")
 _AUTH_TYPE_ALIASES: Mapping[str, AuthType] = {"session": AuthType.JWT}
 
 
+def resolve_auth_type(authentication_type: str) -> AuthType:
     """Map a ``@custom_route`` ``authentication_type`` to its ``AuthType``.
 
     Raises ``ValueError`` for a spelling that names no authentication mode.
@@ -76,6 +77,7 @@ _AUTH_TYPE_ALIASES: Mapping[str, AuthType] = {"session": AuthType.JWT}
     return AuthType(authentication_type)
 
 
+class ExposeIn(str, Enum):
     """Surfaces a custom route can be exposed on."""
 
     REST = "rest"
@@ -84,6 +86,8 @@ _AUTH_TYPE_ALIASES: Mapping[str, AuthType] = {"session": AuthType.JWT}
     ALL = "all"
 
 
+@dataclass(frozen=True)
+class CustomRouteSpec:
     """Frozen contract captured by the @custom_route decorator."""
 
     method: str
@@ -114,6 +118,22 @@ _AUTH_TYPE_ALIASES: Mapping[str, AuthType] = {"session": AuthType.JWT}
         return resolve_auth_type(self.authentication_type)
 
 
+def custom_route(
+    *,
+    method: str,
+    path: str,
+    input_model: Optional[Type[BaseModel]] | None = None,
+    output_model: Optional[Type[BaseModel]] | None = None,
+    authentication_type: str = "session",
+    openapi_tags: Iterable[str] = (),
+    expose_in: Iterable[ExposeIn] = (ExposeIn.ALL,),
+    graphql_kind: Optional[str] | None = None,
+    summary: Optional[str] | None = None,
+    description: Optional[str] | None = None,
+    response_class: Optional[Type[Response]] = None,
+    raw_body: bool = False,
+    max_body_bytes: Optional[int] = None,
+) -> Callable:
     """Decorator: tag a method with its route/SDK/GraphQL contract.
 
     A route answers with an ``output_model`` body, or, REST only, with an
@@ -123,6 +143,7 @@ _AUTH_TYPE_ALIASES: Mapping[str, AuthType] = {"session": AuthType.JWT}
     declare ``max_body_bytes``, a cap above the app's global one (an upload).
     """
 
+    def deco(func):
         spec = CustomRouteSpec(
             method=method.upper(),
             path=path,
@@ -190,6 +211,7 @@ def get_custom_route_spec(func) -> Optional[CustomRouteSpec]:
     return getattr(func, "__custom_route_spec__", None)
 
 
+def iter_custom_routes(manager_cls) -> List[Tuple[str, CustomRouteSpec]]:
     """Walk a manager class for @custom_route-tagged methods.
 
     Returns a deterministic list of ``(method_name, spec)`` tuples sorted by
@@ -204,6 +226,7 @@ def get_custom_route_spec(func) -> Optional[CustomRouteSpec]:
     return results
 
 
+class AbstractActionEndpoint:
     """Base for genuinely RPC-shaped endpoints with no CRUD resource binding.
 
     Subclasses use the same ``@custom_route`` decorator. This class is a thin
@@ -215,6 +238,7 @@ def get_custom_route_spec(func) -> Optional[CustomRouteSpec]:
     tags: Optional[List[str]] | None = None
 
 
+def _authored_method(func: Callable[..., Any]) -> Callable[..., Any]:
     """The method as its author wrote it, beneath any hook wrapper.
 
     Every public ``AbstractBLLManager`` method is replaced by a hook wrapper
@@ -225,6 +249,7 @@ def get_custom_route_spec(func) -> Optional[CustomRouteSpec]:
     return authored
 
 
+def _route_parameters(func: Callable[..., Any]) -> Mapping[str, inspect.Parameter]:
     """The parameters a tagged method declares, minus ``self`` and varargs."""
     parameters = inspect.signature(_authored_method(func), eval_str=True).parameters
     return {
@@ -243,6 +268,8 @@ def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
     return TypeAdapter(annotation)
 
 
+@dataclass(frozen=True)
+class _RouteBinding:
     """How one tagged method's parameters are filled from an HTTP request.
 
     Path placeholders bind to same-named parameters; the validated
@@ -263,6 +290,10 @@ def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
     body_fields: FrozenSet[str]
     context_params: FrozenSet[str]
 
+    @classmethod
+    def build(
+        cls, manager_cls: type, method_name: str, spec: CustomRouteSpec
+    ) -> "_RouteBinding":
         parameters = _route_parameters(getattr(manager_cls, method_name))
         qualname = f"{manager_cls.__name__}.{method_name}"
         placeholders = _PATH_PARAMETER_PATTERN.findall(spec.path)
@@ -309,6 +340,7 @@ def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
             context_params=_CONTEXT_PARAMETERS & frozenset(parameters),
         )
 
+    async def arguments(self, request: Request, response: Response) -> Dict[str, Any]:
         """Validated keyword arguments for the tagged method."""
         arguments: Dict[str, Any] = {
             name: adapter.validate_python(request.path_params[name])
@@ -334,6 +366,8 @@ def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
                 arguments.update({name: fields[name] for name in self.body_fields})
         return arguments
 
+    @staticmethod
+    async def _read_body(request: Request, input_model: Type[BaseModel]) -> BaseModel:
         raw = await request.body()
         try:
             payload = json.loads(raw) if raw else {}
@@ -344,6 +378,9 @@ def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
         return input_model.model_validate(payload)
 
 
+def _make_rest_endpoint(
+    manager_cls: type, method_name: str, spec: CustomRouteSpec
+) -> Callable[..., Any]:
     """Build the FastAPI handler dispatching one ``@custom_route`` method.
 
     The manager is built for the route's declared ``authentication_type``
@@ -361,6 +398,7 @@ def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
     # ``request: Request`` resolves against this module's globals under
     # ``from __future__ import annotations``, so ``Request`` is imported at
     # module level (a function-local import breaks OpenAPI generation).
+    async def endpoint(request: Request, response: Response) -> Any:
         try:
             manager = create_manager_factory(
                 manager_cls,
@@ -383,6 +421,7 @@ def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
             if isinstance(output, BaseModel):
                 return output.model_dump()
             return output
+        except Exception as err:
             handle_resource_operation_error(err)
 
     carry_rate_limit(getattr(manager_cls, method_name), endpoint)
@@ -398,6 +437,7 @@ def _checked_response(result: Any, response_class: Type[Response]) -> Response:
     return result
 
 
+def register_custom_routes(router, manager_cls) -> int:
     """Walk ``manager_cls`` for ``@custom_route`` methods and add them to ``router``.
 
     Additive: each tagged method becomes a typed FastAPI route on the supplied
@@ -412,6 +452,7 @@ def _checked_response(result: Any, response_class: Type[Response]) -> Response:
 
         endpoint = _make_rest_endpoint(manager_cls, method_name, spec)
         if spec.max_body_bytes is not None:
+            setattr(endpoint, ROUTE_BODY_LIMIT_ATTRIBUTE, spec.max_body_bytes)
         route_method = getattr(router, spec.method.lower())
         options: Dict[str, Any] = {}
         if spec.response_class is not None:
@@ -438,6 +479,7 @@ def _checked_response(result: Any, response_class: Type[Response]) -> Response:
 _GRAPHQL_RESOLVER_CACHE: Dict[Tuple[type, str], Callable[..., Any]] = {}
 
 
+def _infer_graphql_kind(spec: CustomRouteSpec) -> str:
     """GET → query, anything else → mutation, with explicit override.
 
     The decorator's ``graphql_kind`` parameter wins when set. Otherwise the
@@ -460,6 +502,12 @@ _GRAPHQL_RESOLVER_CACHE: Dict[Tuple[type, str], Callable[..., Any]] = {}
 GraphQLManagerFactory = Callable[..., Any]
 
 
+def _build_graphql_resolver(
+    manager_cls: type,
+    method_name: str,
+    spec: CustomRouteSpec,
+    manager_factory: GraphQLManagerFactory,
+) -> Callable[..., Any]:
     """Wrap a tagged method as a Strawberry-compatible resolver.
 
     The resolver accepts a single optional ``input`` argument typed to the
@@ -472,6 +520,7 @@ GraphQLManagerFactory = Callable[..., Any]
     bound_method = getattr(manager_cls, method_name)
     method_sig = inspect.signature(_authored_method(bound_method))
 
+    def _split_kwargs(payload: Dict[str, Any]) -> Dict[str, Any]:
         accepted: Dict[str, Any] = {}
         for key, value in payload.items():
             if key in method_sig.parameters:
@@ -485,6 +534,7 @@ GraphQLManagerFactory = Callable[..., Any]
 
     if spec.method in ("POST", "PUT", "PATCH") and spec.input_model is not None:
 
+        async def resolver(info: Any, input: spec.input_model) -> spec.output_model:  # type: ignore[name-defined]
             manager = manager_factory(info=info, auth_type=spec.auth_type)
             payload = (
                 input.model_dump() if hasattr(input, "model_dump") else dict(input)
@@ -501,6 +551,7 @@ GraphQLManagerFactory = Callable[..., Any]
 
     else:
 
+        async def resolver(info: Any, **kwargs: Any) -> spec.output_model:  # type: ignore[name-defined, misc]
             manager = manager_factory(info=info, auth_type=spec.auth_type)
             accepted = _with_context(info, _split_kwargs(kwargs))
             result = getattr(manager, method_name)(**accepted)
@@ -522,6 +573,7 @@ GraphQLManagerFactory = Callable[..., Any]
     return resolver
 
 
+def _coerce_output(result: Any, output_model: Optional[Type[BaseModel]]) -> Any:
     """Normalize a tagged-method result into an ``output_model`` instance.
 
     Shared by the REST endpoint and the GraphQL resolver: model instances
@@ -547,6 +599,13 @@ def graphql_field_name(manager_cls: type, method_name: str) -> str:
     return f"{manager_resource_name(manager_cls)}_{method_name.removesuffix('_route')}"
 
 
+def register_custom_routes_to_graphql(
+    manager_cls: type,
+    manager_factory: GraphQLManagerFactory,
+    *,
+    contribution_registry: Optional[Any] | None = None,
+    extension_name: str = "core",
+) -> int:
     """Walk ``manager_cls`` for ``@custom_route`` methods and register them
     as GraphQL ``FieldContribution``s.
 
@@ -620,6 +679,7 @@ def reset_graphql_registrations() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _example_value_for_field(name: str, annotation: Any) -> Any:
     """Pick a deterministic scaffold value for a Pydantic field.
 
     Used to populate a happy-path body in the generated test. Prefers
@@ -649,6 +709,7 @@ def reset_graphql_registrations() -> None:
     return None
 
 
+def _build_scaffold_body(spec: CustomRouteSpec) -> Dict[str, Any]:
     """Build a minimal valid input body for the route's input_model."""
     body: Dict[str, Any] = {}
     if spec.input_model is None:
@@ -667,6 +728,12 @@ def _python_repr(value: Any) -> str:
     return repr(value)
 
 
+def generate_test_scaffold(
+    manager_cls: type,
+    *,
+    module_path: Optional[str] | None = None,
+    include_header: bool = True,
+) -> str:
     """Emit baseline test source code for every ``@custom_route`` on ``manager_cls``.
 
     The generated module covers, per route:
@@ -841,6 +908,7 @@ def _python_repr(value: Any) -> str:
     return text
 
 
+def has_existing_scaffold(manager_cls: type, scaffold_dir: str) -> bool:
     """True when an author-edited scaffold already exists for ``manager_cls``.
 
     The convention is ``{ManagerName}_custom_routes_scaffold_test.py`` in the
@@ -856,6 +924,12 @@ def _python_repr(value: Any) -> str:
     return os.path.exists(target)
 
 
+def write_test_scaffold(
+    manager_cls: type,
+    scaffold_dir: str,
+    *,
+    overwrite: bool = False,
+) -> Optional[str]:
     """Write the generated scaffold to disk.
 
     Returns the written path on success, or ``None`` when the scaffold

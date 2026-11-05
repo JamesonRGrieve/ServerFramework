@@ -34,6 +34,7 @@ from zephyrex.lib.InboundSecurity import _parse_trusted_proxies
 from zephyrex.lib.Environment import env
 
 
+class EXT_ProxyAuthConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "proxy_auth_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -68,6 +69,8 @@ from zephyrex.lib.Environment import env
 
     _abilities: ClassVar[Set[str]] = {"proxy_auth_linked_identities"}
 
+    @classmethod
+    def validate_config(cls) -> List[str]:
         raw = (env("PROXY_AUTH_CONSUMER_TRUSTED_PROXIES") or "").strip()
         if not raw:
             return [
@@ -80,6 +83,11 @@ from zephyrex.lib.Environment import env
             return [f"PROXY_AUTH_CONSUMER_TRUSTED_PROXIES: {exc}"]
         return []
 
+    @classmethod
+    @ability("proxy_auth_linked_identities")
+    async def proxy_auth_linked_identities(
+        cls, requester_id: str
+    ) -> List[Dict[str, Any]]:
         """The proxy identities that sign in as ``requester_id``."""
         from zephyrex.extensions.proxy_auth_consumer.BLL_ProxyAuthConsumer import (
             UserProxyAuthLinkManager,

@@ -42,6 +42,8 @@ from zephyrex.extensions.audit_retention.BLL_RetentionPolicy import (
 )
 
 
+@dataclass(frozen=True)
+class RetentionRegistration:
     """One entry in the retention registry.
 
     Fields:
@@ -68,6 +70,8 @@ from zephyrex.extensions.audit_retention.BLL_RetentionPolicy import (
     archive: Optional[Callable[[Sequence[Dict[str, Any]], str], bool]] = None
 
 
+@dataclass
+class RetentionPassReport:
     """Summary of a single retention pass.
 
     Returned by :meth:`RetentionService.run_pass` and emitted as the
@@ -101,6 +105,7 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
     return now - timedelta(seconds=seconds)
 
 
+class RetentionService:
     """Item 56 driver. Use :func:`make_retention_scheduled_service` to
     wrap this in a :class:`ScheduledService` for runtime scheduling.
 
@@ -126,6 +131,13 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
     def registrations(self) -> List[RetentionRegistration]:
         return list(self._registrations)
 
+    def release_legal_hold(
+        self,
+        registration_name: str,
+        *,
+        reason: str,
+        requester_id: str,
+    ) -> str:
         """Release the legal hold for ``registration_name`` for subsequent passes.
 
         Emits an audit event with class ``retention_legal_hold_release`` and
@@ -149,6 +161,7 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
             }
             try:
                 self._audit_emit(payload)
+            except Exception:  # noqa: BLE001
                 pass
         return event_id
 
@@ -162,6 +175,7 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
     def list_released(self) -> List[str]:
         return sorted(self._released)
 
+    def run_pass(self) -> List[RetentionPassReport]:
         """Walk every registration once. Returns one report per entry."""
         now = self._clock()
         reports: List[RetentionPassReport] = []
@@ -169,18 +183,26 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
             report = RetentionPassReport(name=reg.name, started_at=now)
             try:
                 self._run_one(reg, now, report)
+            except Exception as exc:  # noqa: BLE001
                 report.errors.append(repr(exc))
             report.finished_at = self._clock()
             reports.append(report)
             self._emit_self_audit(report)
         return reports
 
+    def _run_one(
+        self,
+        reg: RetentionRegistration,
+        now: datetime,
+        report: RetentionPassReport,
+    ) -> None:
         if reg.policy.under_legal_hold() and not self.is_released(reg.name):
             cutoff = _cutoff_for(reg.policy, now)
             if cutoff is None:
                 return
             try:
                 rows = list(reg.expired_query(cutoff))
+            except Exception as exc:  # noqa: BLE001
                 report.errors.append(f"expired_query: {exc!r}")
                 return
             report.skipped_due_to_legal_hold = len(rows)
@@ -192,6 +214,7 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
 
         try:
             rows = list(reg.expired_query(cutoff))
+        except Exception as exc:  # noqa: BLE001
             report.errors.append(f"expired_query: {exc!r}")
             return
 
@@ -207,6 +230,7 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
                 return
             try:
                 ok = bool(reg.archive(rows, reg.policy.archive_to))
+            except Exception as exc:  # noqa: BLE001
                 report.skipped_due_to_archive_failure = len(rows)
                 report.errors.append(f"archive: {exc!r}")
                 return
@@ -218,10 +242,12 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
 
         try:
             purged = int(reg.delete(rows))
+        except Exception as exc:  # noqa: BLE001
             report.errors.append(f"delete: {exc!r}")
             return
         report.purged_count = purged
 
+    def _emit_self_audit(self, report: RetentionPassReport) -> None:
         if self._audit_emit is None:
             return
         payload = {
@@ -246,6 +272,7 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
         }
         try:
             self._audit_emit(payload)
+        except Exception:  # noqa: BLE001
             # Audit-of-the-audit emission failure must not abort the
             # retention pass; surface only via logger if available.
             try:
@@ -256,6 +283,7 @@ def _cutoff_for(policy: RetentionPolicy, now: datetime) -> Optional[datetime]:
                     report.name,
                     exc_info=True,
                 )
+            except Exception:  # noqa: BLE001
                 pass
 
 
@@ -283,6 +311,7 @@ def make_retention_scheduled_service(
 
     inner = RetentionService(registrations, audit_emit=audit_emit)
 
+    class _RetentionScheduled(ScheduledService):
         retention_service: RetentionService = inner
 
         async def update(self) -> None:

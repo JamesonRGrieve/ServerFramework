@@ -64,6 +64,7 @@ def prusalink_report(found: Mapping[str, Any], detail: Any) -> Dict[str, Any]:
     }
 
 
+class PRV_PrusaLink_Printing(AbstractPrinterProvider):
     name: ClassVar[str] = "prusalink"
     friendly_name: ClassVar[str] = "PrusaLink"
     description: ClassVar[str] = "A Prusa printer through PrusaLink"

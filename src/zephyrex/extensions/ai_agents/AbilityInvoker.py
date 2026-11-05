@@ -63,6 +63,7 @@ class ToolInvocationError(Exception):
     """A permitted tool could not run: unknown, mis-called, or failed."""
 
 
+def _json_type(annotation: Any) -> Tuple[str, bool]:
     """``annotation``'s JSON schema type, and whether it admits None."""
     origin = get_origin(annotation)
     if origin is Union:
@@ -113,6 +114,7 @@ def ability_to_tool_schema(
     }
 
 
+def coerce_arguments(arguments: ToolArguments) -> Dict[str, Any]:
     """A tool call's arguments as a dict (models send a JSON object string)."""
     if arguments is None:
         return {}
@@ -129,6 +131,7 @@ def ability_to_tool_schema(
     return parsed
 
 
+class AbilityInvoker:
     """Resolves and runs an agent's granted tools, acting as
     ``requester_id``."""
 
@@ -147,6 +150,7 @@ def ability_to_tool_schema(
         grant = allowed.get(tool)
         return grant is not None and grant.name not in self.never_invocable
 
+    def resolve(self, grant: AbilityGrant) -> Optional[Callable[..., Any]]:
         """The extension's ability method the grant names, or None when the
         extension is not loaded or has no such static ability."""
         registry = getattr(self.model_registry, "extension_registry", None)
@@ -177,6 +181,9 @@ def ability_to_tool_schema(
                 tools.append(ability_to_tool_schema(tool, method))
         return tools
 
+    async def invoke(
+        self, tool: str, arguments: ToolArguments, allowed: Mapping[str, AbilityGrant]
+    ) -> Any:
         """Run ``tool`` with the model's ``arguments``, as the requester.
 
         Raises AbilityAccessDenied for a tool the agent may not use (before

@@ -38,6 +38,7 @@ SBOM_SPEC_VERSION = "1.4"
 SBOM_FORMAT = "CycloneDX"
 
 
+def generate_sbom(metadata: Dict[str, Any]) -> str:
     """Generate a CycloneDX 1.4 SBOM as a JSON string.
 
     Args:
@@ -97,6 +98,10 @@ SBOM_FORMAT = "CycloneDX"
 # ---------------------------------------------------------------------------
 
 
+def verify_sigstore_signature(
+    wheel_path: Path,
+    signature_path: Path,
+) -> bool:
     """Verify a wheel's sigstore signature.
 
     This is a stub. The release pipeline shells out to the sigstore CLI
@@ -140,6 +145,8 @@ SBOM_FORMAT = "CycloneDX"
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class VulnReport:
     """Structured vulnerability finding from ``pip-audit``."""
 
     package: str
@@ -170,12 +177,17 @@ _SEVERITY_ORDER = {
 }
 
 
+def _severity_meets_gate(sev: str, gate: str) -> bool:
     """Return True if ``sev`` is at or above the ``gate`` threshold."""
     return _SEVERITY_ORDER.get((sev or "").upper(), 0) >= _SEVERITY_ORDER.get(
         (gate or "").upper(), _SEVERITY_ORDER["HIGH"]
     )
 
 
+def run_pip_audit(
+    lock_path: Path,
+    severity_threshold: str = "HIGH",
+) -> List[VulnReport]:
     """Run ``pip-audit`` against a lock file and return findings at/above the gate.
 
     Args:
@@ -201,6 +213,7 @@ _SEVERITY_ORDER = {
         return []
 
     try:
+        proc = subprocess.run(  # noqa: S603 - tool path resolved via shutil.which
             [
                 "pip-audit",
                 "-r",
@@ -213,6 +226,7 @@ _SEVERITY_ORDER = {
             check=False,
             timeout=300,
         )
+    except (subprocess.TimeoutExpired, OSError):
         return []
 
     if not proc.stdout:

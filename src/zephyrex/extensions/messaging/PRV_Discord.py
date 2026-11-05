@@ -17,6 +17,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 DISCORD_API = "https://discord.com/api/v10"
 
 
+class PRV_Discord_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "discord"
     friendly_name: ClassVar[str] = "Discord"
     description: ClassVar[str] = "Discord, as a bot"

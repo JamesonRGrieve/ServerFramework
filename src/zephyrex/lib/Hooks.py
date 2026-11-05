@@ -24,6 +24,7 @@ _pii_hooks: dict = {
 }
 
 
+def register_pii_hooks(*, log_filter=None) -> None:
     if log_filter is not None:
         _pii_hooks["log_filter"] = log_filter
 
@@ -47,10 +48,13 @@ _registry_hooks: dict = {
 }
 
 
+def register_registry_hooks(*, bootstrap_federation=None) -> None:
     if bootstrap_federation is not None:
         _registry_hooks["bootstrap_federation"] = bootstrap_federation
 
 
+@dataclass(frozen=True)
+class SDKTarget:
     """One ``meta_sdk_<language>`` extension's SDK: the generator, the
     language it emits, and the environment variable naming the directory it
     writes to (unset: the generator does nothing)."""
@@ -75,6 +79,7 @@ def register_sdk_generator(
     )
 
 
+def sdk_targets_for(extension_names: Collection[str]) -> dict[str, SDKTarget]:
     """The registered SDKs owned by ``extension_names``, by extension.
 
     ``ModelRegistry.commit`` passes the extensions loaded into the registry it
@@ -89,6 +94,7 @@ def register_sdk_generator(
     }
 
 
+def sdk_generators_for(extension_names: Collection[str]) -> list[tuple[str, Any]]:
     """The registered SDK generators owned by ``extension_names``."""
     return [
         (name, target.generator)

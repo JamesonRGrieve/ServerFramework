@@ -30,6 +30,7 @@ KANKA_SITE = "https://app.kanka.io/w"
 HTTP_NOT_FOUND = 404
 
 
+class PRV_Kanka_Wiki(AbstractWikiProvider):
     name: ClassVar[str] = "kanka"
     friendly_name: ClassVar[str] = "Kanka"
     description: ClassVar[str] = "A Kanka campaign's entities"

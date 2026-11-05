@@ -29,6 +29,7 @@ from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceManager
 
 
+class EXT_SCIMProvider(AbstractStaticExtension):
     name: ClassVar[str] = "scim_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -88,6 +89,8 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceManager
             run = await SCIMSync.open(registry, instance)
             return (await run.reconcile()).as_dict()
 
+    @classmethod
+    def schedule(cls, registry: Any, targets: List[str]) -> None:
         """Start a push of each target on the app's loop. Without a running
         app the flags wait for the next push or reconcile."""
         loop = cls._loop

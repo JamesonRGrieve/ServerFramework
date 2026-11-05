@@ -26,6 +26,7 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
+class EXT_AI_Chains(AbstractStaticExtension):
     name: ClassVar[str] = "ai_chains"
     friendly_name: ClassVar[str] = "AI Chains"
     version: ClassVar[str] = "2.0.0"

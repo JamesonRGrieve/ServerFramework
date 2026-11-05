@@ -50,11 +50,13 @@ _REFUND_REASONS = ("duplicate", "fraudulent", "requested_by_customer")
 _EXPAND = {"expand[0]": "latest_charge"}
 
 
+def _scalar(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
 
 
+def form(params: Mapping[str, Any], prefix: str = "") -> Dict[str, str]:
     """``params`` as Stripe's form encoding: ``metadata[key]``,
     ``items[0][price]``; None values are left out."""
     encoded: Dict[str, str] = {}
@@ -75,6 +77,7 @@ _EXPAND = {"expand[0]": "latest_charge"}
     return encoded
 
 
+def signature_parts(header: str) -> Tuple[Optional[str], List[str]]:
     """The timestamp and the v1 signatures of a ``Stripe-Signature``."""
     timestamp: Optional[str] = None
     signatures: List[str] = []
@@ -87,11 +90,13 @@ _EXPAND = {"expand[0]": "latest_charge"}
     return timestamp, signatures
 
 
+def _moment(seconds: Any) -> Optional[datetime]:
     if isinstance(seconds, bool) or not isinstance(seconds, int):
         return None
     return datetime.fromtimestamp(seconds, UTC)
 
 
+class PRV_Stripe_Payment(AbstractPaymentProvider):
     name: ClassVar[str] = "stripe"
     friendly_name: ClassVar[str] = "Stripe"
     description: ClassVar[str] = "A Stripe account"
@@ -128,6 +133,17 @@ _EXPAND = {"expand[0]": "latest_charge"}
 
     refusal_fields: ClassVar[Tuple[str, ...]] = ("message",)
 
+    @classmethod
+    async def stripe(
+        cls,
+        instance: ProviderInstanceModel,
+        method: str,
+        path: str,
+        params: Optional[Mapping[str, Any]] = None,
+        *,
+        idempotency_key: Optional[str] = None,
+        moves_money: bool = False,
+    ) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {cls.required(instance, 'api_key')}"}
         url = cls.endpoint(instance, path)
         options: Dict[str, Any] = {"headers": headers}
@@ -146,6 +162,10 @@ _EXPAND = {"expand[0]": "latest_charge"}
             raise TransientExternalError("Stripe answered without a JSON object")
         return answer
 
+    @classmethod
+    def payment(
+        cls, instance: ProviderInstanceModel, intent: Mapping[str, Any]
+    ) -> Dict[str, Any]:
         currency = str(intent.get("currency") or "usd")
         charge = intent.get("latest_charge")
         charge = charge if isinstance(charge, Mapping) else {}
@@ -173,6 +193,10 @@ _EXPAND = {"expand[0]": "latest_charge"}
             client_secret=intent.get("client_secret"),
         )
 
+    @classmethod
+    async def create_payment(
+        cls, instance: ProviderInstanceModel, request: PaymentRequest
+    ) -> Dict[str, Any]:
         params: Dict[str, Any] = {
             "amount": cls.to_minor_units(request.amount, request.currency),
             "currency": request.currency.lower(),
@@ -232,6 +256,10 @@ _EXPAND = {"expand[0]": "latest_charge"}
         )
         return cls.payment(instance, intent)
 
+    @classmethod
+    async def refund_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"payment_intent": payment_id}
         if action.amount is not None:
             params["amount"] = cls.to_minor_units(action.amount, action.currency)
@@ -298,6 +326,10 @@ _EXPAND = {"expand[0]": "latest_charge"}
         )
         return cls.customer(instance, customer)
 
+    @classmethod
+    def subscription(
+        cls, instance: ProviderInstanceModel, subscription: Mapping[str, Any]
+    ) -> Dict[str, Any]:
         items = (subscription.get("items") or {}).get("data") or [{}]
         price = items[0].get("price") or {}
         status = str(subscription.get("status") or "")
@@ -348,6 +380,10 @@ _EXPAND = {"expand[0]": "latest_charge"}
         )
         return cls.subscription(instance, subscription)
 
+    @classmethod
+    async def cancel_subscription(
+        cls, instance: ProviderInstanceModel, subscription_id: str, at_period_end: bool
+    ) -> Dict[str, Any]:
         path = f"/v1/subscriptions/{path_segment(subscription_id, 'subscription id')}"
         if at_period_end:
             subscription = await cls.stripe(
@@ -357,6 +393,10 @@ _EXPAND = {"expand[0]": "latest_charge"}
             subscription = await cls.stripe(instance, "DELETE", path)
         return cls.subscription(instance, subscription)
 
+    @classmethod
+    async def verify_webhook(
+        cls, instance: ProviderInstanceModel, payload: bytes, headers: Dict[str, str]
+    ) -> Dict[str, Any]:
         secret = cls.required(instance, "webhook_secret")
         timestamp, signatures = signature_parts(headers.get("stripe-signature", ""))
         if timestamp is None or not signatures:
@@ -366,6 +406,7 @@ _EXPAND = {"expand[0]": "latest_charge"}
         ).hex()
         if not one_matches(expected, signatures):
             raise InvalidInputExternalError("The notification's signature is wrong")
+        if not fresh(timestamp, time.time()):
             raise InvalidInputExternalError("The notification is too old")
         try:
             event = json.loads(payload)

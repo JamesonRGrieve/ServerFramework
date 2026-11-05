@@ -58,6 +58,7 @@ class _LogEntryCreate(BaseModel):
         return self
 
 
+class AuditLogModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """One audited action: who did what to which resource, and whether it
     succeeded."""
 
@@ -120,6 +121,7 @@ class _LogEntryCreate(BaseModel):
         privacy_impact: Optional[bool] = None
 
 
+class SystemLogModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """One system event from a named component."""
 
     timestamp: datetime = Field(

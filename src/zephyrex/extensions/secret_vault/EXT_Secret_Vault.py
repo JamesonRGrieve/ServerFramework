@@ -35,6 +35,7 @@ class Capability(str, Enum):
     TRANSIT = "transit"
 
 
+class AbstractSecretVaultProvider(AbstractStaticProvider):
     """Base class for secret vault providers."""
 
     extension: ClassVar[Optional[Type[AbstractStaticExtension]]] = None
@@ -69,6 +70,7 @@ class Capability(str, Enum):
     def read_metadata(cls, provider_instance, path: str) -> Dict[str, Any]: ...
 
 
+class EXT_Secret_Vault(AbstractStaticExtension):
     name: ClassVar[str] = "secret_vault"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = "Secret vault management via OpenBao/Vault KV v2."

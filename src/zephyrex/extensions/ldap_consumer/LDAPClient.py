@@ -86,6 +86,7 @@ NO_SUCH_OBJECT = 32
 _ATTRIBUTE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9-]*|\d+(?:\.\d+)+)(?:;[A-Za-z0-9-]+)*$")
 
 
+class CredentialsRefused(AuthExternalError):
     """The person's credentials were not accepted. One error (and, at the
     route, one message) for every reason, so a caller learns nothing about
     which accounts exist."""
@@ -95,6 +96,8 @@ _ATTRIBUTE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9-]*|\d+(?:\.\d+)+)(?:;[A-Za-z0-9
         self.reason = reason
 
 
+@dataclass(frozen=True)
+class DirectorySettings:
     """How to reach one directory and find people in it."""
 
     host: str
@@ -116,6 +119,8 @@ _ATTRIBUTE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9-]*|\d+(?:\.\d+)+)(?:;[A-Za-z0-9
     timeout_seconds: int
 
 
+@dataclass(frozen=True)
+class DirectoryAccount:
     """A person found in a directory."""
 
     dn: str
@@ -130,6 +135,7 @@ def is_attribute(value: Optional[str]) -> bool:
     return bool(value) and bool(_ATTRIBUTE.match(str(value)))
 
 
+def is_filter(value: Optional[str]) -> bool:
     """``value`` parses as an LDAP search filter (RFC 4515)."""
     if not value or not value.startswith("(") or not value.endswith(")"):
         return False
@@ -140,6 +146,7 @@ def is_attribute(value: Optional[str]) -> bool:
     return True
 
 
+def resolves_to_loopback(host: str) -> bool:
     """Every address ``host`` resolves to is a loopback address."""
     try:
         addresses = {
@@ -157,12 +164,14 @@ def is_attribute(value: Optional[str]) -> bool:
         return False
 
 
+def plaintext_permitted(host: str) -> bool:
     """Plain LDAP is allowed: the operator opted in, and the directory is
     on this machine, so nothing crosses a network unencrypted."""
     opted_in = (env(ALLOW_PLAINTEXT_LOOPBACK) or "").strip().lower() == "true"
     return opted_in and resolves_to_loopback(host)
 
 
+def configuration_problems(settings: Mapping[str, Any]) -> List[str]:
     """What is wrong with a directory's settings, as stored or as given:
     empty when it can be used."""
     problems: List[str] = []
@@ -212,6 +221,7 @@ def is_attribute(value: Optional[str]) -> bool:
     return problems
 
 
+def _loads_as_ca(pem: str) -> bool:
     try:
         ssl.create_default_context(cadata=pem)
     except (ssl.SSLError, ValueError):
@@ -219,6 +229,7 @@ def is_attribute(value: Optional[str]) -> bool:
     return True
 
 
+def _attribute(attributes: Mapping[str, Any], name: Optional[str]) -> List[bytes]:
     """The raw values of ``name`` (matched without regard to case)."""
     if not name:
         return []
@@ -229,6 +240,7 @@ def is_attribute(value: Optional[str]) -> bool:
     return []
 
 
+def _text(values: Sequence[bytes]) -> Optional[str]:
     for value in values:
         try:
             decoded = bytes(value).decode("utf-8").strip()
@@ -239,6 +251,7 @@ def is_attribute(value: Optional[str]) -> bool:
     return None
 
 
+def external_id_of(attribute: str, values: Sequence[bytes]) -> Optional[str]:
     """An entry's stable id as text: Active Directory's ``objectGUID`` is
     16 bytes in its mixed-endian layout, shown as the GUID AD tools print;
     ``entryUUID`` (OpenLDAP, 389 DS) and ``ipaUniqueID`` are text."""
@@ -250,6 +263,7 @@ def is_attribute(value: Optional[str]) -> bool:
     return _text(values)
 
 
+def user_filter(settings: DirectorySettings, username: str) -> str:
     """The filter finding ``username``: the object filter AND an equality
     match whose value is escaped, so ``*``, parentheses, backslashes and NUL
     in a username match only themselves."""
@@ -259,12 +273,14 @@ def is_attribute(value: Optional[str]) -> bool:
     return match
 
 
+def group_filter(settings: DirectorySettings, member_dn: str) -> str:
     match = f"({settings.group_member_attribute}={escape_filter_chars(member_dn)})"
     if settings.group_object_filter:
         return f"(&{settings.group_object_filter}{match})"
     return match
 
 
+def close(connection: Connection) -> None:
     """Unbind ``connection``, which may already be broken."""
     try:
         connection.unbind()
@@ -272,11 +288,13 @@ def is_attribute(value: Optional[str]) -> bool:
         return
 
 
+class LDAPDirectoryClient:
     """Sign-ins and lookups against one directory."""
 
     def __init__(self, settings: DirectorySettings) -> None:
         self.settings = settings
 
+    def server(self) -> Server:
         settings = self.settings
         if settings.security not in SECURITIES:
             raise PermanentExternalError(
@@ -303,6 +321,7 @@ def is_attribute(value: Optional[str]) -> bool:
             connect_timeout=settings.timeout_seconds,
         )
 
+    def _fail(self, exc: BaseException, doing: str) -> Exception:
         text = str(exc).lower()
         if "certificate" in text or "ssl" in text or "tls" in text:
             return PermanentExternalError(
@@ -314,6 +333,7 @@ def is_attribute(value: Optional[str]) -> bool:
             provider=PROVIDER,
         )
 
+    def _open(self, server: Server, user: str, password: str) -> Connection:
         """A connection to ``server``, secured, bound as ``user``. Raises
         :class:`CredentialsRefused` when the bind is refused."""
         if not user or not password:
@@ -354,6 +374,7 @@ def is_attribute(value: Optional[str]) -> bool:
             raise self._fail(exc, "connecting") from exc
         return connection
 
+    def _service(self, server: Server) -> Connection:
         try:
             return self._open(
                 server, self.settings.bind_dn, self.settings.bind_password
@@ -367,6 +388,7 @@ def is_attribute(value: Optional[str]) -> bool:
         """Reach the directory securely and bind as the service account."""
         close(self._service(self.server()))
 
+    def find(self, username: str) -> DirectoryAccount:
         """The one entry for ``username``, found as the service account."""
         server = self.server()
         service = self._service(server)
@@ -375,6 +397,12 @@ def is_attribute(value: Optional[str]) -> bool:
         finally:
             close(service)
 
+    def authenticate(
+        self,
+        username: str,
+        password: str,
+        admit: Optional[Callable[[DirectoryAccount], None]] = None,
+    ) -> DirectoryAccount:
         """The entry for ``username``, once its password is proven by a bind.
 
         ``admit`` sees the account found before its password is tried, and
@@ -395,6 +423,14 @@ def is_attribute(value: Optional[str]) -> bool:
         finally:
             close(service)
 
+    def _search(
+        self,
+        connection: Connection,
+        base: str,
+        search_filter: str,
+        attributes: List[str],
+        size_limit: int,
+    ) -> List[Dict[str, Any]]:
         try:
             connection.search(
                 base,
@@ -427,6 +463,7 @@ def is_attribute(value: Optional[str]) -> bool:
             if item.get("type") == "searchResEntry"
         ]
 
+    def _entry(self, service: Connection, username: str) -> Dict[str, Any]:
         if len(username) > MAX_USERNAME_LENGTH:
             raise CredentialsRefused("username too long")
         settings = self.settings
@@ -457,6 +494,9 @@ def is_attribute(value: Optional[str]) -> bool:
             raise CredentialsRefused("entry has no DN")
         return entry
 
+    def _account(
+        self, service: Connection, entry: Dict[str, Any], username: str
+    ) -> DirectoryAccount:
         settings = self.settings
         raw: Mapping[str, Any] = entry.get("raw_attributes") or {}
         external_id = external_id_of(
@@ -476,6 +516,9 @@ def is_attribute(value: Optional[str]) -> bool:
             groups=self._groups(service, str(entry["dn"]), raw),
         )
 
+    def _groups(
+        self, service: Connection, dn: str, raw: Mapping[str, Any]
+    ) -> Tuple[str, ...]:
         settings = self.settings
         if settings.group_source == "member_of":
             values = _attribute(raw, MEMBER_OF)

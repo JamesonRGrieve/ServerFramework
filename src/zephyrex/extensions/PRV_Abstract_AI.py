@@ -72,6 +72,7 @@ class ToolResult(BaseModel):
     result: Any
 
 
+class AbstractAIProvider(AbstractStaticProvider):
     """Abstract AI / LLM provider.
 
     Concrete implementations declare their settings via the typed

@@ -123,6 +123,7 @@ class BuiltPrompt(RouteModel):
     )
 
 
+class PromptManager(AbstractBLLManager, RouterMixin):
     _model = PromptModel
 
     prefix: ClassVar[Optional[str]] = "/v1/prompt"

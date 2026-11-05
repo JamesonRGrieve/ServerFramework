@@ -99,6 +99,8 @@ Write = Callable[[Optional[str]], Awaitable[Any]]
 Differs = Callable[[Mapping[str, Any], Mapping[str, Any]], bool]
 
 
+def system_ids() -> Set[str]:
+    return {env("ROOT_ID"), env("SYSTEM_ID"), env("TEMPLATE_ID")}
 
 
 def digest(resource: Mapping[str, Any]) -> str:
@@ -109,6 +111,7 @@ def _folded(value: Any) -> Optional[str]:
     return str(value).casefold() if value is not None else None
 
 
+def primary_email(resource: Mapping[str, Any]) -> Optional[str]:
     emails = [e for e in resource.get("emails") or [] if isinstance(e, Mapping)]
     chosen = next((e for e in emails if e.get("primary")), None) or (
         emails[0] if emails else None
@@ -116,6 +119,7 @@ def _folded(value: Any) -> Optional[str]:
     return _folded(chosen.get("value")) if chosen else None
 
 
+def member_ids(resource: Mapping[str, Any]) -> Optional[Set[str]]:
     """The member ids a group lists, or None when it leaves them out."""
     if "members" not in resource:
         return None
@@ -126,6 +130,7 @@ def _folded(value: Any) -> Optional[str]:
     }
 
 
+def user_differs(desired: Mapping[str, Any], remote: Mapping[str, Any]) -> bool:
     name, remote_name = desired.get("name") or {}, remote.get("name") or {}
     return (
         _folded(desired.get("userName")) != _folded(remote.get("userName"))
@@ -138,6 +143,7 @@ def _folded(value: Any) -> Optional[str]:
     )
 
 
+def group_differs(desired: Mapping[str, Any], remote: Mapping[str, Any]) -> bool:
     members = member_ids(remote)
     return (
         desired.get("displayName") != remote.get("displayName")
@@ -153,12 +159,15 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
     return bool(member_ids(current.body))
 
 
+def _expired(moment: Optional[datetime], now: datetime) -> bool:
     if moment is None:
         return False
     aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
     return aware <= now
 
 
+@dataclass
+class RemoteIndex:
     """Every remote resource of one type, by id, ``externalId`` and name."""
 
     name_attribute: str
@@ -166,6 +175,8 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
     by_external_id: Dict[str, RemoteResource] = field(default_factory=dict)
     by_name: Dict[str, RemoteResource] = field(default_factory=dict)
 
+    @classmethod
+    def of(cls, name_attribute: str, found: Iterable[RemoteResource]) -> "RemoteIndex":
         index = cls(name_attribute)
         for resource in found:
             index.by_id[resource.id] = resource
@@ -181,6 +192,8 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         return self.by_external_id.get(local_id) or self.by_name.get(name.casefold())
 
 
+@dataclass
+class Summary:
     """What one run did, per resource type and outcome."""
 
     target: str
@@ -202,12 +215,15 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         }
 
 
+def live(manager: Any, **match: Any) -> List[Any]:
     """``manager.list(**match)`` without soft-deleted rows. ROOT's reads
     include them (for audit), and a root-owned target reads as ROOT: a
     deleted user, team, membership or link must read as gone."""
+    found = manager.list(filters=[manager.DB.deleted_at.is_(None)], **match)
     return list(found or [])
 
 
+def live_one(manager: Any, record_id: str) -> Any:
     """The live record ``record_id``, or None when it is deleted or the
     requester may not see it."""
     try:
@@ -219,11 +235,15 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
     return found[0] if found else None
 
 
+def scim_provider_id(registry: Any) -> str:
+    provider = ProviderManager(model_registry=registry, requester_id=env("ROOT_ID"))
     return str(provider.get(name=Client.name).id)
 
 
+def target_instances(registry: Any) -> List[ProviderInstanceModel]:
     """The enabled SCIM targets."""
     instances = ProviderInstanceManager(
+        model_registry=registry, requester_id=env("ROOT_ID")
     )
     return [
         ProviderInstanceModel.model_validate(instance, from_attributes=True)
@@ -232,6 +252,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
     ]
 
 
+def target_instance(registry: Any, instance_ref: str) -> ProviderInstanceModel:
     """The enabled SCIM target ``instance_ref`` (its id or name); 404
     otherwise."""
     for instance in target_instances(registry):
@@ -240,9 +261,17 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
     raise HTTPException(status_code=404, detail=f"no SCIM target {instance_ref!r}")
 
 
+class SCIMSync:
     """One run against one target: built with :meth:`open`, which reads the
     target's settings and its ServiceProviderConfig."""
 
+    def __init__(
+        self,
+        registry: Any,
+        instance: ProviderInstanceModel,
+        owner: InstanceOwner,
+        config: ServiceProviderConfig,
+    ) -> None:
         from zephyrex.extensions.scim_provider.BLL_SCIMProvider import (
             ScimLinkManager,
             ScimSyncLogManager,
@@ -275,6 +304,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
 
     # ----- local state, read as the owner ----------------------------------
 
+    def _with_sub_teams(self, roots: Set[str]) -> Set[str]:
         found: Set[str] = set()
         level = set(roots)
         for _ in range(MAX_TEAM_DEPTH):
@@ -293,6 +323,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
             }
         return found
 
+    def _live_memberships(self, **match: Any) -> List[Any]:
         now = datetime.now(UTC)
         return [
             membership
@@ -301,6 +332,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
             and not _expired(membership.expires_at, now)
         ]
 
+    def scope_teams(self) -> Optional[Set[str]]:
         """The teams (with their sub-teams) the target is given; None when
         it is given every team.
 
@@ -328,8 +360,10 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
                 self._scope_teams = own if scoped is None else scoped & own
         return self._scope_teams
 
+    def team_members(self, team_id: str) -> Set[str]:
         return {str(m.user_id) for m in self._live_memberships(team_id=team_id)}
 
+    def scope_users(self) -> Optional[Set[str]]:
         """The users the target is given; None when it is given every
         user. Members of its teams, and a non-root owner themself."""
         teams = self.scope_teams()
@@ -342,11 +376,13 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
             self._scope_users = users
         return self._scope_users
 
+    def local_user(self, user_id: str) -> Any:
         scoped = self.scope_users()
         if user_id in system_ids() or (scoped is not None and user_id not in scoped):
             return None
         return live_one(self.users, user_id)
 
+    def local_team(self, team_id: str) -> Any:
         teams = self.scope_teams()
         if team_id in system_ids() or (teams is not None and team_id not in teams):
             return None
@@ -357,6 +393,8 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
             return self.local_user(local_id)
         return self.local_team(local_id)
 
+    @staticmethod
+    def _every(manager: Any) -> List[Any]:
         found: List[Any] = []
         offset = 0
         while True:
@@ -366,6 +404,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
                 return found
             offset += LOCAL_PAGE_SIZE
 
+    def local_records(self, resource_type: str) -> Dict[str, Any]:
         """Every local record of ``resource_type`` the target is given."""
         scoped = self.scope_users() if resource_type == USER else self.scope_teams()
         if scoped is not None:
@@ -382,6 +421,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
 
     # ----- what the target is given ----------------------------------------
 
+    def user_resource(self, user: Any) -> Optional[Dict[str, Any]]:
         """``user`` as a SCIM User, or None when it has no ``userName``."""
         user_name = user.email if self.user_name_source == "email" else user.username
         if not user_name:
@@ -415,6 +455,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
             resource["timezone"] = user.timezone
         return resource
 
+    def remote_user_ids(self) -> Dict[str, str]:
         """Local user id -> remote id, for the users this target holds.
         Read once a run, after the users are pushed."""
         if self._remote_users is None:
@@ -429,6 +470,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
             }
         return self._remote_users
 
+    def group_resource(self, team: Any) -> Dict[str, Any]:
         remote = self.remote_user_ids()
         members = sorted(
             remote[user] for user in self.team_members(str(team.id)) if user in remote
@@ -440,6 +482,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
             "members": [{"value": member} for member in members],
         }
 
+    def desired(self, resource_type: str, record: Any) -> Optional[Dict[str, Any]]:
         if record is None:
             return None
         if resource_type == USER:
@@ -448,6 +491,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
 
     # ----- links and the log -----------------------------------------------
 
+    def link_for(self, resource_type: str, local_id: str) -> Any:
         found = live(
             self.links,
             provider_instance_id=self.instance.id,
@@ -510,6 +554,9 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
 
     # ----- remote writes ---------------------------------------------------
 
+    async def _with_fresh_etag(
+        self, resource_type: str, remote_id: str, etag: Optional[str], write: Write
+    ) -> Any:
         """``write(if_match)``, with ``If-Match`` only when the target
         supports ETags; on 412 the version is reread and the write made
         once more against it."""
@@ -523,6 +570,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         fresh = await Client.get(self.instance, resource_type, remote_id)
         return await write(fresh.etag)
 
+    async def _create(self, link: Any, desired: Dict[str, Any]) -> str:
         resource_type = str(link.resource_type)
         name_attribute = NAME_ATTRIBUTES[resource_type]
         try:
@@ -545,6 +593,9 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         self.synced(link, desired, remote)
         return "created"
 
+    async def _update(
+        self, link: Any, desired: Dict[str, Any], current: Optional[RemoteResource]
+    ) -> Optional[RemoteResource]:
         """PATCH (when supported) or PUT ``desired`` over the remote record;
         the record as written, when the target answers with it."""
         resource_type, remote_id = str(link.resource_type), str(link.remote_id)
@@ -576,6 +627,13 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         self.record(resource_type, "replace", link.local_id, remote_id)
         return written
 
+    async def _operations(
+        self,
+        resource_type: str,
+        remote_id: str,
+        desired: Dict[str, Any],
+        current: Optional[RemoteResource],
+    ) -> List[Dict[str, Any]]:
         """The PATCH operations taking the remote record to ``desired``.
         Its attributes are one path-less ``replace``; a group's membership
         is ``add`` and ``remove`` operations against what it lists now (a
@@ -604,6 +662,9 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         )
         return operations
 
+    async def _push(
+        self, link: Any, desired: Dict[str, Any], index: Optional[RemoteIndex]
+    ) -> str:
         resource_type = str(link.resource_type)
         name_attribute = NAME_ATTRIBUTES[resource_type]
         differs: Differs = user_differs if resource_type == USER else group_differs
@@ -650,6 +711,9 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         link = self.links.update(link.id, remote_id=None, remote_etag=None)
         return await self._create(link, desired)
 
+    async def _deprovision(
+        self, link: Any, current: Optional[RemoteResource]
+    ) -> Optional[str]:
         """Take a gone record off the target: None when it was never there
         (its link is dropped)."""
         if not link.remote_id:
@@ -688,6 +752,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         )
         return outcome
 
+    async def _deactivate(self, link: Any, current: Optional[RemoteResource]) -> None:
         """A user becomes ``active: false``; a group loses its members."""
         resource_type, remote_id = str(link.resource_type), str(link.remote_id)
         write: Write
@@ -726,6 +791,9 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
 
     # ----- one record ------------------------------------------------------
 
+    async def sync_link(
+        self, link: Any, record: Any, index: Optional[RemoteIndex]
+    ) -> None:
         """Push one linked record as it now stands. A refused push is noted
         on the link (left pending, for the next run) and in the log; a
         refused token or an outlasted rate limit ends the run."""
@@ -775,6 +843,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
     def types(self) -> List[str]:
         return [USER, GROUP] if self.push_groups else [USER]
 
+    async def drain(self) -> Summary:
         """Push every pending link, users before groups."""
         for resource_type in self.types():
             pending = live(
@@ -788,6 +857,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
                 await self.sync_link(link, record, None)
         return self.summary
 
+    async def reconcile(self) -> Summary:
         """Bring the whole target in line: every local record in scope is
         linked and pushed where it differs, every linked record no longer
         in scope is taken off."""
@@ -816,6 +886,9 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
         return self.summary
 
 
+def mark_pending(
+    registry: Any, resource_type: str, local_ids: Iterable[Optional[str]]
+) -> List[str]:
     """Flag ``local_ids`` for a push to every enabled target, writing as
     each target's owner; the ids of the targets flagged."""
     from zephyrex.extensions.scim_provider.BLL_SCIMProvider import ScimLinkManager
@@ -827,6 +900,7 @@ def still_provisioned(resource_type: str, current: RemoteResource) -> bool:
     for instance in target_instances(registry):
         owner = instance_owner(registry, instance.id)
         links = ScimLinkManager(
+            model_registry=registry, requester_id=owner.requester_id
         )
         for local_id in ids:
             found = live(

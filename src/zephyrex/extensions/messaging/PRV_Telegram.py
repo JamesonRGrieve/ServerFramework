@@ -24,6 +24,7 @@ TELEGRAM_API = "https://api.telegram.org"
 _BOT_TOKEN = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
 
 
+class PRV_Telegram_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "telegram"
     friendly_name: ClassVar[str] = "Telegram"
     description: ClassVar[str] = "Telegram, as a bot"
@@ -38,6 +39,8 @@ _BOT_TOKEN = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
         ),
     )
 
+    @classmethod
+    def _bot(cls, instance: ProviderInstanceModel) -> str:
         token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(

@@ -100,6 +100,7 @@ def overpass_places(
     return sorted(found.values(), key=lambda p: p["distance_m"])[:limit]
 
 
+def osrm_instruction(maneuver: Mapping[str, Any], road: str) -> str:
     """Words for an OSRM step, which carries a maneuver but no text."""
     kind = str(maneuver.get("type", ""))
     modifier = str(maneuver.get("modifier", ""))
@@ -126,6 +127,7 @@ def overpass_places(
     return f"{verb}{direction}{onto}"
 
 
+class PRV_OpenStreetMap_Maps(AbstractMapsProvider):
     name: ClassVar[str] = "openstreetmap"
     friendly_name: ClassVar[str] = "OpenStreetMap"
     description: ClassVar[str] = (

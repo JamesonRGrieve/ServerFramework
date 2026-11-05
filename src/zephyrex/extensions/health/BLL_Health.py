@@ -288,6 +288,7 @@ class HealthWeightManager(AbstractBLLManager, RouterMixin):
     _model = HealthWeightModel
 
 
+class HealthSleepManager(AbstractBLLManager, RouterMixin):
     _model = HealthSleepModel
 
     def _timed(self, fields: Dict[str, Any]) -> Dict[str, Any]:
@@ -316,7 +317,9 @@ class HealthCheckInManager(AbstractBLLManager, RouterMixin):
     _model = HealthCheckInModel
 
 
+def erase_health(user_id: str, model_registry: Any) -> None:
     """A deleted account's whole health log goes. Safe to run twice."""
+    root = env("ROOT_ID")
     base = model_registry.DB.manager.Base
     for model in (
         HealthActivityModel,
@@ -328,7 +331,9 @@ class HealthCheckInManager(AbstractBLLManager, RouterMixin):
         db = model.DB(base)
         rows = (
             db.list(
+                requester_id=root,
                 model_registry=model_registry,
+                filters=[db.created_by_user_id == user_id, db.deleted_at.is_(None)],
                 return_type="dto",
                 override_dto=model,
             )
@@ -336,6 +341,7 @@ class HealthCheckInManager(AbstractBLLManager, RouterMixin):
         )
         for row in rows:
             db.delete(
+                requester_id=root,
                 model_registry=model_registry,
                 filters=[db.id == row.id],
             )

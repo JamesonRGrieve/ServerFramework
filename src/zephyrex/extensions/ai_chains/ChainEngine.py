@@ -131,6 +131,7 @@ class RunState:
     produced: bool = False
 
 
+class ChainEngine:
     """Runs chains as ``requester_id``, who must see the run."""
 
     def __init__(
@@ -151,6 +152,7 @@ class RunState:
     def _bookkeeping(self, manager_class: Any) -> Any:
         return self._as(manager_class, env("ROOT_ID"))
 
+    async def run(self, run_id: str) -> Dict[str, Any]:
         """Execute the run and return a summary. A run that fails or is
         cancelled is recorded on its row (status, error, error_kind) and
         returned, never raised. A run executes once: one no longer pending
@@ -178,11 +180,13 @@ class RunState:
             await self._execute(state)
         except ChainError as stopped:
             return self._finish(state, stopped)
+        except Exception:  # the task-runner boundary: record, never propagate
             logger.exception("Chain run %s failed", run.id)
             failure = ChainError("internal error")
             return self._finish(state, failure)
         return self._finish(state, None)
 
+    def _finish(self, state: RunState, stopped: Optional[ChainError]) -> Dict[str, Any]:
         status = SUCCEEDED
         if stopped is not None:
             status = CANCELLED if isinstance(stopped, ChainCancelledError) else FAILED
@@ -210,6 +214,7 @@ class RunState:
             summary.update(error=str(stopped), error_kind=stopped.kind)
         return summary
 
+    def _load_steps(self, state: RunState) -> None:
         """The chain's steps in order, checked as a whole: names unique,
         every jump to a step that exists, and every loop bounded."""
         steps = self._as(ChainStepManager, state.acting).ordered(state.chain.id)
@@ -299,6 +304,7 @@ class RunState:
         while not runs.get(id=state.run.id).cancel_requested:
             await asyncio.sleep(CANCEL_POLL_SECONDS)
 
+    async def _perform(self, state: RunState, step: Any) -> StepOutcome:
         try:
             if step.kind == "prompt":
                 return await self._prompt(state, step)
@@ -323,6 +329,7 @@ class RunState:
             for name, expression in (step.arguments or {}).items()
         }
 
+    async def _prompt(self, state: RunState, step: Any) -> StepOutcome:
         """The prompt, read as the owner and filled from the run's variables
         of the same names, then the step's arguments; its answer's text."""
         prompts = self._as(PromptManager, state.acting)
@@ -359,11 +366,13 @@ class RunState:
             ability_id=str(step.ability_id), name=ability.name, extension=extension.name
         )
 
+    async def _ability(self, state: RunState, step: Any) -> StepOutcome:
         """The ability called with the step's arguments, as the owner."""
         grant = self._grant(state, step)
         arguments = self._arguments(state, step)
         invoker = AbilityInvoker(
             model_registry=self.model_registry,
+            requester_id=state.acting,
             never_invocable=NEVER_CHAIN_INVOCABLE,
         )
         result = await invoker.invoke(grant.name, arguments, {grant.name: grant})
@@ -396,6 +405,7 @@ class RunState:
             output=jsonable_encoder(evaluate(step.expression, state.variables)),
         )
 
+    def _keep(self, state: RunState, step: Any, outcome: StepOutcome) -> None:
         """The step's output, kept within the chain's bounds: into its
         variable, and as the run's latest output."""
         size = len(_as_text(outcome.output))

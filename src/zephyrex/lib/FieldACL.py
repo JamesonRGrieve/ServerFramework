@@ -71,6 +71,7 @@ def Sensitive(  # noqa: N802 — naming mirrors typing.Annotated style
     return {"json_schema_extra": requires(*perms)}
 
 
+def requires(*permissions: str):
     """Pydantic field metadata helper. Use as:
 
     class Foo(BaseModel):
@@ -79,6 +80,7 @@ def Sensitive(  # noqa: N802 — naming mirrors typing.Annotated style
     return {_REQUIRES_KEY: tuple(permissions)}
 
 
+def get_required_permissions(field_info: FieldInfo) -> FrozenSet[str]:
     """Return the frozenset of permissions a requester must hold to see
     this field. Empty frozenset means "no restriction"."""
     extra = getattr(field_info, "json_schema_extra", None) or {}
@@ -88,6 +90,10 @@ def Sensitive(  # noqa: N802 — naming mirrors typing.Annotated style
     return frozenset(perms)
 
 
+def filter_response_dict(
+    model: BaseModel,
+    has_permission: Callable[[str], bool],
+) -> dict:
     """Return ``model.model_dump()`` with disallowed fields omitted.
 
     For each field whose ``requires`` set is non-empty, the field is
@@ -106,6 +112,9 @@ def Sensitive(  # noqa: N802 — naming mirrors typing.Annotated style
     return data
 
 
+def collect_restricted_fields(
+    model_cls: Type[BaseModel],
+) -> List[tuple[str, FrozenSet[str]]]:
     """Walk a model class for ``requires``-tagged fields. Returns
     [(field_name, frozenset_of_permissions), ...]."""
     results = []
@@ -116,6 +125,7 @@ def Sensitive(  # noqa: N802 — naming mirrors typing.Annotated style
     return sorted(results, key=lambda x: x[0])
 
 
+def restricted_for_filter_or_order(model_cls: Type[BaseModel]) -> FrozenSet[str]:
     """The set of field names a requester without grants cannot use
     in ``ORDER BY`` or filter clauses (Item 45 inference-attack
     mitigation). Endpoints validate against this set at request
@@ -136,6 +146,7 @@ def Sensitive(  # noqa: N802 — naming mirrors typing.Annotated style
 _FieldKey = Tuple[Type[BaseModel], int]
 
 
+class FieldACLCache:
     """Per-request cache of (model, requester) → allowed-field-set lookups.
 
     Multiple resolvers / serializers in the same request share one cache so
@@ -148,6 +159,12 @@ _FieldKey = Tuple[Type[BaseModel], int]
         self._cache: Dict[_FieldKey, FrozenSet[str]] = {}
         self._lock = RLock()
 
+    def allowed_fields(
+        self,
+        model_cls: Type[BaseModel],
+        requester_id: int,
+        has_permission: Callable[[str], bool],
+    ) -> FrozenSet[str]:
         """Return the set of field names allowed for ``requester_id``.
 
         Cached on (model_cls, requester_id). The first call materializes
@@ -166,6 +183,7 @@ _FieldKey = Tuple[Type[BaseModel], int]
                 if not required or all(has_permission(p) for p in required):
                     allowed.append(name)
             result = frozenset(allowed)
+            self._cache[key] = result
             return result
 
 
@@ -174,6 +192,15 @@ _FieldKey = Tuple[Type[BaseModel], int]
 # ---------------------------------------------------------------------------
 
 
+def apply_field_acl_to_response(
+    payload: Any,
+    model_cls: Optional[Type[BaseModel]],
+    has_permission: Optional[Callable[[str], bool]],
+    *,
+    sentinel_mode: str = DEFAULT_SENTINEL_MODE,
+    cache: Optional[FieldACLCache] = None,
+    requester_id: Optional[int] = None,
+) -> Any:
     """Apply Item 45 field ACL to a serialized REST/GraphQL payload.
 
     ``payload`` may be a single dict, a list of dicts, or arbitrary other
@@ -204,6 +231,12 @@ _FieldKey = Tuple[Type[BaseModel], int]
     return _apply_to_value(payload, model_cls, allowed, sentinel_mode)
 
 
+def _apply_to_value(
+    value: Any,
+    model_cls: Type[BaseModel],
+    allowed: FrozenSet[str],
+    sentinel_mode: str,
+) -> Any:
     if value is None:
         return value
     if isinstance(value, list):
@@ -217,6 +250,12 @@ _FieldKey = Tuple[Type[BaseModel], int]
     return value
 
 
+def _apply_to_dict(
+    data: Dict[str, Any],
+    model_cls: Type[BaseModel],
+    allowed: FrozenSet[str],
+    sentinel_mode: str,
+) -> Dict[str, Any]:
     """Filter a serialized dict by the allowed-field set."""
     filtered: Dict[str, Any] = {}
     for key, value in data.items():
@@ -234,6 +273,7 @@ _FieldKey = Tuple[Type[BaseModel], int]
 # ---------------------------------------------------------------------------
 
 
+class FieldACLViolation(Exception):
     """Raised when a query references a field the requester cannot access.
 
     Endpoints catch this and return a typed 403 / GraphQL error rather than
@@ -249,6 +289,13 @@ _FieldKey = Tuple[Type[BaseModel], int]
         )
 
 
+def validate_query_field_access(
+    model_cls: Type[BaseModel],
+    requested_fields: Iterable[str],
+    has_permission: Optional[Callable[[str], bool]],
+    *,
+    context: str = "query",
+) -> List[str]:
     """Reject ``requested_fields`` that reference restricted fields the
     requester cannot access.
 

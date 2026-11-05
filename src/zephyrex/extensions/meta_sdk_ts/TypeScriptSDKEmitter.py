@@ -133,6 +133,7 @@ def _return_type(operation: Operation) -> str:
     return "Promise<void>" if operation.name == "delete" else "Promise<unknown>"
 
 
+def _render_method(resource: ResourceDescriptor, operation: Operation) -> str:
     init_parts: List[str] = []
     body = _body_literal(resource, operation)
     if body:
@@ -207,6 +208,7 @@ def _format_typescript_sources(files: List[Path]) -> None:
     )
 
 
+def generate_typescript_sdk(*, model_registry: Any) -> None:
     """Emit a TypeScript client SDK for every manager in the registry.
 
     Self-gates on ``SDK_TS_OUTPUT_DIR``; returns immediately when unset.

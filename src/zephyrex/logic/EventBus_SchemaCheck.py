@@ -33,6 +33,7 @@ from zephyrex.lib.TypeUnions import is_optional
 # ---------------------------------------------------------------------------
 
 
+def event_schema(event_class: Type[BaseModel]) -> Dict[str, Any]:
     """Return a normalized schema dict for ``event_class``.
 
     Normalization ensures the diff is stable across Pydantic versions:
@@ -57,6 +58,7 @@ from zephyrex.lib.TypeUnions import is_optional
                 default = finfo.default
                 if default is not None and not _is_pydantic_undefined(default):
                     entry["default"] = _safe_jsonify(default)
+            except Exception:  # noqa: BLE001
                 pass
         fields[fname] = entry
     return {
@@ -66,6 +68,7 @@ from zephyrex.lib.TypeUnions import is_optional
     }
 
 
+def _type_name(annotation: Any) -> str:
     if annotation is None:
         return "None"
     name = getattr(annotation, "__name__", None)
@@ -79,6 +82,7 @@ def _is_pydantic_undefined(value: Any) -> bool:
     return repr(value).endswith("PydanticUndefined")
 
 
+def _safe_jsonify(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return repr(value)
@@ -89,6 +93,10 @@ def _is_pydantic_undefined(value: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def write_snapshot(
+    snapshot_path: Path,
+    event_classes: Sequence[Type[BaseModel]],
+) -> None:
     """Write the snapshot file for ``event_classes`` to ``snapshot_path``.
 
     Snapshot is sorted by ``module.name`` so the file is byte-stable
@@ -103,6 +111,7 @@ def _is_pydantic_undefined(value: Any) -> bool:
     )
 
 
+def read_snapshot(snapshot_path: Path) -> List[Dict[str, Any]]:
     """Read the snapshot file. Returns the schemas list."""
     if not snapshot_path.exists():
         return []
@@ -115,6 +124,8 @@ def _is_pydantic_undefined(value: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class CompatibilityFinding:
     """A single breaking-change finding from the compatibility checker."""
 
     event: str
@@ -125,6 +136,8 @@ def _is_pydantic_undefined(value: Any) -> bool:
         return {"event": self.event, "kind": self.kind, "detail": self.detail}
 
 
+@dataclass
+class CompatibilityReport:
     """Outcome of a single check run."""
 
     breaking: List[CompatibilityFinding] = field(default_factory=list)
@@ -135,6 +148,10 @@ def _is_pydantic_undefined(value: Any) -> bool:
         return not self.breaking
 
 
+def check_compatibility(
+    snapshot_schemas: Iterable[Dict[str, Any]],
+    live_event_classes: Sequence[Type[BaseModel]],
+) -> CompatibilityReport:
     """Compare live event classes against a committed snapshot.
 
     Reports every breaking change (field removed, renamed, type narrowed,
@@ -213,6 +230,7 @@ def _is_pydantic_undefined(value: Any) -> bool:
     return report
 
 
+def discover_event_classes(modules: Sequence[str]) -> List[Type[BaseModel]]:
     """Walk the named modules, return every Pydantic event class found.
 
     "Event class" is heuristically defined as a `BaseModel` subclass
@@ -227,6 +245,7 @@ def _is_pydantic_undefined(value: Any) -> bool:
     discovered: List[Type[BaseModel]] = []
     for mod_name in modules:
         try:
+            mod = importlib.import_module(mod_name)
         except ImportError:
             continue
         for _name, obj in inspect.getmembers(mod, inspect.isclass):

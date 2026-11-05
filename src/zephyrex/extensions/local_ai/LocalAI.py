@@ -135,6 +135,7 @@ def completion_answer(
     }
 
 
+class AbstractLocalAIProvider(AbstractAIProvider):
     """A model format run on this server; each instance is one model."""
 
     instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = LOCAL_MODEL_SETTINGS
@@ -350,6 +351,7 @@ def completion_answer(
         }
 
 
+class AbstractLocalAIExtension(AbstractStaticExtension):
     """The abilities a local model format's extension offers over its
     models. ``model`` names one model instance (its name or id); without
     it a call goes to the first model in the rotation that can answer.

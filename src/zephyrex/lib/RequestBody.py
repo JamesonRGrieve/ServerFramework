@@ -24,6 +24,7 @@ def too_large(detail: str) -> HTTPException:
     return HTTPException(status_code=413, detail=detail)
 
 
+async def capped_body(request: Request, limit: int, too_large_detail: str) -> bytes:
     """The request body, refused (413, ``too_large_detail``) as soon as it
     is longer than ``limit`` bytes: by its declared length, or as it streams
     in."""
@@ -40,6 +41,7 @@ def too_large(detail: str) -> HTTPException:
     return b"".join(chunks)
 
 
+def route_body_limit(scope: Mapping[str, Any]) -> Optional[int]:
     """The body cap the route this request is for declares (its
     ``@custom_route`` ``max_body_bytes``), or None: matched by method and
     path against the app's routes, included routers flattened as FastAPI

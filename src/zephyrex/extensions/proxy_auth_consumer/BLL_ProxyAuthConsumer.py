@@ -122,6 +122,12 @@ def _forbidden(detail: str) -> HTTPException:
 # ---------------------------------------------------------------------------
 
 
+class UserProxyAuthLinkModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference,
+    metaclass=ModelMeta,
+):
     """An identity the trusted proxy asserts, which signs in as a user."""
 
     identity: str = Field(..., description="The identity the proxy asserts, exactly")
@@ -131,8 +137,10 @@ def _forbidden(detail: str) -> HTTPException:
 
     table_comment: ClassVar[str] = "Links a local user to a proxy-asserted identity"
 
+    class Create(BaseModel, UserModel.Reference.ID):
         identity: str
 
+    class Update(BaseModel):
         last_login_at: Optional[datetime] = Field(
             None, description="Set by sign-in only"
         )
@@ -146,9 +154,11 @@ def _forbidden(detail: str) -> HTTPException:
         last_login_at: Optional[DateSearchModel] = None
 
 
+class ProxyLoginRequest(RouteModel):
     """Nothing: the credential is the trusted proxy's headers."""
 
 
+class ProxyLoginResponse(RouteModel):
     """The password-login response (``user``, ``token``, ``preferences``,
     ``teams``, ``session_key``) for the asserted user or, for a user with a
     verified second factor, the MFA challenge to complete at POST
@@ -173,6 +183,7 @@ def _forbidden(detail: str) -> HTTPException:
 # ---------------------------------------------------------------------------
 
 
+class AssertedIdentity(NamedTuple):
     """What the trusted proxy says about the user."""
 
     identity: str
@@ -180,6 +191,7 @@ def _forbidden(detail: str) -> HTTPException:
     name: Optional[str]
 
 
+def _header_name(key: str, default: str) -> str:
     """The configured header name; 503 when it is not a plain token."""
     name = (env(key) or default).strip()
     if not _HEADER_NAME.fullmatch(name):
@@ -188,6 +200,7 @@ def _forbidden(detail: str) -> HTTPException:
     return name
 
 
+def _from_trusted_proxy(request: Request) -> bool:
     """The connection's peer is a configured authenticating proxy. A
     malformed allow-list is a misconfiguration that trusts no one (503)."""
     peer = request.client.host if request.client else None
@@ -209,6 +222,7 @@ def _forbidden(detail: str) -> HTTPException:
     return any(address in network for network in networks)
 
 
+def _single_value(request: Request, header: str, limit: int) -> Optional[str]:
     """The header's one value, as UTF-8, stripped; None when absent or
     blank. 400 when it is sent twice, is not UTF-8, is longer than
     ``limit`` or holds a control character."""
@@ -228,6 +242,7 @@ def _forbidden(detail: str) -> HTTPException:
     return value or None
 
 
+def asserted_identity(request: Request) -> AssertedIdentity:
     """The identity the trusted proxy asserts for this request. 401 when
     the peer is not a trusted proxy or asserts no one; 400 when a header
     is malformed."""
@@ -266,6 +281,7 @@ def _forbidden(detail: str) -> HTTPException:
     return AssertedIdentity(identity=identity, email=email, name=name)
 
 
+def validate_identity(identity: str) -> None:
     """400 for an identity no proxy should assert: empty, too long, with a
     control character, or with a comma (two values joined into one)."""
     if not identity or len(identity) > MAX_IDENTITY_LENGTH:
@@ -279,6 +295,7 @@ def _forbidden(detail: str) -> HTTPException:
 # ---------------------------------------------------------------------------
 
 
+class UserProxyAuthLinkManager(AbstractBLLManager, RouterMixin):
     """A user's proxy identities (read and unlink), and the sign-in."""
 
     _model = UserProxyAuthLinkModel
@@ -295,6 +312,7 @@ def _forbidden(detail: str) -> HTTPException:
         RouteType.DELETE,
     ]
 
+    def create(self, **kwargs: Any) -> Any:
         """Link an identity to a user: ROOT and SYSTEM only. The link is
         written as its user, so they can see and remove it."""
         if not server_side(str(self.requester.id)):
@@ -314,6 +332,7 @@ def _forbidden(detail: str) -> HTTPException:
             )
         return self._link(identity, user_id)
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its last login)."""
         if not server_side(str(self.requester.id)):
             raise _forbidden("Proxy identity links are not edited")
@@ -321,7 +340,9 @@ def _forbidden(detail: str) -> HTTPException:
         kwargs.pop("identity", None)
         return super().update(id, **kwargs)
 
+    def _link(self, identity: str, user_id: str) -> Any:
         return self.DB.create(
+            requester_id=user_id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(UserProxyAuthLinkModel),
@@ -329,21 +350,28 @@ def _forbidden(detail: str) -> HTTPException:
             user_id=user_id,
         )
 
+    def linked(self, identity: str) -> Optional[Any]:
         """The live link for ``identity`` (exact match)."""
         links = self.DB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=UserProxyAuthLinkModel,
+            filters=[self.DB.identity == identity, self.DB.deleted_at.is_(None)],
         )
         return links[0] if links else None
 
+    def _users(self, **filters: Any) -> List[Dict[str, Any]]:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         users: List[Dict[str, Any]] = UserDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
+            filters=[UserDB.deleted_at.is_(None)]
             + [getattr(UserDB, key) == value for key, value in filters.items()],
         )
         return users
 
+    def _account(self, user_id: str) -> Dict[str, Any]:
         """The live, active account ``user_id``, which may not be an
         internal one (ROOT, SYSTEM, the template user). 403 otherwise."""
         refuse_internal_account(user_id)
@@ -356,6 +384,7 @@ def _forbidden(detail: str) -> HTTPException:
 
     # -- signing in ---------------------------------------------------------
 
+    def _registered(self, asserted: AssertedIdentity) -> Dict[str, Any]:
         """A new account for the asserted identity, as REGISTRATION_MODE
         allows. Its email is set only when the proxy is trusted for it."""
         # Read through the module: the settings snapshot is replaced when
@@ -371,6 +400,7 @@ def _forbidden(detail: str) -> HTTPException:
             if not invitations:
                 raise _forbidden("User registration requires an invitation")
         created = UserModel.DB(self.model_registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(UserModel),
@@ -398,11 +428,13 @@ def _forbidden(detail: str) -> HTTPException:
             user = self._registered(asserted)
         return self._link(asserted.identity, str(user["id"]))
 
+    def resolve_user(self, asserted: AssertedIdentity) -> Dict[str, Any]:
         """The active local user the asserted identity signs in as, linked
         (or created) on first sign-in."""
         link = self.linked(asserted.identity) or self._first_link(asserted)
         user = self._account(str(link.user_id))
         self.DB.update(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=link.id,
             new_properties={"last_login_at": _now()},

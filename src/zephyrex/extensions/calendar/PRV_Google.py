@@ -30,6 +30,7 @@ def when(moment: Mapping[str, Any]) -> str:
     return str(moment.get("dateTime") or moment.get("date") or "")
 
 
+class PRV_Google_Calendar(AbstractCalendarProvider):
     name: ClassVar[str] = "google_calendar"
     friendly_name: ClassVar[str] = "Google Calendar"
     description: ClassVar[str] = "Google Calendar"
@@ -86,6 +87,8 @@ def when(moment: Mapping[str, Any]) -> str:
             url=found.get("htmlLink", ""),
         )
 
+    @staticmethod
+    def _body(fields: Dict[str, Any]) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
         if "title" in fields:
             body["summary"] = fields["title"]

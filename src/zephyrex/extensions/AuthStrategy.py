@@ -25,6 +25,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
 # ----- ABC + concrete strategies -------------------------------------------
 
 
+class AuthStrategy(ABC):
     """Base class for all authentication strategies.
 
     All concrete strategies MUST be safe to invoke concurrently from
@@ -49,6 +50,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
         """Refresh the strategy's credential material if stale. Idempotent."""
 
 
+class APIKeyAuth(AuthStrategy):
     """Static API-key authentication via a request header."""
 
     def __init__(
@@ -74,6 +76,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
         return None
 
 
+class OAuth2Auth(AuthStrategy):
     """OAuth2 bearer-token authentication with optional refresh.
 
     `refresh_if_needed` is a stub that the external OAuth extension may
@@ -121,6 +124,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
             self._expires_at = expires_at
 
 
+class JWTBearerAuth(AuthStrategy):
     """Static JWT bearer-token authentication (no refresh)."""
 
     def __init__(self, token: str) -> None:
@@ -139,6 +143,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
         return None
 
 
+class BasicAuth(AuthStrategy):
     """HTTP Basic authentication."""
 
     def __init__(self, username: str, password: str) -> None:
@@ -161,6 +166,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
         return None
 
 
+class MTLSAuth(AuthStrategy):
     """mTLS authentication.
 
     Stores cert/key paths; the shared HTTP client reads them off the
@@ -185,6 +191,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
         return None
 
 
+class AWSSigV4Auth(AuthStrategy):
     """AWS Signature V4 authentication.
 
     The actual signing is stubbed — the contract is what matters for the
@@ -230,6 +237,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional
 # ----- Registry -------------------------------------------------------------
 
 
+class AuthStrategyRegistry:
     """Global registry of auth-strategy factories keyed by name.
 
     Built-in strategies register themselves at module import time.
@@ -275,6 +283,7 @@ def _api_key_factory(payload: Dict[str, Any]) -> AuthStrategy:
     )
 
 
+def _oauth2_factory(payload: Dict[str, Any]) -> AuthStrategy:
     return OAuth2Auth(
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token"),

@@ -82,6 +82,7 @@ def derive_period_key(
 # ---------------------------------------------------------------------------
 
 
+class Quota(BaseModel):
     """Unified per-user / per-team quota row.
 
     Semantics (matches Item 19 prose):
@@ -148,6 +149,13 @@ def derive_period_key(
 # ---------------------------------------------------------------------------
 
 
+def find_matching_quotas(
+    quotas: List[Quota],
+    user_id: str,
+    team_id: Optional[str],
+    ability: str,
+    now: Optional[datetime] = None,
+) -> List[Quota]:
     """Return the quota rows that apply to a (user, team, ability, time).
 
     Per Item 19 prose, multiple rows can match a single request:
@@ -227,6 +235,7 @@ def _try_distributed_consume(quotas: List[Quota], amount: int) -> Optional[bool]
         return None
 
 
+def try_consume(quotas: List[Quota], amount: int = 1) -> bool:
     """Atomically decrement ``amount`` from every matching quota row.
 
     Returns ``True`` if every row had enough headroom and was decremented;
@@ -267,6 +276,7 @@ def _try_distributed_consume(quotas: List[Quota], amount: int) -> Optional[bool]
 # ---------------------------------------------------------------------------
 
 
+class QuotaExhaustedError(Exception):
     """Raised when a request's matching quota is exhausted."""
 
     def __init__(self, scope: str, ability: str, period: str):

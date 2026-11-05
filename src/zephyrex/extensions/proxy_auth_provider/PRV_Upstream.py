@@ -29,9 +29,12 @@ DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MIN_SIGNING_SECRET_BYTES = 32
 
 
+class UpstreamMisconfigured(ValueError):
     """An upstream's settings cannot be used; the message names the setting."""
 
 
+@dataclass(frozen=True)
+class Upstream:
     """One upstream's settings, checked."""
 
     name: str
@@ -48,6 +51,7 @@ MIN_SIGNING_SECRET_BYTES = 32
         return not self.allowed_teams or bool(self.allowed_teams & teams)
 
 
+def base_url(raw: Optional[str]) -> str:
     url = (raw or "").strip()
     parts = urlsplit(url)
     if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
@@ -57,6 +61,7 @@ MIN_SIGNING_SECRET_BYTES = 32
     return url
 
 
+def positive_number(raw: Optional[str], what: str, ceiling: float) -> float:
     try:
         value = float(raw or "")
     except ValueError:
@@ -66,15 +71,18 @@ MIN_SIGNING_SECRET_BYTES = 32
     return value
 
 
+def byte_count(raw: Optional[str], what: str) -> int:
     text = (raw or "").strip()
     if not text.isdigit() or int(text) <= 0:
         raise UpstreamMisconfigured(f"{what} is a whole number of bytes above 0")
     return int(text)
 
 
+def team_ids(raw: Optional[str]) -> FrozenSet[str]:
     return frozenset(item for item in (raw or "").replace(",", " ").split() if item)
 
 
+class PRV_Upstream_ProxyAuthProvider(AbstractStaticProvider):
     name: ClassVar[str] = "proxy_auth_upstream"
     friendly_name: ClassVar[str] = "Proxied upstream"
     description: ClassVar[str] = (
@@ -120,6 +128,8 @@ MIN_SIGNING_SECRET_BYTES = 32
     def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         return AbstractProviderInstance(instance)
 
+    @classmethod
+    def upstream(cls, instance: ProviderInstanceModel) -> Upstream:
         """``instance``'s settings, checked. Raises UpstreamMisconfigured."""
         secret = cls.setting(instance, "signing_secret")
         if secret and len(secret.encode("utf-8")) < MIN_SIGNING_SECRET_BYTES:

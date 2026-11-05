@@ -46,6 +46,10 @@ class TeamModel(
         }
     ]
 
+    @classmethod
+    def user_has_read_access(
+        cls, user_id, id, db, referred=False, db_manager=None, model_registry=None
+    ):
         """
         Check if user has read access to a team.
         Read access requires VIEW permission.
@@ -89,9 +93,11 @@ class TeamModel(
                 return False
 
             # Check if record is deleted - only ROOT_ID can see
+            if hasattr(team, "deleted_at") and team.deleted_at is not None:
                 return False
 
             # Teams created by ROOT_ID can only be viewed by ROOT_ID
+            if team.created_by_user_id == env("ROOT_ID"):
                 return False
 
             # Teams created by TEMPLATE_ID can be viewed by everyone
@@ -105,6 +111,9 @@ class TeamModel(
 
         return False
 
+    class Create(
+        BaseModel, NameMixinModel, ParentMixinModel.Optional, ImageMixinModel.Optional
+    ):
         description: Optional[str] = Field(None, description="Team description")
 
         @field_validator("name")
@@ -134,6 +143,7 @@ class TeamModel(
         description: Optional[StringSearchModel] | None = None
 
 
+class TeamManager(AbstractBLLManager, RouterMixin):
     _model = TeamModel
     _entity_label: ClassVar[Optional[str]] = "Team"
 
@@ -237,7 +247,15 @@ class TeamModel(
         },
     }
 
+    def __init__(
+        self,
+        requester_id: str,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry: Optional[Any] | None = None,
+    ):
         super().__init__(
+            requester_id=requester_id,
             target_id=target_id,
             target_team_id=target_team_id,
             model_registry=model_registry,
@@ -247,6 +265,8 @@ class TeamModel(
         self._roles = None
         self._invitations = None
 
+    @property
+    def team_metadata(self):
         if self._team_metadata is None:
             factory = _metadata_hooks["team_manager_factory"]
             if factory is None:
@@ -255,6 +275,7 @@ class TeamModel(
                     detail="metadata extension not loaded; team metadata unavailable",
                 )
             self._team_metadata = factory(
+                requester_id=self.requester.id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
                 parent=self,
@@ -266,10 +287,13 @@ class TeamModel(
                 )
         return self._team_metadata
 
+    @property
+    def user_teams(self):
         if self._user_teams is None:
             from zephyrex.logic.BLL_Auth.user_team import UserTeamManager
 
             self._user_teams = UserTeamManager(
+                requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 target_team_id=self.target_team_id,
                 parent=self,
@@ -277,16 +301,21 @@ class TeamModel(
             )
         return self._user_teams
 
+    @property
+    def roles(self):
         if self._roles is None:
             from zephyrex.logic.BLL_Auth.role import RoleManager
 
             self._roles = RoleManager(
+                requester_id=self.requester.id,
                 target_team_id=self.target_team_id,
                 parent=self,
                 model_registry=self.model_registry,
             )
         return self._roles
 
+    @property
+    def invitations(self):
         if self._invitations is None:
             factory = _invitation_hooks["invitation_manager_factory"]
             if factory is None:
@@ -296,12 +325,14 @@ class TeamModel(
                     "team invitations unavailable",
                 )
             self._invitations = factory(
+                requester_id=self.requester.id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
                 parent=self,
             )
         return self._invitations
 
+    def create(self, **kwargs):
         """Create a team with metadata"""
         # Extract metadata fields (non-model fields)
         metadata_fields = {}
@@ -341,12 +372,14 @@ class TeamModel(
             # A team's creator is its first admin: the server grants that,
             # as root, since no one administers the team yet.
             UserTeamManager(
+                requester_id=env("ROOT_ID"), model_registry=self.model_registry
             ).create(
                 team_id=team.id, user_id=self.requester.id, role_id=env("ADMIN_ROLE_ID")
             )
 
         return team
 
+    def update(self, id: str, **kwargs):
         """Update a team with metadata"""
         if not server_side(self.requester.id):
             db_session = self.model_registry.DB.session()
@@ -426,6 +459,7 @@ class TeamModel(
 
         return team
 
+    def get_metadata(self) -> Dict[str, str]:
         """Get all metadata for the target team (via metadata extension)."""
         if not self.target_team_id:
             raise HTTPException(status_code=400, detail="Team ID is required")
@@ -434,12 +468,16 @@ class TeamModel(
         if factory is None:
             return {}
         with factory(
+            requester_id=self.requester.id,
             target_team_id=self.target_team_id,
             model_registry=self.model_registry,
         ) as mgr:
             results = mgr.search({"team_id": {"value": self.target_team_id}}) or []
             return {row.key: row.value for row in results}
 
+    def get_team_users(
+        self, id: str, include: Optional[List[str]] = None
+    ) -> Dict[str, List[Any]]:
         """GET /v1/team/{id}/user — the team's memberships, each with its
         ``user`` and ``role``; ``?include=team`` adds the team."""
         memberships = self.user_teams.list(team_id=id)
@@ -449,12 +487,15 @@ class TeamModel(
             )
         }
 
+    def patch_role(self, team_id: str, user_id: str, body: Dict[str, Any]):
         """Update a user's role within a team (custom route method)"""
         return self.user_teams.patch_role(user_id=user_id, team_id=team_id, body=body)
 
+    def remove_member(self, team_id: str, user_id: str) -> None:
         """DELETE /v1/team/{team_id}/user/{user_id}."""
         self.user_teams.remove_member(team_id=team_id, user_id=user_id)
 
+    def revoke_all_invitations(self, team_id: str):
         """Revoke all invitations for a team (nested custom route method)"""
         # Get all invitations for the team
         invitations = self.invitations.list(team_id=team_id)

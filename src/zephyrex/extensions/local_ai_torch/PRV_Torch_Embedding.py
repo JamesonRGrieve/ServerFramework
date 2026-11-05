@@ -76,6 +76,7 @@ def embed_texts(
     return vectors
 
 
+class PRV_Torch_Embedding(AbstractTorchProvider):
     name: ClassVar[str] = "torch_embedding"
     friendly_name: ClassVar[str] = "PyTorch embedding model"
     description: ClassVar[str] = "Text embeddings with a transformers encoder"

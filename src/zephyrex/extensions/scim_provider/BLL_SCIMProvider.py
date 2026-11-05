@@ -79,6 +79,7 @@ class ScimLinkModel(
     table_comment: ClassVar[str] = "Framework users and teams as held by SCIM targets"
     permission_references: ClassVar[List[str]] = ["provider_instance"]
 
+    class Create(BaseModel):
         provider_instance_id: str
         resource_type: str
         local_id: str
@@ -91,6 +92,7 @@ class ScimLinkModel(
         last_synced_at: Optional[datetime] = None
         last_error: Optional[str] = None
 
+    class Update(BaseModel):
         remote_id: Optional[str] = None
         remote_name: Optional[str] = None
         remote_etag: Optional[str] = None
@@ -100,6 +102,7 @@ class ScimLinkModel(
         last_synced_at: Optional[datetime] = None
         last_error: Optional[str] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         provider_instance_id: Optional[StringSearchModel] = None
         resource_type: Optional[StringSearchModel] = None
         local_id: Optional[StringSearchModel] = None
@@ -127,6 +130,7 @@ class ScimSyncLogModel(
     table_comment: ClassVar[str] = "Every write made to a SCIM target"
     permission_references: ClassVar[List[str]] = ["provider_instance"]
 
+    class Create(BaseModel):
         provider_instance_id: str
         resource_type: str
         operation: str
@@ -135,8 +139,10 @@ class ScimSyncLogModel(
         status: str
         error_detail: Optional[str] = None
 
+    class Update(BaseModel):
         error_detail: Optional[str] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         provider_instance_id: Optional[StringSearchModel] = None
         resource_type: Optional[StringSearchModel] = None
         operation: Optional[StringSearchModel] = None
@@ -145,18 +151,22 @@ class ScimSyncLogModel(
         created_at: Optional[DateSearchModel] = None
 
 
+class ReconcileRequest(RouteModel):
     provider_instance_id: str = Field(..., min_length=1)
 
 
+class SyncSummary(RouteModel):
     target: str
     users: Dict[str, int]
     groups: Dict[str, int]
 
 
+class ScimSyncLogManager(AbstractBLLManager, RouterMixin):
     _model = ScimSyncLogModel
     routes_to_register: ClassVar[Optional[List[RouteType]]] = READ_ONLY
 
 
+class ScimLinkManager(AbstractBLLManager, RouterMixin):
     _model = ScimLinkModel
     routes_to_register: ClassVar[Optional[List[RouteType]]] = READ_ONLY
 
@@ -202,18 +212,22 @@ def _flag(context: HookContext, resource_type: str, local_ids: Iterable[Any]) ->
         EXT_SCIMProvider.schedule(registry, targets)
 
 
+def _target_id(context: HookContext) -> Optional[str]:
     """The id a get/update/delete acted on."""
     found = context.kwargs.get("id") or (context.args[0] if context.args else None)
     return str(found) if found else None
 
 
+def _observer(handler: Callable[[HookContext], None]) -> Callable[[HookContext], None]:
     """``handler`` as a hook that runs only in apps that load this
     extension, and never breaks the operation it observes."""
 
+    def run(context: HookContext) -> None:
         if not _loaded(context):
             return
         try:
             handler(context)
+        except Exception:
             logger.exception("scim_provider could not flag a push")
 
     run.__name__ = handler.__name__
@@ -259,6 +273,10 @@ def scim_team_deleted(context: HookContext) -> None:
     _flag(context, "Group", [_target_id(context)])
 
 
+@hook_bll(UserTeamManager.update, timing=HookTiming.BEFORE, blocking=False)
+@hook_bll(UserTeamManager.delete, timing=HookTiming.BEFORE, blocking=False)
+@_observer
+def scim_membership_before_change(context: HookContext) -> None:
     """Note whose membership is changing, while the row still says."""
     membership_id = _target_id(context)
     if membership_id is None:
@@ -266,6 +284,7 @@ def scim_team_deleted(context: HookContext) -> None:
     from zephyrex.lib.Environment import env
 
     membership = UserTeamManager(
+        model_registry=context.manager.model_registry, requester_id=env("ROOT_ID")
     ).get(id=membership_id)
     context.condition_data["scim_membership"] = (
         str(membership.user_id),
@@ -273,6 +292,11 @@ def scim_team_deleted(context: HookContext) -> None:
     )
 
 
+@hook_bll(UserTeamManager.create, timing=HookTiming.AFTER, blocking=False)
+@hook_bll(UserTeamManager.update, timing=HookTiming.AFTER, blocking=False)
+@hook_bll(UserTeamManager.delete, timing=HookTiming.AFTER, blocking=False)
+@_observer
+def scim_membership_changed(context: HookContext) -> None:
     """A membership changes a group's members, and (for a target scoped to
     a team) whether its user is given to the target at all."""
     noted = context.condition_data.get("scim_membership")

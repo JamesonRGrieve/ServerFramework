@@ -54,6 +54,7 @@ _SAVE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 _WRITE_METHODS = _SAVE_METHODS | {"POST"}
 
 
+def entity_version(entity: Any) -> Optional[str]:
     """The record's version: ``updated_at`` (else ``created_at``) serialised
     as the response body serialises it; None for a record without either."""
     for name in VERSION_FIELDS:
@@ -66,11 +67,13 @@ _WRITE_METHODS = _SAVE_METHODS | {"POST"}
     return None
 
 
+def entity_etag(entity: Any) -> Optional[str]:
     """The record's ETag header value, ``"<version>"``."""
     version = entity_version(entity)
     return None if version is None else f'"{version}"'
 
 
+def etag_headers(entity: Any) -> Dict[str, str]:
     """``{"ETag": ...}`` for the record, or no headers when it has no version."""
     etag = entity_etag(entity)
     return {} if etag is None else {"ETag": etag}
@@ -81,6 +84,8 @@ def if_match_required() -> bool:
     return env_bool(IF_MATCH_REQUIRED_SETTING, default=True)
 
 
+@dataclass(frozen=True)
+class IfMatch:
     """A parsed If-Match: ``*`` (any current version) or a set of versions.
 
     Tags are compared by their opaque value: a ``W/`` prefix (as a proxy
@@ -91,15 +96,19 @@ def if_match_required() -> bool:
     any_version: bool
     versions: frozenset[str]
 
+    @classmethod
+    def parse(cls, header: str) -> "IfMatch":
         value = header.strip()
         if value == _ANY_VERSION:
             return cls(any_version=True, versions=frozenset())
         tags = _ENTITY_TAG.findall(value)
         return cls(any_version=False, versions=frozenset(tags or [value]))
 
+    def names(self, version: str) -> bool:
         """Whether this If-Match names the version (opaque value)."""
         return self.any_version or version in self.versions
 
+    def matches(self, entity: Any) -> bool:
         """Whether the record exists at a version this If-Match names."""
         if self.any_version:
             return entity is not None
@@ -119,6 +128,7 @@ def _opaque(etag: str) -> str:
     return tags[0] if tags else etag.strip()
 
 
+class StaleVersionError(Exception):
     """The row is not at the version the request's If-Match names (raised by
     the database layer under the row lock, before any write). Whoever owns
     the record's visibility, the manager or the route, answers it with 412
@@ -130,6 +140,7 @@ def _opaque(etag: str) -> str:
         self.entity_id = entity_id
 
 
+class PreconditionError(HTTPException):
     """A refused If-Match precondition; :meth:`body` is the response body."""
 
     def __init__(
@@ -147,6 +158,7 @@ def _opaque(etag: str) -> str:
         return {"detail": self.message, **jsonable_encoder(self.extra)}
 
 
+class PreconditionFailed(PreconditionError):
     """412: the If-Match names a version that is no longer current.
 
     ``current`` is the record as the requester may see it, so the client can
@@ -154,6 +166,7 @@ def _opaque(etag: str) -> str:
     current records.
     """
 
+    def __init__(self, current: Any, *, stale_ids: Optional[List[str]] = None) -> None:
         extra: Dict[str, Any] = {"current": current}
         headers: Optional[Dict[str, str]] = None
         if stale_ids is not None:
@@ -165,6 +178,7 @@ def _opaque(etag: str) -> str:
         )
 
 
+class PreconditionRequired(PreconditionError):
     """428: If-Match is required and the write did not send one."""
 
     def __init__(self, *, missing_ids: Optional[List[str]] = None) -> None:
@@ -172,6 +186,8 @@ def _opaque(etag: str) -> str:
         super().__init__(status.HTTP_428_PRECONDITION_REQUIRED, REQUIRED_DETAIL, extra)
 
 
+@dataclass
+class _Expectations:
     table: str
     by_id: Dict[str, Optional[IfMatch]]
     # Whether IF_MATCH_REQUIRED holds this request to naming a version: a
@@ -184,6 +200,7 @@ def _opaque(etag: str) -> str:
     # server's own and holds no client version.
     open: bool = True
 
+    def requires(self) -> bool:
         return self.may_require and if_match_required()
 
 
@@ -192,6 +209,7 @@ _expectations: ContextVar[Optional[_Expectations]] = ContextVar(
 )
 
 
+def table_of(manager: Any) -> Optional[str]:
     """The table a logic manager writes, or None for a manager with no model."""
     try:
         return str(manager.DB.__tablename__)
@@ -199,9 +217,11 @@ _expectations: ContextVar[Optional[_Expectations]] = ContextVar(
         return None
 
 
+def _parse(header: Optional[str]) -> Optional[IfMatch]:
     return IfMatch.parse(header) if header and header.strip() else None
 
 
+def save_expectation(if_match: Optional[str]) -> Optional[IfMatch]:
     """The version a save of a record held elsewhere (an upstream's) names,
     or None when it names none and need not (``IF_MATCH_REQUIRED``); 428
     when it must. For writes no table of this server's holds, so no row
@@ -212,6 +232,13 @@ _expectations: ContextVar[Optional[_Expectations]] = ContextVar(
     return parsed
 
 
+@contextmanager
+def expect_versions(
+    manager: Any,
+    if_match_by_id: Mapping[str, Optional[str]],
+    *,
+    may_require: bool = True,
+) -> Iterator[None]:
     """Bind, for the duration of a request's write, the If-Match each named
     record of ``manager``'s table is expected at (None: the request sent
     none). A stale write inside is answered with 412 carrying the record as
@@ -234,6 +261,7 @@ _expectations: ContextVar[Optional[_Expectations]] = ContextVar(
         _expectations.reset(token)
 
 
+def route_target_id(path_params: Mapping[str, Any]) -> Optional[str]:
     """The record a custom route's path names: its ``{id}``, else its one
     ``{..._id}`` parameter; None when the path names no single record."""
     if "id" in path_params:
@@ -242,6 +270,10 @@ _expectations: ContextVar[Optional[_Expectations]] = ContextVar(
     return str(named[0]) if len(named) == 1 else None
 
 
+@contextmanager
+def expect_route_version(
+    manager: Any, method: str, path_params: Mapping[str, Any], if_match: Optional[str]
+) -> Iterator[None]:
     """Bind a custom route's If-Match to the record of the route's own
     manager that its path names, for any write the route makes to it. Reads
     bind nothing; a save (PUT/PATCH/DELETE) is held to IF_MATCH_REQUIRED, an
@@ -272,6 +304,8 @@ _expectations: ContextVar[Optional[_Expectations]] = ContextVar(
         yield
 
 
+@dataclass
+class _RouteIfMatch:
     header: Optional[str]
     may_require: bool
     # Closed when the route returns, as _Expectations.open.
@@ -283,11 +317,14 @@ _route_if_match: ContextVar[Optional[_RouteIfMatch]] = ContextVar(
 )
 
 
+def _pending_route_if_match() -> Optional[_RouteIfMatch]:
     """The If-Match a running custom route recorded, or None outside one."""
     pending = _route_if_match.get()
     return pending if pending is not None and pending.open else None
 
 
+@contextmanager
+def expect_route_record(manager: Any, entity_id: str) -> Iterator[None]:
     """Hold a write to the record a custom route resolved itself to the
     request's If-Match, for a route whose path names its record by several
     ids. Outside such a request it binds nothing."""
@@ -301,6 +338,7 @@ _route_if_match: ContextVar[Optional[_RouteIfMatch]] = ContextVar(
         yield
 
 
+def check_route_record(manager: Any, entity_id: str) -> None:
     """Hold a custom route that acts for a record without writing its row
     to the request's If-Match on that record, checked now: a password
     change is the account's, but it writes the account's credentials. 412
@@ -320,6 +358,7 @@ _route_if_match: ContextVar[Optional[_RouteIfMatch]] = ContextVar(
         raise PreconditionFailed(current)
 
 
+def expected_version(table: str, entity_id: str) -> Tuple[bool, Optional[IfMatch]]:
     """``(bound, if_match)`` for a record, without claiming it."""
     bound = _open_expectations()
     if bound is None or bound.table != table or entity_id not in bound.by_id:
@@ -327,17 +366,20 @@ _route_if_match: ContextVar[Optional[_RouteIfMatch]] = ContextVar(
     return True, bound.by_id[entity_id]
 
 
+def _open_expectations() -> Optional[_Expectations]:
     """The running request write's binding, or None outside one."""
     bound = _expectations.get()
     return bound if bound is not None and bound.open else None
 
 
+def missing_is_refused() -> bool:
     """Whether the bound request must name a version (IF_MATCH_REQUIRED, for
     a save)."""
     bound = _open_expectations()
     return bound is not None and bound.requires()
 
 
+def claim_expected_version(table: str, entity_id: str) -> Optional[IfMatch]:
     """The If-Match the request names for this record's write, claimed once:
     a second write of the same record in the request is the server's own and
     is not held to the version the client read. Raises 428 when one is

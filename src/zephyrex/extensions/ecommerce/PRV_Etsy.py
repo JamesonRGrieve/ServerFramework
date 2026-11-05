@@ -48,6 +48,7 @@ def etsy_money(money: Optional[Mapping[str, Any]]) -> Optional[str]:
     )
 
 
+def etsy_order(receipt: Mapping[str, Any]) -> Dict[str, Any]:
     status = _STATUSES.get(str(receipt.get("status", "")).lower(), "other")
     if status == "processing" and receipt.get("is_shipped"):
         status = "shipped"
@@ -81,6 +82,7 @@ def etsy_money(money: Optional[Mapping[str, Any]]) -> Optional[str]:
     )
 
 
+class PRV_Etsy_ECommerce(AbstractEcommerceProvider):
     name: ClassVar[str] = "etsy"
     friendly_name: ClassVar[str] = "Etsy"
     description: ClassVar[str] = "An Etsy shop"
@@ -104,6 +106,7 @@ def etsy_money(money: Optional[Mapping[str, Any]]) -> Optional[str]:
         keystring = cls.required(instance, "api_key")
         refresh = cls.required(instance, "refresh_token")
 
+        async def fetch() -> Tuple[str, float]:
             answer = await cls.http().post(
                 TOKEN_URL,
                 data={

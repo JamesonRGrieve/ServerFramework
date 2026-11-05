@@ -6,6 +6,7 @@ from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtensio
 from zephyrex.lib.Logging import logger
 
 
+class EXT_Billing(AbstractStaticExtension):
     """Cost observability: model registry, daily summaries, audit emitter.
 
     Cost tracking is business-domain (chargeback, billing, finance

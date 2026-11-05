@@ -40,6 +40,7 @@ INFLUXDB_V1_REQUIRED = (
 )
 
 
+class PRV_InfluxDB(AbstractDatabaseProvider):
     """
     InfluxDB time-series database provider implementation.
     Static/abstract provider compatible with Provider Rotation System.
@@ -80,6 +81,10 @@ INFLUXDB_V1_REQUIRED = (
         "time_series_db",
     }
 
+    @classmethod
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
         influxdb_version = cls.resolve_setting(
             instance,
             "influxdb_version",
@@ -131,6 +136,8 @@ INFLUXDB_V1_REQUIRED = (
             )
         return config
 
+    @classmethod
+    def _get_connection(cls, config: Dict[str, Any]) -> Any:
         """A client for the resolved configuration, verified reachable."""
         if config["influxdb_version"] == "2":
             cls.require_driver(has_influxdb2, "influxdb-client")
@@ -144,6 +151,7 @@ INFLUXDB_V1_REQUIRED = (
                     org=config["influxdb_org"],
                 )
                 reachable = client.ping()
+            except Exception as exc:
                 raise cls.connection_failed(exc) from exc
             if not reachable:
                 client.close()
@@ -165,6 +173,7 @@ INFLUXDB_V1_REQUIRED = (
                 database=config["database_name"],
             )
             legacy_client.ping()
+        except Exception as exc:
             raise cls.connection_failed(exc) from exc
         return legacy_client
 
@@ -188,6 +197,10 @@ INFLUXDB_V1_REQUIRED = (
             else "Query executed successfully. No data returned."
         )
 
+    @classmethod
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute a database-specific query (InfluxQL for 1.x, Flux for 2.x)."""
         if "```" in query:
             # Extract the query from a Markdown code block.
@@ -223,11 +236,14 @@ INFLUXDB_V1_REQUIRED = (
                 points = [
                     dict(point) for series in client.query(query) for point in series
                 ]
+        except Exception as exc:
             raise cls.query_failed(exc, "InfluxDB query") from exc
         finally:
             client.close()
         return cls._format_points(points)
 
+    @classmethod
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Get the schema of the InfluxDB database."""
         config = cls.bond_instance(instance).config
         if config["influxdb_version"] == "2":
@@ -267,6 +283,7 @@ INFLUXDB_V1_REQUIRED = (
                                     f"({field_point.get('fieldType', 'unknown')})"
                                 )
             return "\n".join(schema_info)
+        except Exception as exc:
             raise cls.query_failed(exc, "schema query") from exc
         finally:
             client.close()

@@ -33,6 +33,7 @@ def graph_time(moment: Mapping[str, Any]) -> str:
     return iso(parse_time(value)) if value else ""
 
 
+class PRV_Microsoft_Calendar(AbstractCalendarProvider):
     name: ClassVar[str] = "microsoft_calendar"
     friendly_name: ClassVar[str] = "Microsoft 365 Calendar"
     description: ClassVar[str] = "Microsoft 365 / Outlook calendar"
@@ -61,6 +62,8 @@ def graph_time(moment: Mapping[str, Any]) -> str:
             **kwargs,
         )
 
+    @classmethod
+    def _event(cls, found: Mapping[str, Any]) -> Dict[str, Any]:
         return cls.event(
             event_id=str(found.get("id", "")),
             title=found.get("subject", ""),
@@ -77,6 +80,8 @@ def graph_time(moment: Mapping[str, Any]) -> str:
             url=found.get("webLink", ""),
         )
 
+    @staticmethod
+    def _body(fields: Dict[str, Any]) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
         if "title" in fields:
             body["subject"] = fields["title"]

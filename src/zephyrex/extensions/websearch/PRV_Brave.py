@@ -37,6 +37,10 @@ class PRV_Brave_Websearch(AbstractWebsearchProvider):
         ),
     )
 
+    @classmethod
+    async def search(
+        cls, instance: ProviderInstanceModel, query: str, limit: int
+    ) -> List[Dict[str, Any]]:
         token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(

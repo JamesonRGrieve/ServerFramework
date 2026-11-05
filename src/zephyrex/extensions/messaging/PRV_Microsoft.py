@@ -25,6 +25,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 _WEBHOOK_HOSTS = (".logic.azure.com", ".webhook.office.com", ".powerplatform.com")
 
 
+class PRV_Microsoft_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "msteams"
     friendly_name: ClassVar[str] = "Microsoft Teams"
     description: ClassVar[str] = "Microsoft Teams, through a channel's incoming webhook"
@@ -38,6 +39,8 @@ _WEBHOOK_HOSTS = (".logic.azure.com", ".webhook.office.com", ".powerplatform.com
         ),
     )
 
+    @classmethod
+    def _webhook(cls, instance: ProviderInstanceModel) -> str:
         url = cls.setting(instance, "webhook_url")
         if not url:
             raise TransientExternalError(

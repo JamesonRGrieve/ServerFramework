@@ -147,6 +147,12 @@ def _is_widening(old: str, new: str) -> bool:
     return old in _WIDENINGS.get(new, set())
 
 
+def _walk_schema(
+    old: Dict[str, Any],
+    new: Dict[str, Any],
+    path: str,
+    diff: List[DiffEntry],
+) -> None:
     """Recursively diff two JSON-Schema-shaped dicts."""
     # Type changes
     old_type = old.get("type")
@@ -241,6 +247,11 @@ def _is_widening(old: str, new: str) -> bool:
         )
 
 
+def _walk_paths(
+    old: Dict[str, Any],
+    new: Dict[str, Any],
+    diff: List[DiffEntry],
+) -> None:
     """Diff the ``paths`` block of two OpenAPI documents."""
     for op_path in sorted(set(old) | set(new)):
         sub_path = f"paths.{op_path}"
@@ -315,6 +326,10 @@ def _walk_components(
             _walk_schema(old_schemas[name], new_schemas[name], sub_path, diff)
 
 
+def diff_openapi(
+    committed_path: Union[str, Path],
+    live_spec: Dict[str, Any],
+) -> List[DiffEntry]:
     """Structurally diff a committed snapshot against a live OpenAPI dict.
 
     Args:
@@ -380,6 +395,7 @@ def record_response_snapshot(
     """
     norm_set = set(normalize if normalize is not None else _DEFAULT_NORMALIZE)
 
+    def walk(value: Any) -> Any:
         if isinstance(value, dict):
             return {
                 k: ("<normalized>" if k in norm_set else walk(v))
@@ -392,6 +408,12 @@ def record_response_snapshot(
     return walk(response)  # type: ignore[no-any-return]
 
 
+def _walk_response(
+    old: Any,
+    new: Any,
+    path: str,
+    diff: List[DiffEntry],
+) -> None:
     """Recursively diff two snapshot dicts/lists for response-shape drift."""
     if isinstance(old, dict) and isinstance(new, dict):
         for key in sorted(set(old) | set(new)):

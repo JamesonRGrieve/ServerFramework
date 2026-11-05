@@ -9,6 +9,7 @@ from .contributions import (
 )
 
 
+class RequestDataLoader:
     """Minimal per-request DataLoader.
 
     ``load(key)`` returns an awaitable that resolves once the deferred batch
@@ -17,11 +18,13 @@ from .contributions import (
     ``batch_load_fn(keys)`` call.
     """
 
+    def __init__(self, batch_load_fn: DataLoaderBatchFn) -> None:
         self._batch_load_fn = batch_load_fn
         self._queue: List[Hashable] = []
         self._futures: Dict[Hashable, "asyncio.Future[Any]"] = {}
         self._scheduled: bool = False
 
+    def load(self, key: Hashable) -> "asyncio.Future[Any]":
         loop = asyncio.get_event_loop()
         if key in self._futures:
             return self._futures[key]
@@ -33,6 +36,7 @@ from .contributions import (
             loop.call_soon(lambda: asyncio.ensure_future(self._fire()))
         return fut
 
+    async def _fire(self) -> None:
         keys = list(self._queue)
         self._queue.clear()
         self._scheduled = False
@@ -40,6 +44,7 @@ from .contributions import (
             result = self._batch_load_fn(keys)
             if _inspect.isawaitable(result):
                 result = await result
+        except Exception as e:  # noqa: BLE001
             for key in keys:
                 fut = self._futures.pop(key, None)
                 if fut is not None and not fut.done():
@@ -71,6 +76,9 @@ from .contributions import (
                 fut.set_result(value)
 
 
+def build_request_dataloaders(
+    registry: Optional[GraphQLContributionRegistry] = None,
+) -> Dict[str, RequestDataLoader]:
     """Build a fresh per-request DataLoader for every registered spec."""
     reg = registry or _GLOBAL_CONTRIBUTION_REGISTRY
     return {

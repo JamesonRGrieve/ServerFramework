@@ -48,6 +48,7 @@ _REGISTRY_LOCK = RLock()
 _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def register_tenant_key(*keys: str) -> None:
     """Register a tenant-key column name. Refuses anything that is not a
     valid SQL identifier so a key cannot smuggle SQL through the session
     binder. Called by `TenantScopedMixin.with_keys`."""
@@ -61,25 +62,31 @@ _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
             _REGISTERED_TENANT_KEYS.add(k)
 
 
+def is_registered_tenant_key(key: str) -> bool:
     with _REGISTRY_LOCK:
         return key in _REGISTERED_TENANT_KEYS
 
 
+def registered_tenant_keys() -> Set[str]:
     with _REGISTRY_LOCK:
         return set(_REGISTERED_TENANT_KEYS)
 
 
+class _TenantScopedBase:
     """Marker for TenantScopedMixin subclasses; holds the tenant-key
     tuple."""
 
     tenant_keys: ClassVar[Tuple[str, ...]] = ("team_id",)
 
 
+class TenantScopedMixin(_TenantScopedBase):
     """Default mixin: tenant key is `team_id` only.
 
     Use `with_keys(...)` for multi-key tenancy.
     """
 
+    @classmethod
+    def with_keys(cls, *keys: str) -> Type["_TenantScopedBase"]:
         """Return a parametrized mixin subclass with the given tenant
         keys. Order matters: declared GUCs and policy clauses follow
         this order (most-specific last is conventional).
@@ -104,6 +111,9 @@ _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
         return new_cls
 
 
+def rls_policy_sql(
+    table: str, keys: Tuple[str, ...], policy_name: str | None = None
+) -> str:
     """Generate the CREATE POLICY DDL for an RLS-enforced tenant
     isolation policy.
 
@@ -129,6 +139,7 @@ _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
     )
 
 
+def rls_policy_drop_sql(table: str, policy_name: str | None = None) -> str:
     pname = policy_name or f"{table}_tenant_isolation"
     return (
         f"DROP POLICY IF EXISTS {pname} ON {table};\n"
@@ -136,6 +147,7 @@ _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
     )
 
 
+def set_tenant_guc(connection, key: str, value: str) -> None:
     """Set `app.current_<key>` on the given connection for the current
     transaction (`SET LOCAL`).
 
@@ -152,8 +164,10 @@ _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
     if not is_registered_tenant_key(key):
         raise ValueError(f"Unregistered tenant key {key!r}; refusing to emit SET LOCAL")
+    connection.execute(text(f"SET LOCAL app.current_{key} = :value"), {"value": value})
 
 
+def clear_tenant_gucs(connection, keys: Tuple[str, ...]) -> None:
     """Clear `app.current_<key>` on the given connection. Used when
     binding a privileged BYPASSRLS session.
 
@@ -167,6 +181,7 @@ _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
     for k in keys:
         if not is_registered_tenant_key(k):
             raise ValueError(f"Unregistered tenant key {k!r}; refusing to emit RESET")
+        connection.execute(text(f"RESET app.current_{k}"))
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +213,7 @@ _privileged_bypass_var: ContextVar[bool] = ContextVar(
 )
 
 
+def set_tenant_context(**keys: str) -> None:
     """Set the per-request tenant-key mapping.
 
     Typically called from middleware after authentication resolves the
@@ -212,10 +228,12 @@ _privileged_bypass_var: ContextVar[bool] = ContextVar(
     _tenant_context_var.set({k: v for k, v in keys.items() if v})
 
 
+def get_tenant_context() -> Dict[str, str]:
     """Return the current per-request tenant context (read-only view)."""
     return dict(_tenant_context_var.get())
 
 
+def clear_tenant_context() -> None:
     """Reset the contextvar to the empty mapping. Called by middleware
     on response — important so a long-running worker process does not
     leak one request's tenant onto the next."""
@@ -236,6 +254,7 @@ def is_privileged_bypass() -> bool:
     return _privileged_bypass_var.get()
 
 
+def bind_session_tenant_gucs(session) -> None:
     """Attach the `after_begin` listener that emits the per-tenant GUCs.
 
     Called once per session checkout from the framework's session
@@ -252,6 +271,8 @@ def is_privileged_bypass() -> bool:
     """
     from sqlalchemy import event, text
 
+    @event.listens_for(session, "after_begin")
+    def _set_gucs(_session, transaction, connection):
         dialect = getattr(getattr(connection, "dialect", None), "name", "")
         if dialect != "postgresql":
             # SQLite/MySQL/etc. don't have GUCs in the `app.` namespace.
@@ -265,6 +286,7 @@ def is_privileged_bypass() -> bool:
             # RESET on a typo is a no-op so this is just hygiene.
             for k in _tenant_context_var.get().keys():
                 if is_registered_tenant_key(k):
+                    connection.execute(text(f"RESET app.current_{k}"))
             return
         ctx = _tenant_context_var.get()
         for k, v in ctx.items():
@@ -276,6 +298,8 @@ def is_privileged_bypass() -> bool:
                     f"Unregistered tenant key {k!r} in tenant_context; "
                     f"refusing to emit SET LOCAL"
                 )
+            connection.execute(
+                text(f"SET LOCAL app.current_{k} = :value"),
                 {"value": str(v)},
             )
 

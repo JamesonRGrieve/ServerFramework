@@ -71,6 +71,8 @@ _REDIRECT_STATUS_FIRST = 300
 _REDIRECT_STATUS_LAST = 399
 
 
+@dataclass(frozen=True)
+class VerifiedIdentity:
     """Who the verifier says the browser is: the identity (its user
     header), and the email and display name it gave, if any."""
 
@@ -79,6 +81,8 @@ _REDIRECT_STATUS_LAST = 399
     display_name: Optional[str]
 
 
+@dataclass(frozen=True)
+class OriginalRequest:
     """What the browser sent that the verifier may see: its raw Cookie
     header, its headers, its address, and the URL and method it reached."""
 
@@ -89,6 +93,7 @@ _REDIRECT_STATUS_LAST = 399
     method: str
 
 
+def name_list(value: Optional[str]) -> Tuple[str, ...]:
     """Names from a comma- or whitespace-separated list, in order, once."""
     seen: List[str] = []
     for name in (value or "").replace(",", " ").split():
@@ -97,6 +102,7 @@ _REDIRECT_STATUS_LAST = 399
     return tuple(seen)
 
 
+def forwardable_headers(value: Optional[str]) -> FrozenSet[str]:
     """The request headers (lower-cased) an instance forwards. A name that
     is not a header name, or one the sign-in sets itself, is a
     misconfiguration (cookies are forwarded by name, not as a header)."""
@@ -111,6 +117,7 @@ _REDIRECT_STATUS_LAST = 399
     return names
 
 
+def parse_flag(value: Optional[str], key: str) -> bool:
     flag = (value or "").strip().lower()
     if flag in _TRUE:
         return True
@@ -119,6 +126,7 @@ _REDIRECT_STATUS_LAST = 399
     raise PermanentExternalError(f"The {key} setting is not true or false")
 
 
+def parse_timeout(value: Optional[str]) -> float:
     try:
         seconds = float((value or DEFAULT_TIMEOUT_SECONDS).strip())
     except ValueError:
@@ -131,6 +139,7 @@ _REDIRECT_STATUS_LAST = 399
     return seconds
 
 
+def selected_cookies(cookie_header: Optional[str], names: Tuple[str, ...]) -> str:
     """The ``name=value`` pairs of ``cookie_header`` whose (case-sensitive)
     names are in ``names``, verbatim and in the browser's order."""
     kept: List[str] = []
@@ -141,17 +150,21 @@ _REDIRECT_STATUS_LAST = 399
     return "; ".join(kept)
 
 
+def _printable(value: str, limit: int) -> Optional[str]:
     value = value.strip()
     if not value or len(value) > limit or not value.isprintable():
         return None
     return value
 
 
+def _single(values: List[str], header: str) -> Optional[str]:
     if len(values) > 1:
         raise PermanentExternalError(f"The verifier sent {header} more than once")
     return values[0] if values else None
 
 
+@dataclass(frozen=True)
+class Verifier:
     """One verifier endpoint and what the instance lets it see."""
 
     instance_name: str
@@ -165,12 +178,14 @@ _REDIRECT_STATUS_LAST = 399
     timeout_seconds: float
     original_url: Optional[str] = None
 
+    def carries_credentials(self, original: OriginalRequest) -> bool:
         """The browser sent at least one credential this verifier reads."""
         return bool(selected_cookies(original.cookie_header, self.cookies)) or any(
             name.lower() in self.headers and value
             for name, value in original.headers.items()
         )
 
+    def subrequest_headers(self, original: OriginalRequest) -> Dict[str, str]:
         """The headers the verifier is sent: the named credentials and the
         description of the URL being reached, nothing else of the
         browser's."""
@@ -201,6 +216,7 @@ _REDIRECT_STATUS_LAST = 399
             headers["X-Forwarded-For"] = original.client_host
         return headers
 
+    def identity_from(self, answer: Mapping[str, List[str]]) -> VerifiedIdentity:
         """The identity in an allowing answer's headers (lower-cased names,
         each with every value sent). A missing, repeated or malformed user
         header fails closed; a bad email or name is only dropped."""
@@ -228,6 +244,7 @@ _REDIRECT_STATUS_LAST = 399
         )
 
 
+def header_values(items: List[Tuple[str, str]]) -> Dict[str, List[str]]:
     """Response header pairs as lower-cased names to every value sent."""
     values: Dict[str, List[str]] = {}
     for name, item in items:
@@ -235,6 +252,7 @@ _REDIRECT_STATUS_LAST = 399
     return values
 
 
+class PRV_ForwardAuthVerifier(AbstractStaticProvider):
     name: ClassVar[str] = "forward_auth_verifier"
     friendly_name: ClassVar[str] = "Forward-auth verifier"
     description: ClassVar[str] = (
@@ -306,8 +324,12 @@ _REDIRECT_STATUS_LAST = 399
     def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         return AbstractProviderInstance(instance)
 
+    @classmethod
+    def is_configured_instance(cls, instance: ProviderInstanceModel) -> bool:
         return bool((cls.setting(instance, "verify_url") or "").strip())
 
+    @classmethod
+    def verifier(cls, instance: ProviderInstanceModel) -> Verifier:
         """The instance's verifier, its settings checked. A verifier that
         would be sent no credential at all could only answer the same for
         everyone, so one must be named."""
@@ -348,6 +370,10 @@ _REDIRECT_STATUS_LAST = 399
             original_url=original_url,
         )
 
+    @classmethod
+    async def verify(
+        cls, verifier: Verifier, original: OriginalRequest
+    ) -> VerifiedIdentity:
         """Ask ``verifier`` who sent ``original``. AuthExternalError when it
         denies (401, 403, a redirect to its login); any other
         BaseExternalError when it fails (5xx, timeout, unreachable, refused

@@ -41,6 +41,7 @@ def display_name(user: Optional[Mapping[str, Any]]) -> str:
     return str(user.get("nickname") or user.get("display_name") or "")
 
 
+class PRV_Bitbucket_Source(AbstractSourceProvider):
     name: ClassVar[str] = "bitbucket"
     friendly_name: ClassVar[str] = "Bitbucket"
     description: ClassVar[str] = "Bitbucket Cloud"

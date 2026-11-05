@@ -17,12 +17,15 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
 
+class ParentNotSeeded(LookupError):
     """A seed item names a parent row that does not exist (yet)."""
 
     def __init__(self, entity_label: str, name: str) -> None:
         super().__init__(f"{entity_label} {name!r} is not seeded")
 
 
+@dataclass
+class SeedBatch:
     """Seed items of one model still waiting for their parents."""
 
     model_class: Any
@@ -34,6 +37,13 @@ from zephyrex.lib.Logging import logger
 # Helper lookup functions
 
 
+def _get_entity_by_name(
+    session,
+    name: str,
+    pydantic_model,
+    entity_label: str,
+    db_manager: DatabaseManager,
+):
     """Look up any entity by its ``name`` column.
 
     Args:
@@ -49,16 +59,19 @@ from zephyrex.lib.Logging import logger
     try:
         db_cls = pydantic_model.DB(db_manager.Base)
         stmt = select(db_cls).where(db_cls.name == name)
+        entity = session.execute(stmt).scalar_one_or_none()
 
         if entity:
             logger.log("SQL", f"Found {entity_label} {name} with ID {entity.id}")
             return entity
         logger.log("SQL", f"{entity_label.capitalize()} {name} not found")
         return None
+    except Exception as e:
         logger.error(f"Error looking up {entity_label} {name}: {str(e)}")
         return None
 
 
+def get_provider_by_name(session, provider_name, db_manager: DatabaseManager):
     """Helper function to look up a provider by name."""
     from zephyrex.logic.BLL_Providers import ProviderModel
 
@@ -67,6 +80,7 @@ from zephyrex.lib.Logging import logger
     )
 
 
+def get_extension_by_name(session, extension_name, db_manager: DatabaseManager):
     """Helper function to look up an extension by name."""
     from zephyrex.logic.BLL_Extensions import ExtensionModel
 
@@ -75,6 +89,7 @@ from zephyrex.lib.Logging import logger
     )
 
 
+def get_rotation_by_name(session, rotation_name, db_manager: DatabaseManager):
     """Helper function to look up a rotation by name."""
     from zephyrex.logic.BLL_Providers import RotationModel
 
@@ -83,6 +98,7 @@ from zephyrex.lib.Logging import logger
     )
 
 
+def get_provider_instance_by_name(session, instance_name, db_manager: DatabaseManager):
     """Helper function to look up a provider instance by name."""
     from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -91,6 +107,7 @@ from zephyrex.lib.Logging import logger
     )
 
 
+def _resolve_placeholder_fields(item, session, class_name, db_manager):
     """Resolve placeholder fields like _provider_name, _extension_name, etc. to
     actual IDs. Raises ParentNotSeeded when a named parent does not exist, so
     the caller can retry the item once more rows are seeded; returns None when
@@ -158,10 +175,14 @@ from zephyrex.lib.Logging import logger
 
     except ParentNotSeeded:
         raise
+    except Exception as e:
         logger.error(f"Error resolving placeholders for {class_name}: {e}")
         return None
 
 
+def seed_model(
+    model_class, session, db_manager, model_registry=None
+) -> Optional[SeedBatch]:
     """Seed one model class; returns the items deferred until their
     parents exist (see seed_deferred), or None when it has no seed data."""
     class_name = model_class.__name__
@@ -206,6 +227,7 @@ from zephyrex.lib.Logging import logger
         else:
             logger.log("SQL", f"No seed_data found for {class_name}")
 
+    except Exception as e:
         logger.log("SQL", f"Error finding Pydantic model for {class_name}: {e}")
 
     # Fallback: Check the old way for legacy models
@@ -220,6 +242,7 @@ from zephyrex.lib.Logging import logger
                     "SQL",
                     f"Retrieved dynamic seed list with {len(seed_list)} items for {class_name}",
                 )
+            except Exception as e:
                 logger.error(
                     f"Error calling get_seed_list method for {class_name}: {str(e)}"
                 )
@@ -235,6 +258,7 @@ from zephyrex.lib.Logging import logger
                         "SQL",
                         f"Called seed_list function for {class_name}, got {len(seed_list)} items",
                     )
+                except Exception as e:
                     logger.error(
                         f"Error calling seed_list function for {class_name}: {str(e)}"
                     )
@@ -276,6 +300,9 @@ from zephyrex.lib.Logging import logger
     return deferred
 
 
+def _seed_items(
+    model_class, pydantic_model, seed_list, session, db_manager, model_registry
+) -> "tuple[int, SeedBatch]":
     """Create each item that does not exist yet; returns how many were
     created and the items deferred because a named parent is missing."""
     class_name = model_class.__name__
@@ -307,6 +334,7 @@ from zephyrex.lib.Logging import logger
 
                 if check_field:
                     exists = model_class.exists(
+                        env("ROOT_ID"),
                         model_registry,
                         **{check_field: item[check_field]},
                     )
@@ -315,6 +343,7 @@ from zephyrex.lib.Logging import logger
                     f"Model {class_name} does not have an 'exists' method. Skipping existence check."
                 )
 
+        except Exception as e:
             # Handle schema mismatches gracefully (e.g., missing columns from disabled extensions)
             if "no such column" in str(e).lower():
                 logger.log(
@@ -333,6 +362,7 @@ from zephyrex.lib.Logging import logger
                 # Create the item
                 if hasattr(model_class, "create"):
                     # Use the model's seed_id if available, otherwise fall back to SYSTEM_ID
+                    creator_id = env("SYSTEM_ID")
 
                     # Check if the pydantic model has seed_creator_id
                     if pydantic_model and hasattr(pydantic_model, "seed_creator_id"):
@@ -360,12 +390,14 @@ from zephyrex.lib.Logging import logger
                         f"Created {class_name} item: {item.get('name', str(item))}",
                     )
                     items_created += 1
+            except Exception as e:
                 logger.error(f"Error creating {class_name} item: {str(e)}")
                 continue
 
     return items_created, deferred
 
 
+def seed_deferred(batch: SeedBatch, session, db_manager, model_registry) -> SeedBatch:
     """Retry a batch's deferred items; returns those still waiting."""
     _, remaining = _seed_items(
         batch.model_class,

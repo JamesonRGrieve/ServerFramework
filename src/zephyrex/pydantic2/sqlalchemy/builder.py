@@ -55,6 +55,7 @@ def _sanitize_field_name(field_name: str) -> str:
     return NameProcessor.sanitize_name(field_name, RESERVED_SQLALCHEMY_NAMES)
 
 
+def clear_registry_cache() -> None:
     """Reverse every extension applied to a Pydantic target model.
 
     E.g. payment's ``external_payment_id`` on ``UserModel``. The extension
@@ -78,6 +79,7 @@ def _sanitize_field_name(field_name: str) -> str:
     for target_key in list(_EXTENSION_REGISTRY_COMPAT.keys()):
         try:
             module_name, class_name = target_key.rsplit(".", 1)
+            module = importlib.import_module(module_name)
             target_model = getattr(module, class_name, None)
             if target_model is not None:
                 targets_to_reset.add(target_model)
@@ -98,6 +100,9 @@ def _is_database_model(obj: Any) -> bool:
     return isinstance(obj, type) and issubclass(obj, BaseModel)
 
 
+def get_entity_module_class(
+    entity_class_name: str,
+) -> Tuple[Optional[str], Optional[Type[BaseModel]]]:
     """
     Get entity class from modules or calling frame.
     Returns a tuple of (module_name, class).
@@ -148,6 +153,7 @@ def get_relationship_target(entity_class_name: str) -> str:
     return entity_class_name
 
 
+def _extract_mixin_classes(pydantic_model: Type[BaseModel]) -> List[Type[Any]]:
     """
     Extract SQLAlchemy mixin classes from Pydantic model inheritance.
 
@@ -200,6 +206,9 @@ def get_relationship_target(entity_class_name: str) -> str:
     return base_classes
 
 
+def _get_existing_columns(
+    base_classes: List[Type[Any]], base_model: Type[Any]
+) -> Set[str]:
     """
     Get columns that are already defined by base classes.
 
@@ -240,6 +249,9 @@ def get_relationship_target(entity_class_name: str) -> str:
     return existing_columns
 
 
+def _create_column_from_field(
+    name: str, field_type: Type[Any], field_info: Optional[Any] | None = None
+) -> Optional[Column]:
     """
     Create a SQLAlchemy Column from a Pydantic field.
 
@@ -349,6 +361,7 @@ def get_relationship_target(entity_class_name: str) -> str:
         ):
             try:
                 default_value = field_info.default_factory()
+            except Exception as e:
                 logger.debug(
                     "default_factory invocation failed for %r: %s",
                     getattr(field_info, "alias", field_info),
@@ -385,6 +398,9 @@ def get_relationship_target(entity_class_name: str) -> str:
     return Column(sa_type, **params)
 
 
+def _resolve_sqlalchemy_model(
+    model_registry: Optional["ModelRegistry"], candidate_names: List[str]
+) -> Optional[Type[Any]]:
     if model_registry is None:
         return None
 
@@ -402,12 +418,20 @@ def get_relationship_target(entity_class_name: str) -> str:
     return None
 
 
+def _queue_pending_relationship(
+    model_registry: Optional["ModelRegistry"],
+    source_model_name: str,
+    relationship_name: str,
+    target_candidate_names: List[str],
+    relationship_kwargs: Dict[str, Any],
+) -> None:
     if model_registry is None:
         return
 
     pending = getattr(model_registry, "_pending_sqlalchemy_relationships", None)
     if pending is None:
         pending = []
+        setattr(model_registry, "_pending_sqlalchemy_relationships", pending)
 
     pending.append(
         {
@@ -419,6 +443,7 @@ def get_relationship_target(entity_class_name: str) -> str:
     )
 
 
+def _apply_pending_relationships(model_registry: Optional["ModelRegistry"]) -> None:
     if model_registry is None:
         return
 
@@ -444,8 +469,10 @@ def get_relationship_target(entity_class_name: str) -> str:
             if hasattr(rel_prop, "_setup_entity"):
                 try:
                     rel_prop._setup_entity()
+                except Exception:
                     pass
         else:
+            setattr(
                 source_model,
                 entry["attr_name"],
                 relationship(target_model, **entry["relationship_kwargs"]),
@@ -457,6 +484,9 @@ def get_relationship_target(entity_class_name: str) -> str:
         pending.pop(idx)
 
 
+def _find_pydantic_model_by_name(
+    model_registry: Optional["ModelRegistry"], candidate_names: List[str]
+) -> Optional[Type[BaseModel]]:
     if model_registry is None:
         return None
 
@@ -470,6 +500,10 @@ def get_relationship_target(entity_class_name: str) -> str:
     return None
 
 
+def _ensure_pending_relationship_targets(
+    model_registry: Optional["ModelRegistry"],
+    base_model: Optional[Type[Any]],
+) -> None:
     if model_registry is None or base_model is None:
         return
 
@@ -504,6 +538,12 @@ def get_relationship_target(entity_class_name: str) -> str:
         )
 
 
+def _process_reference_fields(
+    pydantic_model: Type[BaseModel],
+    class_dict: Dict[str, Any],
+    existing_columns: Set[str],
+    tablename: str,
+) -> List[Dict[str, Any]]:
     """Collect reference metadata and inject placeholder columns."""
 
     all_ref_fields: Dict[str, Type[Any]] = {}
@@ -541,6 +581,7 @@ def get_relationship_target(entity_class_name: str) -> str:
                     ):
                         all_ref_fields[field_name] = field_type
                         all_optional_fields.add(field_name)
+            except Exception:
                 pass
 
             for parent in getattr(base, "__mro__", ())[1:]:
@@ -548,6 +589,7 @@ def get_relationship_target(entity_class_name: str) -> str:
                     continue
                 try:
                     parent_fields = get_type_hints(parent)
+                except Exception:
                     continue
 
                 for field_name, field_type in parent_fields.items():
@@ -571,6 +613,7 @@ def get_relationship_target(entity_class_name: str) -> str:
                             optional_fields = set(get_type_hints(base.Optional).keys())
                             if field_name in optional_fields:
                                 all_optional_fields.add(field_name)
+            except Exception:
                 pass
 
     reference_configs: List[Dict[str, Any]] = []
@@ -675,6 +718,7 @@ def get_relationship_target(entity_class_name: str) -> str:
                     nullable=is_optional,
                     comment=f"{fk_comment_prefix} to {entity_comment_name}",
                 )
+            except Exception as e:
                 class_dict[name] = Column(
                     String,
                     nullable=is_optional,
@@ -690,6 +734,13 @@ def get_relationship_target(entity_class_name: str) -> str:
     return reference_configs
 
 
+def create_sqlalchemy_model(
+    pydantic_model: Type[BaseModel],
+    model_registry: ModelRegistry,
+    tablename: Optional[str] | None = None,
+    table_comment: Optional[str] | None = None,
+    base_model: Optional[Type[Any]] | None = None,
+) -> Type[Any]:
     """
     Create a SQLAlchemy model class from a Pydantic model.
 
@@ -742,6 +793,7 @@ def get_relationship_target(entity_class_name: str) -> str:
         )
         if in_progress_set is None:
             in_progress_set = set()
+            setattr(model_registry, "_sqlalchemy_models_in_progress", in_progress_set)
 
         if pydantic_model in in_progress_set:
             existing = model_registry.db_models.get(pydantic_model)
@@ -809,6 +861,7 @@ def get_relationship_target(entity_class_name: str) -> str:
             in_progress_set.discard(pydantic_model)
 
 
+def _fix_null_type_columns(model_class: Type[Any]) -> None:
     """
     Fix any columns in the model that have NullType by replacing with appropriate types.
 
@@ -837,6 +890,9 @@ def get_relationship_target(entity_class_name: str) -> str:
                 column.type = String()
 
 
+def _ensure_reference_foreign_keys(
+    model_class: Type[Any], reference_configs: List[Dict[str, Any]]
+) -> None:
     if not reference_configs or not hasattr(model_class, "__table__"):
         return
 
@@ -876,6 +932,7 @@ def get_relationship_target(entity_class_name: str) -> str:
             )
 
 
+def _analyze_model_dependencies(bll_models: Dict[str, Type[BaseModel]]) -> List[str]:
     """
     Analyze dependencies between BLL models to determine creation order.
 
@@ -921,6 +978,7 @@ def get_relationship_target(entity_class_name: str) -> str:
     visited: Set[str] = set()
     temp_visited: Set[str] = set()
 
+    def visit(model_name):
         if model_name in temp_visited:
             # Circular dependency - skip this dependency
             return

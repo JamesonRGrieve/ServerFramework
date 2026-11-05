@@ -26,6 +26,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
 
 
 # Search model for string fields
+class StringSearchModel(BaseModel):
     contains: Optional[str] | None = None
     equals: Optional[str] | None = None
     starts_with: Optional[str] | None = None
@@ -34,50 +35,63 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
 
 
 # Common Pydantic model mixins that match the SQLAlchemy mixins
+class ApplicationModel(BaseModel):
     id: Optional[str] = Field(None, description="Unique identifier")
     created_at: Optional[datetime] = Field(None, description="Creation timestamp")
     created_by_user_id: Optional[str] = Field(
         None, description="ID of the user who created this record"
     )
 
+    class Optional(BaseModel):
         id: Optional[str] | None = None
         created_at: Optional[datetime] | None = None
         created_by_user_id: Optional[str] | None = None
 
+    class Search(BaseModel):
         id: Optional[StringSearchModel] | None = None
         created_at: Optional[datetime] | None = None
         created_by_user_id: Optional[StringSearchModel] | None = None
 
 
+class UpdateMixinModel(BaseModel):
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
     updated_by_user_id: Optional[str] = Field(
         None, description="ID of the user who last updated this record"
     )
 
+    class Optional(BaseModel):
         updated_at: Optional[datetime] | None = None
         updated_by_user_id: Optional[str] | None = None
 
+    class Search(BaseModel):
         updated_at: Optional[datetime] | None = None
         updated_by_user_id: Optional[StringSearchModel] | None = None
 
 
+class ImageMixinModel(BaseModel):
     image_url: Optional[str] = Field(
         None, description="URL to the image for this record"
     )
 
+    class Optional(BaseModel):
         image_url: Optional[str] = Field(None, description="Optional image URL")
 
+    class Search(BaseModel):
         image_url: Optional[StringSearchModel] | None = None
 
 
+class ParentMixinModel(BaseModel):
     parent_id: Optional[str] = Field(None, description="ID of the parent record")
 
+    class Optional(BaseModel):
         parent_id: Optional[str] | None = None
 
+    class Search(BaseModel):
         parent_id: Optional[StringSearchModel] | None = None
 
 
 # Fix circular imports and handle parent relationship properly
+class ParentRelationshipMixin:
     """Modified version of ParentMixin that sets up the self-reference correctly"""
 
     @declared_attr
@@ -100,6 +114,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
 
 
 # Legacy compatibility class
+class ModelConverter:
     """
     Legacy utility class for backward compatibility.
     """
@@ -113,6 +128,8 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
         registry = ModelRegistry()
         return create_sqlalchemy_model(model, registry, **kwargs)
 
+    @staticmethod
+    def pydantic_to_dict(pydantic_obj: BaseModel) -> Dict[str, Any]:
         """
         Convert a Pydantic model instance to a dictionary suitable for SQLAlchemy.
         Removes any fields that don't belong in the SQLAlchemy model.
@@ -138,6 +155,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
                     for k, v in pydantic_obj.__dict__.items()
                     if not k.startswith("_")
                 }
+        except Exception as e:
             # Fallback if the methods fail
             data = {
                 k: v for k, v in pydantic_obj.__dict__.items() if not k.startswith("_")
@@ -175,6 +193,10 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
 
         return data
 
+    @staticmethod
+    def sqlalchemy_to_pydantic(
+        sa_obj: Any, pydantic_class: Type[BaseModel]
+    ) -> BaseModel:
         """
         Convert a SQLAlchemy model instance to a Pydantic model instance.
 
@@ -211,8 +233,10 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
                     else:
                         # Direct instantiation
                         return pydantic_class(**data)
+                except Exception as e:
                     # If the above fails, try direct instantiation
                     return pydantic_class(**data)
+            except Exception as e:
                 raise ValueError(
                     f"Failed to convert SQLAlchemy object to Pydantic: {str(e)}"
                 )
@@ -228,14 +252,17 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
                 else:
                     # Direct instantiation
                     return pydantic_class(**sa_obj)
+            except Exception as e:
                 # If the above fails, try direct instantiation
                 try:
                     return pydantic_class(**sa_obj)
+                except Exception as nested_e:
                     raise ValueError(
                         f"Failed to convert dict to Pydantic: {str(e)}, nested error: {str(nested_e)}"
                     )
 
 
+class DatabaseMixin:
     """
     Mixin for Pydantic models that provides access to corresponding SQLAlchemy models.
 
@@ -261,6 +288,8 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
     # (``UserModel.Manager = UserManager``); router generation reads it.
     Manager: ClassVar[Optional[Type[ManagerContract]]] = None
 
+    @classmethod
+    def DB(cls, declarative_base):
         """
         Get or create the SQLAlchemy model for this Pydantic model within the given declarative base.
         Automatically creates dependent models to ensure proper relationship resolution.
@@ -316,6 +345,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
             model_registry.declarative_base = declarative_base
             # Attach it to the declarative base for future use
             try:
+                setattr(declarative_base, "_model_registry", model_registry)
             except (TypeError, AttributeError) as e:
                 logger.warning(
                     f"Could not attach model registry to declarative_base: {e}"
@@ -336,6 +366,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
             if not hasattr(declarative_base, "_pydantic_models") or not isinstance(
                 getattr(declarative_base, "_pydantic_models", None), dict
             ):
+                setattr(declarative_base, "_pydantic_models", {})
             getattr(declarative_base, "_pydantic_models")[
                 registry_key
             ] = sqlalchemy_model
@@ -347,6 +378,8 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
 
         return sqlalchemy_model
 
+    @classmethod
+    def _ensure_dependencies_created(cls, declarative_base):
         """
         Ensure all dependent models are created in the same declarative base.
         This prevents SQLAlchemy relationship resolution errors.
@@ -382,6 +415,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
                             # Try to import and get the dependency model
                             try:
                                 # Import from the same module as this model
+                                module = __import__(
                                     cls.__module__, fromlist=[entity_class_name]
                                 )
                                 if hasattr(module, entity_class_name):
@@ -395,6 +429,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
                             except (ImportError, AttributeError):
                                 # If we can't import the dependency, skip it
                                 pass
+                except Exception:
                     # If we can't get type hints, skip this base
                     pass
 
@@ -402,6 +437,7 @@ from zephyrex.pydantic2.manager_contract import ManagerContract
         for dependency_model in dependency_models:
             try:
                 dependency_model.DB(declarative_base)
+            except Exception:
                 # If creating a dependency fails, continue with others
                 pass
 

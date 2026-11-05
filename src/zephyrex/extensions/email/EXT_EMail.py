@@ -296,6 +296,7 @@ _SEND_HTTP_CLIENTS: Dict[type, Any] = {}
 _SEND_RATE_BUCKETS: Dict[type, Any] = {}
 
 
+class AbstractEmailProvider(AbstractStaticProvider):
     """Abstract base class for email service providers."""
 
     extension: ClassVar[Optional[Type[AbstractStaticExtension]]] = None
@@ -457,6 +458,14 @@ _SEND_RATE_BUCKETS: Dict[type, Any] = {}
             "description": f"Email extension for {cls.get_platform_name()}",
         }
 
+    @classmethod
+    def _validate_send_inputs(
+        cls,
+        recipient: str,
+        subject: str,
+        body: str,
+        attachments: Optional[List[str]] | None = None,
+    ) -> Optional[str]:
         """
         Reject inputs that could be used to mount header-injection, SSRF,
         traversal, or DoS attacks against the underlying transport. Returns
@@ -525,6 +534,8 @@ _SEND_RATE_BUCKETS: Dict[type, Any] = {}
 
         return None
 
+    @classmethod
+    def _validate_message(cls, message: "EmailMessage") -> Optional[str]:
         """Apply the same denial rules as ``_validate_send_inputs`` against
         the typed ``EmailMessage`` shape, including ``cc`` / ``bcc`` /
         ``reply_to`` / ``from_`` and the ``headers`` dict.
@@ -599,6 +610,8 @@ _SEND_RATE_BUCKETS: Dict[type, Any] = {}
 
         return None
 
+    @staticmethod
+    def _validate_email_address(entry: "EmailAddress", label: str) -> Optional[str]:
         """Validate a single ``EmailAddress`` for header-injection-safe use."""
         addr = entry.address if entry else ""
         name = entry.name if entry else None
@@ -800,6 +813,12 @@ _SEND_RATE_BUCKETS: Dict[type, Any] = {}
     # the abstract surface; this layer is purely additive.
     # ------------------------------------------------------------------
 
+    @classmethod
+    async def send(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: "EmailMessage",
+    ) -> str:
         """Send a typed ``EmailMessage`` via this provider.
 
         Validates the message (CRLF / NUL / length / address shape /
@@ -1034,6 +1053,7 @@ _SEND_RATE_BUCKETS: Dict[type, Any] = {}
         )
 
 
+class EXT_EMail(AbstractStaticExtension):
     """
     Email extension for AGInfrastructure.
 

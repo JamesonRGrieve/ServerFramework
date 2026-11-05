@@ -163,6 +163,9 @@ def inbound_enabled(
     return _flag(provider.setting(instance, ENABLED_SETTING))
 
 
+def mailbox_config(
+    provider: Type[AbstractStaticProvider], instance: ProviderInstanceModel
+) -> MailboxConfig:
     """The instance's mailbox, from its settings. InboundConfigError for
     settings it can never be read with, TLSRequiredError among them."""
 
@@ -243,6 +246,7 @@ def _text(data: Any) -> str:
     )
 
 
+class IMAPMailbox:
     """An authenticated session with the mailbox selected. Blocking; one
     thread at a time."""
 
@@ -267,6 +271,8 @@ def _text(data: Any) -> str:
             cls._drop(connection)
             raise
 
+    @staticmethod
+    def _connect(config: MailboxConfig, timeout: float) -> imaplib.IMAP4:
         if config.security == "tls":
             return imaplib.IMAP4_SSL(
                 config.host,
@@ -290,6 +296,7 @@ def _text(data: Any) -> str:
                 raise
         return connection
 
+    def _sign_in(self) -> None:
         self.connection.login(self.config.username, self.config.password)
         capability = _ok(self.connection.capability(), "CAPABILITY")
         self.capabilities = frozenset(_text(capability).upper().split())
@@ -317,6 +324,7 @@ def _text(data: Any) -> str:
         # ``n:*`` names the highest UID even when it is below n.
         return sorted(uid for uid in uids if uid > after_uid)
 
+    def sizes(self, uids: List[int]) -> Dict[int, int]:
         """Each message's size, by UID; a message gone since is missing."""
         if not uids:
             return {}
@@ -336,6 +344,7 @@ def _text(data: Any) -> str:
                 found[int(uid.group(1))] = int(size.group(1))
         return found
 
+    def fetch(self, uid: int) -> Optional[bytes]:
         """The raw message, without flagging it \\Seen; None when it is
         gone."""
         fetched = _ok(self.connection.uid("FETCH", str(uid), "(BODY.PEEK[])"), "FETCH")
@@ -349,6 +358,7 @@ def _text(data: Any) -> str:
                     return body
         return None
 
+    def finish(self, uid: int) -> None:
         """Do with a delivered message what the config says."""
         target = str(uid)
         if self.config.after == "seen":

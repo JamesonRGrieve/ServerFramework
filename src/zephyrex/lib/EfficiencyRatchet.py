@@ -51,6 +51,7 @@ DEFAULT_SCALING_MARGIN = 0.35
 DEFAULT_SCALING_REPEATS = 5
 
 
+def _read_mhz() -> float:
     """CPU base frequency in MHz — stable across P-states and turbo.
 
     Live ``cpu MHz`` from ``/proc/cpuinfo`` swings 2.7–4.7 GHz with
@@ -71,6 +72,7 @@ DEFAULT_SCALING_REPEATS = 5
     return 3600.0
 
 
+def _load(path: Path | None = None) -> dict[str, float]:
     """The baselines in ``path`` (the tracked file when omitted)."""
     path = BASELINE_FILE if path is None else path
     if path.exists():
@@ -78,10 +80,14 @@ DEFAULT_SCALING_REPEATS = 5
     return {}
 
 
+def _save(data: dict[str, float], path: Path | None = None) -> None:
     path = BASELINE_FILE if path is None else path
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def _check(
+    key: str, normalized: float, elapsed: float, mhz: float, tolerance: float
+) -> None:
     if key.startswith(SCALING_KEY_PREFIX):
         raise ValueError(f"{key}: a wall-time key must not use the scaling prefix")
     baselines = _load(LOCAL_BASELINE_FILE)
@@ -120,6 +126,9 @@ def ratchet(
     _check(key, elapsed * mhz, elapsed, mhz, tolerance)
 
 
+def ratchet_subprocess(
+    key: str, script: str, *, tolerance: float = DEFAULT_TOLERANCE, timeout: float = 30
+) -> None:
     """Run *script* in a fresh Python process, ratchet the result."""
     wrapper = (
         textwrap.dedent("""\
@@ -132,6 +141,7 @@ def ratchet(
     """)
     )
 
+    result = subprocess.run(
         [sys.executable, "-c", wrapper],
         capture_output=True,
         text=True,
@@ -139,11 +149,13 @@ def ratchet(
         cwd=str(_REPO_ROOT),
     )
     if result.returncode != 0:
+        raise RuntimeError(f"Benchmark subprocess failed:\n{result.stderr}")
 
     data = json.loads(result.stdout.strip().splitlines()[-1])
     _check(key, data["elapsed"] * data["mhz"], data["elapsed"], data["mhz"], tolerance)
 
 
+def _lstsq_slope(xs: Sequence[float], ys: Sequence[float]) -> float:
     """Least-squares slope of ys vs xs (the log-log complexity exponent).
 
     With ``xs = log(N)`` and ``ys = log(time)``, the slope estimates ``k`` in
@@ -162,6 +174,7 @@ def ratchet(
     return num / denom
 
 
+def _check_scaling(key: str, exponent: float, margin: float) -> None:
     if not key.startswith(SCALING_KEY_PREFIX):
         raise ValueError(f"{key}: a tracked exponent key needs {SCALING_KEY_PREFIX!r}")
     baselines = _load()
@@ -180,6 +193,15 @@ def ratchet(
     )
 
 
+def ratchet_scaling(
+    key: str,
+    run: Callable[[int], object],
+    *,
+    sizes: Sequence[int],
+    margin: float = DEFAULT_SCALING_MARGIN,
+    iterations: int = 1,
+    repeats: int = DEFAULT_SCALING_REPEATS,
+) -> None:
     """Ratchet the empirical big-O *exponent* of ``run`` across input ``sizes``.
 
     ``run(n)`` must perform the work for problem size ``n`` (build its own input;

@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - fallback for alternate Pydantic packag
         from pydantic.fields import PydanticUndefined
     except ImportError:  # pragma: no cover - ultimate fallback
 
+        class _UndefinedSentinel:
             pass
 
         PydanticUndefined = _UndefinedSentinel()  # type: ignore
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from .types import NetworkModelProtocol as NetworkModelProtocol
 
 
+class ExampleGenerator:
     """
     Utility class to generate example data for Pydantic models for OpenAPI documentation.
 
@@ -189,6 +191,8 @@ if TYPE_CHECKING:
         """Generate a random UUID string."""
         return str(uuid.uuid4())
 
+    @staticmethod
+    def get_example_value(field_type: Type, field_name: str) -> Any:
         """
         Generate an appropriate example value based on field type and name.
 
@@ -235,7 +239,9 @@ if TYPE_CHECKING:
         elif field_type is float:
             field_lower = field_name.lower()
             if "price" in field_lower or "amount" in field_lower:
+                return round(faker.random.uniform(1.99, 999.99), 2)
             elif "rate" in field_lower or "percentage" in field_lower:
+                return round(faker.random.uniform(0.0, 100.0), 2)
             else:
                 return 42.5
         elif field_type is bool:
@@ -247,6 +253,8 @@ if TYPE_CHECKING:
         else:
             return None
 
+    @staticmethod
+    def field_name_to_example(field_name: str) -> str:
         """
         Convert a field name to a human-readable example string.
 
@@ -265,6 +273,8 @@ if TYPE_CHECKING:
         human_readable = stringcase.titlecase(clean_field)
         return f"Example {human_readable}"
 
+    @staticmethod
+    def _generate_string_example(field_name: str) -> str:
         """Generate string examples using pattern matching with Faker callables."""
         field_lower = field_name.lower()
 
@@ -273,6 +283,7 @@ if TYPE_CHECKING:
             if re.match(pattern, field_lower):
                 try:
                     return generator()  # type: ignore[no-any-return]
+                except Exception as e:
                     logger.warning(
                         f"Failed to generate example for pattern {pattern}: {e}"
                     )
@@ -283,6 +294,8 @@ if TYPE_CHECKING:
 
     _unsafe_default_type_names: ClassVar[Set[str]] = {"ModelFieldAccessor"}
 
+    @staticmethod
+    def _is_serializable_default(value: Any) -> bool:
         """Return True if the default can be safely used in an OpenAPI example."""
 
         if value is None:
@@ -304,6 +317,8 @@ if TYPE_CHECKING:
             return False
         return True
 
+    @staticmethod
+    def _generate_bool_example(field_name: str) -> bool:
         """Generate boolean examples using pattern matching."""
         field_lower = field_name.lower()
 
@@ -312,6 +327,7 @@ if TYPE_CHECKING:
             if re.match(pattern, field_lower):
                 try:
                     return generator()
+                except Exception as e:
                     logger.warning(
                         f"Failed to generate boolean example for pattern {pattern}: {e}"
                     )
@@ -320,6 +336,8 @@ if TYPE_CHECKING:
         # Default fallback
         return False
 
+    @staticmethod
+    def generate_example_for_model(model_cls: Type[BaseModel]) -> Dict[str, Any]:
         """
         Generate a complete example object for a Pydantic model.
 
@@ -333,6 +351,7 @@ if TYPE_CHECKING:
         cache_key = f"{model_cls.__module__}.{model_cls.__name__}"
         if cache_key in ExampleGenerator._example_cache:
             logger.debug(f"Using cached example for {cache_key}")
+            return ExampleGenerator._example_cache[cache_key].copy()
 
         logger.debug(f"Generating example for model: {model_cls.__name__}")
         example = {}
@@ -354,6 +373,7 @@ if TYPE_CHECKING:
                     elif field_info.default_factory is not None:
                         try:
                             generated_default = field_info.default_factory()  # type: ignore[call-arg]
+                        except Exception as exc:  # pragma: no cover - defensive guard
                             logger.debug(
                                 "Default factory for %s on %s raised %s",
                                 field_name,
@@ -383,9 +403,14 @@ if TYPE_CHECKING:
             raise e
 
         # Cache the result for future use
+        ExampleGenerator._example_cache[cache_key] = example.copy()
 
         return example
 
+    @staticmethod
+    def generate_operation_examples(
+        network_model_cls: "NetworkModelProtocol", resource_name: str
+    ) -> Dict[str, Dict]:
         """
         Generate examples for all operation types (create, update, get, search).
 
@@ -509,6 +534,10 @@ if TYPE_CHECKING:
         """Clear the example cache."""
         ExampleGenerator._example_cache.clear()
 
+    @staticmethod
+    def customize_example(
+        example: Dict[str, Any], customizations: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Apply customizations to an example.
 

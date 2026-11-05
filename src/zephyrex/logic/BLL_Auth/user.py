@@ -77,6 +77,7 @@ _SECONDS_PER_HOUR = 3600
 JWT_LEEWAY_SECONDS = 30
 
 
+def issue_browser_session(response: Response, token: str) -> None:
     """Set the session cookies for a login token (see lib.SessionCookies)."""
     set_session_cookies(response, token, JWT_LIFETIME_HOURS * _SECONDS_PER_HOUR)
 
@@ -93,6 +94,12 @@ ACCOUNT_STATE_FIELDS = frozenset({"active", "mfa_count"})
 USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
 
 
+class UserModel(
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    ImageMixinModel.Optional,
+    metaclass=ModelMeta,
+):
     model_config = {"extra": "ignore", "populate_by_name": True}
     Manager: ClassVar[Type["UserManager"]] = None  # type: ignore[assignment]
     email: Optional[str] = Field(description="User's email address")
@@ -147,6 +154,10 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
     # StaticPermissions.generate_permission_filter: themselves, users they
     # share a live team with, ROOT and SYSTEM everyone.
 
+    @classmethod
+    def user_has_admin_access(
+        cls, user_id, id, db, db_manager=None, model_registry=None
+    ):
         """
         Check if user has admin access to a specific record.
         Admin access requires EDIT permission.
@@ -188,7 +199,9 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
 
         # Check if the record was created by ROOT_ID - only ROOT_ID can access
         if hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
+            "ROOT_ID"
         ):
+            return is_root_id(user_id)  # Only ROOT_ID can access
 
         # Check if the record was created by TEMPLATE_ID - only system users can modify
         if hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
@@ -204,6 +217,8 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
         result, _ = check_permission(user_id, cls.DB, id, db, PermissionType.EDIT)
         return result == PermissionResult.GRANTED
 
+    @classmethod
+    def user_has_all_access(cls, user_id, id, db, db_manager=None, model_registry=None):
         """
         Override user_has_all_access for User model to enforce specific rules for
         DELETE and SHARE permissions.
@@ -243,6 +258,7 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
         # Special checks for ROOT_ID created records
         if hasattr(
             user_record, "created_by_user_id"
+        ) and user_record.created_by_user_id == env("ROOT_ID"):
             return is_root_id(user_id)
 
         # Check explicit permissions
@@ -254,6 +270,7 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
         """Dictionary-like accessor for attributes"""
         return getattr(self, field_name, default)
 
+    class Create(BaseModel, ImageMixinModel.Optional):
         email: str = Field(..., description="User's email address")
         username: Optional[str] = Field(None, description="User's username")
         display_name: Optional[str] = Field(None, description="User's display name")
@@ -280,6 +297,7 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
             description="Invitation ID for direct email invite acceptance during registration (scenario 3)",
         )
 
+    class Update(BaseModel, ImageMixinModel.Optional):
         email: Optional[str] = Field(None, description="User's email address")
         username: Optional[str] = Field(None, description="User's username")
         display_name: Optional[str] = Field(None, description="User's display name")
@@ -292,6 +310,8 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
         timezone: Optional[str] = Field(None, description="User's timezone")
         language: Optional[str] = Field(None, description="User's language")
 
+        @model_validator(mode="after")
+        def validate_email(self):
             if self.email is not None:
                 try:
                     from email_validator import EmailNotValidError
@@ -302,6 +322,7 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
                     raise ValueError(f"Invalid email format: {exc}") from exc
             return self
 
+    class Search(ApplicationModel.Search, ImageMixinModel.Search):
         email: Optional[StringSearchModel] | None = None
         username: Optional[StringSearchModel] | None = None
         display_name: Optional[StringSearchModel] | None = None
@@ -319,6 +340,7 @@ USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
 REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
 
 
+class UserManager(AbstractBLLManager, RouterMixin):
     _model = UserModel
     _entity_label: ClassVar[Optional[str]] = "User"
 
@@ -521,7 +543,15 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         },
     }
 
+    def __init__(
+        self,
+        requester_id: str,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry=None,
+    ):
         super().__init__(
+            requester_id=requester_id,
             target_id=target_id,
             target_team_id=target_team_id,
             model_registry=model_registry,
@@ -536,6 +566,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
     def _register_search_transformers(self):
         self.register_search_transformer("name", self._transform_name_search)
 
+    def _transform_name_search(self, value):
         if not value:
             return []
 
@@ -556,13 +587,18 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             )
         ]
 
+    @property
+    def credentials(self):
         if self._credentials is None:
             self._credentials = UserCredentialManager(
+                requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
             )
         return self._credentials
 
+    @property
+    def metadata(self):
         if self._metadata is None:
             factory = _metadata_hooks["user_manager_factory"]
             if factory is None:
@@ -571,6 +607,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                     detail="metadata extension not loaded; user metadata unavailable",
                 )
             self._metadata = factory(
+                requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
             )
@@ -583,6 +620,8 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                 )
         return self._metadata
 
+    @property
+    def failed_logins(self):
         """Return the failed-login manager from the ``auth_lockout``
         extension. Without it, the property is genuinely unavailable —
         core only knows that login failures should be tracked, not how
@@ -598,20 +637,26 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                     ),
                 )
             self._failed_logins = factory(
+                requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
             )
         return self._failed_logins
 
+    @property
+    def user_teams(self):
         if self._user_teams is None:
             from zephyrex.logic.BLL_Auth.user_team import UserTeamManager
 
             self._user_teams = UserTeamManager(
+                requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
             )
         return self._user_teams
 
+    @property
+    def sessions(self):
         """Return the session manager from the ``auth_session`` extension.
 
         Without ``auth_session`` loaded, ``user.sessions`` is unavailable —
@@ -630,6 +675,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                     ),
                 )
             self._sessions = factory(
+                requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
             )
@@ -640,6 +686,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             "Intentionally not implemented. Use the `register` method instead."
         )
 
+    def update(self, id: str, **kwargs):
         """Update a user with optional metadata"""
         from zephyrex.database.StaticPermissions import is_root_id
 
@@ -714,6 +761,15 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
 
         return user
 
+    @staticmethod
+    def generate_jwt_token(
+        user_id: str,
+        email: str,
+        timezone_str: str = "UTC",
+        expiration_hours: int = JWT_LIFETIME_HOURS,
+        session_key: Optional[str] | None = None,
+        model_registry=None,
+    ) -> str:
         """Generate a JWT token for authentication.
 
         Always carries ``jti`` (M-1) so token verification can enforce
@@ -745,6 +801,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                     device_type="api",
                 )
             else:
+                session_key = secrets.token_hex(16)
 
         # M-1 — `aud` and `iss` so tokens minted by another deployment
         # sharing the same JWT_SECRET (dev↔staging accident) do not
@@ -762,7 +819,12 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             "iss": env("JWT_ISSUER"),
             "jti": session_key,
         }
+        return jwt.encode(payload, env("JWT_SECRET"), algorithm=env("JWT_ALGORITHM"))
 
+    @staticmethod
+    def _enforce_session_not_revoked(
+        payload: Dict[str, Any], model_registry, db=None
+    ) -> None:
         """Always require a ``jti`` claim (M-1). When the ``auth_session``
         extension is loaded, dispatch to its ``enforce_not_revoked`` hook
         which checks the bound row's ``is_active``, ``revoked``, and
@@ -794,6 +856,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                 )
                 if cached is not None:
                     return
+            except Exception:
                 pass
 
         enforce_hook(payload, model_registry, db)
@@ -808,10 +871,15 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                         {"session_key": session_key},
                     )
                 )
+            except Exception:
                 pass
 
+    @staticmethod
+    def _decode_jwt(token: str) -> Dict[str, Any]:
         """Decode a JWT trying current secret, then previous for rotation."""
 
+        def decode(secret: str) -> Dict[str, Any]:
+            return jwt.decode(
                 token,
                 secret,
                 algorithms=[env("JWT_ALGORITHM")],
@@ -829,6 +897,11 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                 return decode(previous)
             raise
 
+    @staticmethod
+    def verify_token(
+        token: str,
+        model_registry=None,
+    ) -> Dict[str, Any]:
         """Verify a JWT token and return user information"""
         if model_registry is None:
             raise ValueError("model_registry is required for verify_token")
@@ -856,13 +929,16 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                         return {"id": user.id, "email": user.email}
                 except HTTPException:
                     raise
+                except Exception:
                     pass
 
             # ROOT's reads include deleted rows; a deleted user's token is
             # void. (A soft delete through the manager evicts the cache.)
             UserDB = UserModel.DB(model_registry.DB.manager.Base)
             live: List[UserModel] = UserDB.list(
+                requester_id=env("ROOT_ID"),
                 model_registry=model_registry,
+                filters=[UserDB.id == payload["sub"], UserDB.deleted_at.is_(None)],
                 return_type="dto",
                 override_dto=UserModel,
             )
@@ -891,6 +967,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                             ),
                         )
                     )
+                except Exception:
                     pass
 
             return {"id": user.id, "email": user.email}
@@ -900,9 +977,12 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             raise HTTPException(status_code=401, detail="Invalid token")
         except HTTPException:
             raise
+        except Exception as e:
             logger.error("Token verification failed: %s", e, exc_info=True)
             raise HTTPException(status_code=401, detail="Token verification failed")
 
+    @staticmethod
+    def _decode_basic_auth(authorization: str) -> tuple[str, str]:
         """Decode a Basic ``Authorization`` header into ``(identifier, password)``.
 
         Strips the ``Basic `` scheme prefix, base64-decodes the credential
@@ -951,6 +1031,10 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             func.lower(UserDB.username) == identifier,
         )
 
+    @staticmethod
+    def _identifier_taken(
+        identifier: str, model_registry: Any, exclude_user_id: Optional[str] = None
+    ) -> bool:
         """Whether a live user other than ``exclude_user_id`` signs in by the
         normalized ``identifier``. Register and update refuse such an email or
         username: a second holder would make login match two users and so
@@ -958,16 +1042,22 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         UserDB = UserModel.DB(model_registry.DB.manager.Base)
         filters = [
             UserManager._signs_in_as(UserDB, identifier),
+            UserDB.deleted_at.is_(None),
         ]
         if exclude_user_id is not None:
             filters.append(UserDB.id != exclude_user_id)
         return bool(
             UserDB.exists(
+                requester_id=env("ROOT_ID"),
                 model_registry=model_registry,
                 filters=filters,
             )
         )
 
+    @staticmethod
+    def user_id_for_verified_email(
+        email: Optional[str], model_registry: Any
+    ) -> Optional[str]:
         """The one live account an external identity's vouched-for email
         names, for linking that identity on its first sign-in. The email is
         matched as registration stores it (``_normalize_identifier``).
@@ -980,9 +1070,11 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             return None
         UserDB = UserModel.DB(model_registry.DB.manager.Base)
         users: List[Dict[str, Any]] = UserDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             filters=[
                 UserDB.email == UserManager._normalize_identifier(email),
+                UserDB.deleted_at.is_(None),
             ],
         )
         if not users:
@@ -990,6 +1082,10 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         refuse_internal_account(users[0]["id"])
         return str(users[0]["id"])
 
+    @staticmethod
+    def _resolve_issued_api_key(
+        model_registry: Any, candidates: tuple[Optional[str], ...]
+    ) -> Optional[str]:
         """Resolve the first issued API key among ``candidates`` to its user id.
 
         Dispatches through ``_api_key_hooks["resolve_principal"]`` (registered
@@ -1015,6 +1111,12 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                 return user_id
         return None
 
+    @staticmethod
+    def auth(
+        model_registry,
+        authorization: Optional[str] = Header(None),
+        request: Request | RequestInfo | Dict[str, Any] | None = None,
+    ) -> UserModel:
         """Authenticate a user from Authorization header"""
         if isinstance(request, dict):
             request = RequestInfo(request)
@@ -1079,6 +1181,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                         db.query(KeyUserDB)
                         .filter(
                             KeyUserDB.id == issued_key_user_id,
+                            KeyUserDB.deleted_at.is_(None),
                         )
                         .first()
                     )
@@ -1106,6 +1209,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                     user = (
                         db.query(UserDB)
                         .filter(
+                            UserDB.id == payload["sub"], UserDB.deleted_at.is_(None)
                         )
                         .first()
                     )
@@ -1137,8 +1241,10 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         finally:
             db.close()
 
+    def verify_password(self, user_id: str, password: str) -> bool:
         """Verify a user's password"""
         credentials = UserCredentialModel.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=self.requester_id,
             model_registry=self.model_registry,
             user_id=user_id,
             filters=[
@@ -1154,6 +1260,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
 
         return password_matches(password, credentials[0]["password_hash"])
 
+    def get_metadata(self) -> Dict[str, str]:
         """Get all metadata for the target user (via metadata extension)."""
         list_hook = _metadata_hooks["list_user_metadata"]
         if list_hook is None:
@@ -1161,6 +1268,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         metadata_items = list_hook(self.target_user_id, self.model_registry)
         return {item.key: item.value for item in metadata_items}
 
+    def revoke_all_user_sessions(self, user_id: str):
         """Revoke all sessions for a user (nested custom route method)"""
         return self.sessions.revoke_all_user_sessions(user_id=user_id)
 
@@ -1175,9 +1283,14 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
     )
 
     # Login-specific models (not part of the main entity model system)
+    class UserLoginModel(BaseModel):
         email: str = Field(..., description="User's email or username")
         password: str = Field(..., description="User's password")
 
+    @staticmethod
+    def _complete_login(
+        user: Dict[str, Any], model_registry: Any, response: Response
+    ) -> Dict[str, Any]:
         """Issue the session and build the login response for a user whose
         credentials (and second factor, when they have one) are proven: the
         token in the body for API clients, and in the session cookies for
@@ -1187,6 +1300,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         (``register_login_check``), before any session exists."""
         refuse_internal_account(user["id"])
         run_login_checks(str(user["id"]), model_registry)
+        root_id = env("ROOT_ID")
 
         # Login successful — issue the session row first (when
         # ``auth_session`` is loaded) so its key becomes the JWT's
@@ -1208,6 +1322,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                 device_type="web",
             )
         else:
+            session_key = secrets.token_hex(16)
         token = UserManager.generate_jwt_token(
             user_id=str(user["id"]),
             email=user["email"],
@@ -1221,6 +1336,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         if list_prefs is not None:
             try:
                 preferences = list_prefs(user["id"], model_registry) or {}
+            except Exception:
                 pass
 
         # Get user teams with roles
@@ -1229,6 +1345,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         from zephyrex.logic.BLL_Auth.role import RoleModel
 
         user_teams = UserTeamModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=root_id,
             model_registry=model_registry,
             user_id=user["id"],
             enabled=True,
@@ -1253,6 +1370,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             team_map = {
                 team["id"]: team
                 for team in TeamDB.list(
+                    requester_id=root_id,
                     model_registry=model_registry,
                     filters=[TeamDB.id.in_(team_ids)],
                 )
@@ -1261,6 +1379,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             role_map = {
                 role["id"]: role
                 for role in RoleDB.list(
+                    requester_id=root_id,
                     model_registry=model_registry,
                     filters=[RoleDB.id.in_(role_ids)],
                 )
@@ -1303,6 +1422,10 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         issue_browser_session(response, token)
         return result
 
+    @staticmethod
+    def logout(
+        authorization: Optional[str], model_registry: Any, response: Response
+    ) -> None:
         """Revoke the session the presented JWT belongs to (from the header
         or, for a browser, the session cookie) and clear the session cookies.
 
@@ -1323,6 +1446,17 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             revoke(session_key=session_key, model_registry=model_registry)
         clear_session_cookies(response)
 
+    @staticmethod
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    def login(
+        login_data: Dict[str, Any] | None = None,
+        ip_address: str | None = None,
+        req_uri: Optional[str] | None = None,
+        authorization: Optional[str] | None = None,
+        model_registry=None,
+        *,
+        response: Response,
+    ) -> Dict[str, Any]:
         """Process user login from various input methods.
 
         Decorated with ``@rate_limit("10/min", scope="ip")`` (Item 71b) so
@@ -1366,9 +1500,11 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         # The one live user signing in by this email or username.
         UserDB = UserModel.DB(model_registry.DB.manager.Base)
         user = UserDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             filters=[
                 UserManager._signs_in_as(UserDB, normalized_identifier),
+                UserDB.deleted_at.is_(None),
             ],
         )
         if len(user) != 1:
@@ -1396,6 +1532,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         # Handle password-based login
         if login_model.password:
             credential = UserCredentialModel.DB(model_registry.DB.manager.Base).get(
+                requester_id=user["id"],
                 model_registry=model_registry,
                 user_id=user["id"],
                 filters=[
@@ -1403,6 +1540,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                         model_registry.DB.manager.Base
                     ).password_changed_at
                     == None,
+                    UserCredentialModel.DB(model_registry.DB.manager.Base).deleted_at
                     == None,
                 ],
                 allow_nonexistent=True,
@@ -1471,6 +1609,8 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             return challenge
         return UserManager._complete_login(user, model_registry, response)
 
+    @staticmethod
+    def mfa_challenge(user_id: str, model_registry: Any) -> Optional[Dict[str, Any]]:
         """For a user with a verified second factor, the challenge any first
         factor (password, magic link) yields instead of a session:
         ``{mfa_required, challenge_token, methods}``, redeemed at POST
@@ -1491,6 +1631,11 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             "methods": methods,
         }
 
+    @staticmethod
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    def login_mfa(
+        body: Dict[str, Any], model_registry: Any, response: Response
+    ) -> Dict[str, Any]:
         """Second step of an MFA login: exchange the challenge issued by
         POST /authorize and a current TOTP or recovery code for the normal
         login response. A wrong code leaves the challenge usable until it
@@ -1512,13 +1657,22 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         if not redeem_single_use_token(claims):
             raise HTTPException(status_code=401, detail="MFA challenge already used")
         users = UserModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             id=user_id,
         )
         # The account may have been disabled since the password step.
+        if len(users) != 1 or not users[0]["active"] or users[0]["deleted_at"]:
             raise HTTPException(status_code=401, detail="Invalid credentials")
         return UserManager._complete_login(users[0], model_registry, response)
 
+    @staticmethod
+    def _issue_session(
+        user: Any,
+        model_registry,
+        grant_type: Optional[str] | None = None,
+        pending_state: Optional[str] | None = None,
+    ) -> Any:
         """Persist a fresh session row (when ``auth_session`` is loaded)
         and return a ``SessionModel`` describing it.
 
@@ -1570,10 +1724,13 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             pending_state=pending_state,
         )
 
+    @staticmethod
+    def session_token(session: Any, model_registry: Any) -> str:
         """The JWT a client presents for an issued session: ``jti`` is the
         session's key, so revoking the session revokes the token. Grant
         flows (magic link, device pairing) hand this to the client."""
         user = UserModel.DB(model_registry.DB.manager.Base).get(
+            requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             id=session.user_id,
             return_type="dto",
@@ -1586,6 +1743,10 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             session_key=session.session_key,
         )
 
+    @staticmethod
+    def login_via_grant(
+        grant_type: str, grant_payload: BaseModel, model_registry=None
+    ) -> Any:
         """Dispatch a passwordless grant to its registered validator and
         issue a fresh session bound to the resolved user.
 
@@ -1607,6 +1768,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             user=user, model_registry=model_registry, grant_type=grant_type
         )
 
+    def list(self, *args: Any, team_id: Optional[str] = None, **kwargs: Any) -> Any:
         """List users; with ``team_id``, the live members of that team.
 
         Users have no team column. A team's members are the users with an
@@ -1630,12 +1792,14 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             ]
         return super().list(*args, **kwargs)
 
+    def get_current_user(self, fields: Optional[List[str]] | None = None):
         """Get the current user's profile."""
         user = self.get(id=self.requester.id, fields=fields)
         if hasattr(user, "model_dump"):
             return user.model_dump()
         return user
 
+    def update_current_user(self, body: Dict[str, Any]):
         """Update the current user's profile. The path names no record, so
         the request's If-Match is bound to the requester's own row here."""
         user_data = dict(body.get("user", {}))
@@ -1648,6 +1812,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             return updated_user.model_dump()
         return updated_user
 
+    def delete(self, id: str | None = None):
         """Override delete to handle special self-deletion logic. ``DELETE
         /v1/user`` names no record in its path, so the request's If-Match
         is bound to the requester's own row here."""
@@ -1657,9 +1822,11 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             current_model = self.Model.DB(self.model_registry.DB.manager.Base)
             with expect_route_record(self, self.requester.id):
                 deleted_user = current_model.delete(
+                    requester_id=self.requester.id,
                     model_registry=self.model_registry,
                     filters=[
                         current_model.id == self.requester.id,
+                        current_model.deleted_at == None,
                     ],
                 )
             return deleted_user
@@ -1668,6 +1835,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                 "Intentionally not implemented. User cannot delete other users."
             )
 
+    def change_password(self, body: Dict[str, Any]):
         """Change the current user's password. The change is the account's
         but writes its credentials, so the request's If-Match is checked
         against the requester's own users row before anything is written."""
@@ -1694,6 +1862,15 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         """Public, so a registration form can check before submitting."""
         return PASSWORD_POLICY
 
+    @staticmethod
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    @static_route("", method="POST", auth_type=AuthType.NONE, status_code=201)
+    def register(
+        registration_data: dict,
+        model_registry,
+        request: Request | None = None,
+        authorization: Optional[str] | None = None,
+    ) -> dict:
         """
         Register a new user with the provided data.
         Handles validation, creation, metadata, credentials, and invitation acceptance.
@@ -1771,6 +1948,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                 detail="Invalid JSON syntax in request body - malformed data detected",
             )
 
+        root_id = env("ROOT_ID")
 
         # Handle Basic Auth header if provided
         email_from_header = None
@@ -1869,6 +2047,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                             f"Invalid or expired invitation ID during user "
                             f"registration: {invitation_id}"
                         )
+                except Exception as e:
                     logger.error(
                         f"Error validating invitation ID during user registration: {str(e)}"
                     )
@@ -1889,6 +2068,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                             f"Invalid or expired invitation code during user "
                             f"registration: {invitation_code}"
                         )
+                except Exception as e:
                     logger.error(
                         f"Error validating invitation code during user registration: {str(e)}"
                     )
@@ -1947,6 +2127,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
 
         # Create the user
         user = UserModel.DB(model_registry.DB.manager.Base).create(
+            requester_id=root_id,
             model_registry=model_registry,
             override_dto=model_registry.apply(UserModel),
             return_type="dto",
@@ -1969,6 +2150,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                         key,
                         value,
                         model_registry,
+                        requester_id=root_id,
                     )
 
         # Create credentials for the user. The user owns and self-creates their
@@ -1976,6 +2158,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         # ROOT-created records from non-ROOT viewers) does not block the user
         # from listing/editing their own credential during password change.
         credentials_manager = UserCredentialManager(
+            requester_id=user.id,
             target_id=user.id,
             model_registry=model_registry,
         )
@@ -1994,6 +2177,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             else:
                 try:
                     apply_invitation(invitation_details, user.id, model_registry)
+                except Exception as e:
                     logger.error(
                         f"auth_invitations.apply_to_user failed for user "
                         f"{user.id}: {e}",
@@ -2009,6 +2193,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                         "invitation_accepted",
                         "true",
                         model_registry,
+                        requester_id=root_id,
                     )
                     if invitation_details.get("code"):
                         create_meta(
@@ -2016,6 +2201,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                             "invitation_code",
                             invitation_details["code"],
                             model_registry,
+                            requester_id=root_id,
                         )
                     if invitation_details.get("team_id"):
                         create_meta(
@@ -2023,6 +2209,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                             "invitation_team_id",
                             str(invitation_details["team_id"]),
                             model_registry,
+                            requester_id=root_id,
                         )
 
                 logger.debug(
@@ -2032,6 +2219,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
 
         return user  # type: ignore[no-any-return]
 
+    def list_invitations_for_user(self) -> Dict[str, List[Dict[str, Any]]]:
         """Invitations awaiting the caller's answer (see the auth_invitations
         ``pending_invitations_for_user`` hook); none without the extension.
         Direct invitations also carry the caller as ``user``."""
@@ -2046,6 +2234,12 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         return {"invitations": invitations}
 
 
+class UserCredentialModel(
+    ApplicationModel.Optional,
+    UpdateMixinModel.Optional,
+    UserModel.Reference,
+    metaclass=ModelMeta,
+):
     Manager: ClassVar[Type["UserCredentialManager"]] = None  # type: ignore[assignment]
     password_hash: Optional[str] = Field(None, description="Hashed password")
     password_salt: Optional[str] = Field(
@@ -2060,22 +2254,29 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         "Stores user password hashes and tracks password change history"
     )
 
+    class Create(BaseModel, UserModel.Reference.ID):
         password_hash: Optional[str]
 
+    class CreateRaw(BaseModel, UserModel.Reference.ID):
         password: str = Field(None, description="New password (will be hashed)")  # type: ignore[assignment]
 
+    class Update(BaseModel):
         # This model and entity should not be manually updatable, only via the User password change function.
         # However, we need to allow updating the password_changed_at field for tests
         password_changed_at: Optional[datetime] | None = None
 
+    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
         password_changed_at: Optional[DateSearchModel] | None = None
 
 
+class UserCredentialManager(AbstractBLLManager, RouterMixin):
     _model = UserCredentialModel
 
+    def create(self, **kwargs):
         """Create new user credentials (password)"""
         enforce_password_policy(kwargs.get("password"))
         UserCredentialModel.DB(self.model_registry.DB.manager.Base).update(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             filters=[
                 UserCredentialModel.DB(self.model_registry.DB.manager.Base).user_id
@@ -2084,6 +2285,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                     self.model_registry.DB.manager.Base
                 ).password_changed_at
                 == None,
+                UserCredentialModel.DB(self.model_registry.DB.manager.Base).deleted_at
                 == None,
                 UserCredentialModel.DB(
                     self.model_registry.DB.manager.Base
@@ -2093,11 +2295,14 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             new_properties={"password_changed_at": datetime.now(timezone.utc)},
             allow_nonexistent=True,  # Skip if no previous password exists
         )
+        salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+        password_hash = bcrypt.hashpw(kwargs.pop("password").encode(), salt).decode()
 
         return super().create(
             password_hash=password_hash, password_salt=salt.decode(), **kwargs
         )
 
+    def update(self, id: str, **kwargs):
         """Update user credentials (password)"""
         if "password" in kwargs:
             enforce_password_policy(kwargs["password"])
@@ -2105,6 +2310,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             credential = UserCredentialModel.DB(
                 self.model_registry.DB.manager.Base
             ).get(
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=id,
             )
@@ -2118,12 +2324,20 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
             else:
                 # Otherwise, just update this old password record
                 password = kwargs.pop("password")
+                salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+                kwargs["password_hash"] = bcrypt.hashpw(
                     password.encode(), salt
                 ).decode()
                 kwargs["password_salt"] = salt.decode()
 
         return super().update(id, **kwargs)
 
+    def change_password(
+        self,
+        user_id: str,
+        current_password: Optional[str],
+        new_password: Optional[str],
+    ) -> Dict[str, str]:
         """Change a user's password with verification"""
         # Validate inputs up-front so a missing or weak password fails
         # cleanly with 422/401 rather than crashing inside bcrypt.
@@ -2133,6 +2347,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
 
         # Find current active credential
         credentials = UserCredentialModel.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=user_id or env("ROOT_ID"),
             model_registry=self.model_registry,
             user_id=user_id,
             filters=[
@@ -2140,6 +2355,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
                     self.model_registry.DB.manager.Base
                 ).password_changed_at
                 == None,
+                UserCredentialModel.DB(self.model_registry.DB.manager.Base).deleted_at
                 == None,
             ],
         )
@@ -2168,6 +2384,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         # Create a temporary manager with ROOT credentials for the update operation
         # since the credential might have been created by ROOT
         with UserCredentialManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         ) as root_manager:
             # Update existing credential
             root_manager.update(
@@ -2181,6 +2398,7 @@ REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
         if self.requester.id == user_id:
             # User is changing their own password
             with UserCredentialManager(
+                requester_id=user_id, model_registry=self.model_registry
             ) as user_manager:
                 user_manager.create(user_id=user_id, password=new_password)
         else:

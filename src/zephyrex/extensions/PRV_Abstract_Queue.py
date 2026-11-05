@@ -16,6 +16,7 @@ from typing import Any, ClassVar, Dict, List, Optional
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticProvider
 
 
+class AbstractQueueProvider(AbstractStaticProvider):
     """Abstract queue / job scheduler provider.
 
     Concrete implementations declare their settings via the typed

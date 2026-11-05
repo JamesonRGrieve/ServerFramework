@@ -82,6 +82,7 @@ def is_idempotent(fn: Callable) -> bool:
     return bool(getattr(fn, "_idempotent", False))
 
 
+def _canonicalize(value: Any) -> Any:
     """Canonicalize values for stable idempotency-key hashing.
 
     - `Decimal`        -> string (preserves exact representation).
@@ -208,6 +209,7 @@ def _strict_navigation_mode() -> bool:
     }
 
 
+class BatchedNavigationResolver:
     """Per-request batched resolver for external navigation properties.
 
     Keys are `(external_model_class, frozenset(ids))`; once a key is
@@ -311,6 +313,7 @@ def get_resolver() -> Optional[BatchedNavigationResolver]:
     return _resolver_var.get()
 
 
+class ExternalNavigationProperty:
     """
     Descriptor for external navigation properties.
     Automatically resolves relationships to external API models.
@@ -348,6 +351,7 @@ def get_resolver() -> Optional[BatchedNavigationResolver]:
         """Called when the descriptor is assigned to a class attribute."""
         self.attr_name = name
 
+    def __get__(self, instance, owner):
         """Resolve the navigation property when accessed.
 
         Honors the request-scoped include set (Item 9). If the active
@@ -391,6 +395,7 @@ def get_resolver() -> Optional[BatchedNavigationResolver]:
         if resolver is not None and not self.is_list:
             cached = resolver.get(self.external_model_class, local_value)
             if cached is not None:
+                setattr(instance, cache_attr, cached)
                 return cached
 
         try:
@@ -401,6 +406,7 @@ def get_resolver() -> Optional[BatchedNavigationResolver]:
             # For now, use a system context, but in practice this should come from the current request context
             from zephyrex.lib.Environment import env
 
+            manager = manager_class(requester_id=env("SYSTEM_ID"))
 
             # Resolve the relationship
             if self.is_list:
@@ -417,6 +423,7 @@ def get_resolver() -> Optional[BatchedNavigationResolver]:
                     result = results[0] if results else None
 
             # Cache the result on the instance
+            setattr(instance, cache_attr, result)
             # Warm the request-scoped resolver too if applicable.
             if resolver is not None and not self.is_list and result is not None:
                 resolver.warm(self.external_model_class, {local_value: result})
@@ -424,11 +431,13 @@ def get_resolver() -> Optional[BatchedNavigationResolver]:
 
         except NavigationNotIncludedError:
             raise
+        except Exception as e:
             logger.warning(
                 f"Failed to resolve navigation property {self.attr_name}: {e}"
             )
             return [] if self.is_list else None
 
+    def _get_default_manager_class(self) -> Type["AbstractExternalManager"]:
         """Get the default manager class for the external model."""
         # Look for a manager class with the same name pattern
         model_name = self.external_model_class.__name__
@@ -537,6 +546,7 @@ def _unwrap_provider_call(
     raise PermanentExternalError(err_msg, ability=method_name)
 
 
+class AbstractExternalAPIClient(ABC):
     """
     Abstract base class for external API clients.
     Provides database-like interface for external APIs via Provider Rotation System.
@@ -852,6 +862,7 @@ def _unwrap_provider_call(
             raise
 
 
+class DirectProviderAPIClient(AbstractExternalAPIClient):
     """
     Direct API client that works with provider classes for testing.
 
@@ -1025,6 +1036,7 @@ def _unwrap_provider_call(
             return False
 
 
+class AbstractExternalModel(BaseModel, ABC):
     """
     Abstract base class for models representing external API resources.
 
@@ -1447,6 +1459,7 @@ def create_external_reference_model(
     return ExternalReferenceModel
 
 
+class AbstractExternalManager(AbstractBLLManager):
     """
     Abstract base class for managers that work with external API models.
 
@@ -1577,6 +1590,7 @@ def create_external_reference_model(
     # Bulk operations (Item 12)
     # ------------------------------------------------------------------
 
+    def batch_create(self, items: List[Dict[str, Any]]) -> "BatchResult":
         """Create multiple entities, preferring a bulk upstream when available.
 
         When `Model.batch_create_via_provider` is overridden, delegates to
@@ -1623,12 +1637,17 @@ def create_external_reference_model(
                         ),
                     )
                 )
+            except Exception as exc:  # noqa: BLE001
                 result.failures.append(
                     (idx, PermanentExternalError(str(exc), cause=exc))
                 )
         return result
 
+    def batch_update(self, items: List[Dict[str, Any]]) -> "BatchResult":  # type: ignore[override]
+        """Update multiple entities, preferring a bulk upstream when available.
 
+        Each item is `{"id": ..., "data": {...}}`.
+        """
 
         result = BatchResult()
         if self.Model is not None and self.Model.supports_bulk("update"):
@@ -1669,11 +1688,14 @@ def create_external_reference_model(
                         ),
                     )
                 )
+            except Exception as exc:  # noqa: BLE001
                 result.failures.append(
                     (idx, PermanentExternalError(str(exc), cause=exc))
                 )
         return result
 
+    def batch_delete(self, ids: List[str]) -> "BatchResult":  # type: ignore[override]
+        """Delete multiple entities, preferring a bulk upstream when available."""
 
         result = BatchResult()
         if self.Model is not None and self.Model.supports_bulk("delete"):
@@ -1708,6 +1730,7 @@ def create_external_reference_model(
                         ),
                     )
                 )
+            except Exception as exc:  # noqa: BLE001
                 result.failures.append(
                     (idx, PermanentExternalError(str(exc), cause=exc))
                 )

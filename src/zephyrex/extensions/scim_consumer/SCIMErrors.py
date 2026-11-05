@@ -17,6 +17,7 @@ TOO_MANY = "tooMany"
 UNIQUENESS = "uniqueness"
 
 
+class ScimError(Exception):
     """A request the SCIM endpoints refuse, answered as a SCIM Error."""
 
     def __init__(
@@ -32,6 +33,7 @@ UNIQUENESS = "uniqueness"
         self.scim_type = scim_type
         self.headers: Dict[str, str] = dict(headers or {})
 
+    def body(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "schemas": [ERROR_URN],
             "status": str(self.status),

@@ -35,6 +35,7 @@ def split_media_id(value: str) -> Tuple[str, str]:
     return provider, native
 
 
+class AbstractMediaProvider(AbstractStaticProvider):
     """A media catalogue. Every ability takes the rotated instance; the ids
     it returns are media ids, prefixed with its name."""
 
@@ -90,6 +91,7 @@ def split_media_id(value: str) -> Tuple[str, str]:
         return ["media"]
 
 
+class EXT_Media(AbstractStaticExtension):
     name: ClassVar[str] = "media"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

@@ -45,6 +45,7 @@ PENDING, ACCEPTED, DECLINED = "pending", "accepted", "declined"
 SwapStatus = Literal["pending", "accepted", "declined"]
 
 
+class RotaModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["RotaManager"]]
     name: str = Field(..., description="What the rota is called, e.g. 'Nights'")
     cycle_days: int = Field(..., description="How many nights before it repeats")
@@ -66,6 +67,7 @@ SwapStatus = Literal["pending", "accepted", "declined"]
         name: Optional[StringSearchModel] = None
 
 
+class RotaNightModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["RotaNightManager"]]
     rota_id: str = Field(..., description="The rota")
     day_index: int = Field(..., description="Which night of the cycle, from 0")
@@ -85,6 +87,7 @@ SwapStatus = Literal["pending", "accepted", "declined"]
         rota_id: Optional[StringSearchModel] = None
 
 
+class RotaSwapModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["RotaSwapManager"]]
     rota_id: str = Field(..., description="The rota")
     night: date = Field(..., description="The night swapped")
@@ -259,6 +262,8 @@ class RotaNightManager(AbstractBLLManager, RouterMixin):
 
     _model = RotaNightModel
 
+    def create(self, **kwargs: Any) -> Any:
+        def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
             rota = _rota(str(fields.get("rota_id")), self.model_registry)
             if rota is None or str(rota.created_by_user_id) != str(self.requester.id):
                 raise HTTPException(status_code=404, detail="Rota not found")
@@ -281,6 +286,7 @@ class RotaNightManager(AbstractBLLManager, RouterMixin):
         return super().create(**each_created(kwargs, owned))
 
 
+class RotaSwapManager(AbstractBLLManager, RouterMixin):
     """``/v1/rotas``: what members of a rota see and do."""
 
     _model = RotaSwapModel
@@ -476,6 +482,7 @@ RotaNightModel.Manager = RotaNightManager
 RotaSwapModel.Manager = RotaSwapManager
 
 
+def erase_rota(user_id: str, model_registry: Any) -> None:
     """A deleted account's rotas go, with their nights and swaps; its nights
     in other people's rotas are left open, and its swaps go. Safe to run twice."""
     base = model_registry.DB.manager.Base
@@ -504,6 +511,7 @@ RotaSwapModel.Manager = RotaSwapManager
         db = model.DB(base)
         for row in _rows(model, model_registry, conditions):
             db.delete(
+                requester_id=_root(),
                 model_registry=model_registry,
                 filters=[db.id == row.id],
             )

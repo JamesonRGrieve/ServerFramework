@@ -77,6 +77,7 @@ def reference(found: Occasion) -> str:
     return f"{found.kind}:{found.person_id}:{found.on.isoformat()}:{found.days}"
 
 
+def message(found: Occasion) -> Tuple[str, str]:
     """A reminder's title and text."""
     when = "today" if found.days == 0 else "in a week"
     day = f"{found.on.strftime('%A')} {found.on.day} {found.on.strftime('%B')}"
@@ -91,6 +92,7 @@ def reference(found: Occasion) -> str:
     return f"Your anniversary with {found.name} is {when}", f"On {day}.{together}"
 
 
+def _as_date(value: Any) -> Optional[date]:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
@@ -120,6 +122,7 @@ def _rows(
     )
 
 
+def occasions_for_all(model_registry: Any, today: date) -> Dict[str, List[Occasion]]:
     """Every account's occasions, by account: the birthdays in its tree (not
     its own), and the anniversaries of its own current partnerships."""
     from zephyrex.extensions.genealogy.BLL_Genealogy import (
@@ -171,18 +174,21 @@ def _rows(
     return found
 
 
+def send_reminders(model_registry: Any, today: date) -> int:
     """Send today's due reminders that have not been sent; answers how many went."""
     from zephyrex.extensions.auth_notifications.BLL_Auth_Notifications import (
         NotificationModel,
         notify,
     )
 
+    root = env("ROOT_ID")
     notifications = NotificationModel.DB(model_registry.DB.manager.Base)
     sent = 0
     for owner, occasions in occasions_for_all(model_registry, today).items():
         for found in due(occasions):
             key = reference(found)
             already = notifications.list(
+                requester_id=root,
                 model_registry=model_registry,
                 filters=[
                     notifications.user_id == owner,

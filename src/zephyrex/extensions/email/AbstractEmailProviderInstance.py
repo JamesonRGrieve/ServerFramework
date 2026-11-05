@@ -168,6 +168,7 @@ class SentMessage:
     upstream_response: Dict[str, Any] = field(default_factory=dict)
 
 
+class AbstractEmailProviderInstance(AbstractProviderInstance):
     """Bonded email-provider instance with eight typed abilities.
 
     Concrete providers' `bond_instance` returns an instance of (a subclass

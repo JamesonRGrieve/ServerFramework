@@ -33,6 +33,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
+def object_path(path: str, *, folder: bool = False) -> str:
     """``path`` normalised to ``a/b/c``: relative, without empty, ``.`` or
     ``..`` parts. Refused when it would climb out of the store's root, or
     when it names nothing and a file is meant."""
@@ -46,6 +47,7 @@ MAX_UPLOAD_BYTES = 100 * 1024 * 1024
     return "/".join(parts)
 
 
+class AbstractCloudProvider(AbstractStaticProvider):
     """An object store. Every ability takes the rotated instance and a
     normalised path (see ``object_path``)."""
 
@@ -110,6 +112,7 @@ class CloudFileContent(CloudFile):
     content: str = Field(..., description="The file as text (a document, exported)")
 
 
+class AbstractDelegatedCloudProvider:
     """A user's **own** files at a service they signed in to (Google Drive, …),
     reached with their access token from ``oauth_consumer``: never a
     deployment-wide credential, and never another user's files.
@@ -146,6 +149,7 @@ class CloudFileContent(CloudFile):
         """The file at ``path``, as text."""
 
 
+class EXT_Cloud(AbstractStaticExtension):
     name: ClassVar[str] = "cloud"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

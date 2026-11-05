@@ -40,6 +40,7 @@ from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, SYS_Dependen
 from zephyrex.pydantic2.registry import ModelRegistry
 
 
+class EXT_SAMLProvider(AbstractStaticExtension):
     name: ClassVar[str] = "saml_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = "Run this server as a SAML 2.0 Identity Provider."

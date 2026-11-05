@@ -115,6 +115,7 @@ def _decode_header_value(value: Optional[str]) -> str:
     return out
 
 
+class IMAPProvider(AbstractEmailProvider):
     """Generic IMAP (receive) + SMTP (send) email provider."""
 
     name: ClassVar[str] = "imap"
@@ -238,6 +239,17 @@ def _decode_header_value(value: Optional[str]) -> str:
         conn.login(cfg["username"], cfg["password"])
         return conn
 
+    @classmethod
+    @ability(name="email_send")
+    async def send_email(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        recipient: str,
+        subject: str,
+        body: str,
+        attachments: Optional[List[str]] = None,
+        importance: str = "normal",
+    ) -> str:
         """Send an email over SMTP submission."""
         validation_error = cls._validate_send_inputs(
             recipient, subject, body, attachments
@@ -280,6 +292,7 @@ def _decode_header_value(value: Optional[str]) -> str:
                 server.login(cfg["username"], cfg["password"])
                 server.send_message(message)
             return f"Email sent successfully to {recipient}"
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error sending {cls.get_platform_name()} email: {e}")
             return f"Failed to send email: {e}"
 

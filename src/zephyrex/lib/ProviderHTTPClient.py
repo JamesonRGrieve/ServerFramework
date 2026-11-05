@@ -104,9 +104,11 @@ _BLOCKED_V6_NETWORKS: Tuple[ipaddress.IPv6Network, ...] = tuple(
 )
 
 
+class SSRFGuardError(ValueError):
     """Raised when an outbound URL targets a blocked destination (H-2)."""
 
 
+def _where(url: str) -> str:
     """The scheme and host of ``url``: what a failure message may name. A
     path or query can carry a secret (a Telegram bot token is a path
     segment, API keys travel as parameters)."""
@@ -117,6 +119,7 @@ _BLOCKED_V6_NETWORKS: Tuple[ipaddress.IPv6Network, ...] = tuple(
 _PATH_SAFE = re.compile(r"^[A-Za-z0-9_.:@+=-]+$")
 
 
+def path_segment(value: str, what: str) -> str:
     """``value`` as one URL path segment (an id), refused otherwise: it is
     interpolated into a path, where ``../x`` would reach another endpoint."""
     if not _PATH_SAFE.match(value) or set(value) == {"."}:
@@ -124,11 +127,14 @@ _PATH_SAFE = re.compile(r"^[A-Za-z0-9_.:@+=-]+$")
     return value
 
 
+def _allowed_hosts() -> List[str]:
+    raw = (os.environ.get("EGRESS_ALLOWED_HOSTS") or "").strip()
     if not raw:
         return []
     return [p.strip().lower() for p in raw.split(",") if p.strip()]
 
 
+def _ip_is_blocked(addr: str) -> bool:
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
@@ -144,6 +150,7 @@ _PATH_SAFE = re.compile(r"^[A-Za-z0-9_.:@+=-]+$")
     return False
 
 
+def validate_outbound_url(url: str) -> None:
     """Refuse outbound requests to internal / disallowed destinations.
 
     Validates scheme is http/https, parses the host, and (if the host
@@ -158,6 +165,7 @@ _PATH_SAFE = re.compile(r"^[A-Za-z0-9_.:@+=-]+$")
     ``except`` branches stay typed (the framework's outbound paths
     surface this as ``InvalidInputExternalError``).
     """
+    if os.environ.get(_SSRF_DEFAULT_DISABLED_ENV, "").lower() in ("1", "true", "yes"):
         return
     parsed = urlparse(url)
     scheme = (parsed.scheme or "").lower()
@@ -227,6 +235,8 @@ def get_traceparent() -> Optional[str]:
 # ----- Policy ---------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ClientPolicy:
     """Per-provider HTTP client policy. Used as the pool key."""
 
     timeout: float = 30.0
@@ -277,6 +287,7 @@ def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
     return _shared_clients.setdefault(loop, {})
 
 
+def _policy_pool_key(policy: ClientPolicy) -> Tuple:
     return (
         policy.timeout,
         policy.tls_verify,
@@ -284,6 +295,7 @@ def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
     )
 
 
+async def _ssrf_request_hook_async(request: httpx.Request) -> None:
     """M-2 — re-validate the destination at the moment the request leaves
     the client. The earlier call in :meth:`ProviderHTTPClient.request`
     catches the typical case; this second call shrinks the
@@ -299,9 +311,11 @@ def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
     validate_outbound_url(str(request.url))
 
 
+def _ssrf_request_hook_sync(request: httpx.Request) -> None:
     validate_outbound_url(str(request.url))
 
 
+def _build_async_client(policy: ClientPolicy) -> httpx.AsyncClient:
     kwargs: Dict[str, Any] = {
         "timeout": policy.timeout,
         "verify": policy.tls_verify,
@@ -318,6 +332,7 @@ def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
     return httpx.AsyncClient(**kwargs)
 
 
+def _build_sync_client(policy: ClientPolicy) -> httpx.Client:
     kwargs: Dict[str, Any] = {
         "timeout": policy.timeout,
         "verify": policy.tls_verify,
@@ -329,6 +344,7 @@ def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
     return httpx.Client(**kwargs)
 
 
+def get_async_client(policy: ClientPolicy) -> httpx.AsyncClient:
     pool = _async_pool()
     key = _policy_pool_key(policy)
     client = pool.get(key)
@@ -338,6 +354,7 @@ def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
     return client
 
 
+def get_sync_client(policy: ClientPolicy) -> httpx.Client:
     key = _policy_pool_key(policy)
     client = _shared_sync_clients.get(key)
     if client is None:
@@ -353,6 +370,7 @@ def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
 ERROR_BODY_BYTES = 512
 
 
+def _classify_response(response: httpx.Response, provider: Optional[str]) -> None:
     """Raise the appropriate `BaseExternalError` subclass for non-2xx."""
     status = response.status_code
     if 200 <= status < 300:
@@ -381,9 +399,13 @@ def _safe_response_text(response: httpx.Response) -> str:
         return "<unreadable response body>"
 
 
+def _maybe_parse_model(
+    response: httpx.Response, model: Optional[Type[BaseModel]]
+) -> Any:
     if model is None:
         try:
             return response.json()
+        except Exception:
             return response.text
     return model.model_validate(response.json())
 
@@ -397,6 +419,7 @@ def _safe_response_text(response: httpx.Response) -> str:
 _versioning_warned: set = set()
 
 
+def _maybe_warn_version_without_header(provider: Any) -> None:
     """Emit a one-shot warning when a bound provider declares
     `external_api_version` but no `external_api_version_header`.
 
@@ -426,6 +449,8 @@ _versioning_warned: set = set()
 DEFAULT_MAX_REDIRECTS = 5
 
 
+@dataclass(frozen=True)
+class FetchedResource:
     """A body read by ``ProviderHTTPClient.fetch``: where it was finally
     found (after redirects), its status and content type, and its bytes,
     ``truncated`` when the cap cut it short."""
@@ -437,6 +462,7 @@ DEFAULT_MAX_REDIRECTS = 5
     truncated: bool
 
 
+class ProviderHTTPClient:
     """Async HTTP client wrapping `httpx.AsyncClient` with the provider
     cross-cutting pipeline.
 
@@ -450,6 +476,14 @@ DEFAULT_MAX_REDIRECTS = 5
     `external_api_version_header` (Item 33) for header injection.
     """
 
+    def __init__(
+        self,
+        policy: Optional[ClientPolicy] = None,
+        auth_strategy: Optional[AuthStrategy] = None,
+        rate_limit: Optional[TokenBucket] = None,
+        provider_name: Optional[str] = None,
+        provider: Optional[Any] = None,
+    ) -> None:
         self.policy = policy or ClientPolicy()
         self.auth_strategy = auth_strategy
         self.rate_limit = rate_limit
@@ -460,6 +494,12 @@ DEFAULT_MAX_REDIRECTS = 5
 
     # --- Pipeline helpers ---
 
+    def _build_headers(
+        self,
+        extra_headers: Optional[Mapping[str, str]],
+        idempotency_key: Optional[str],
+        requester_id: Optional[str],
+    ) -> Dict[str, str]:
         headers: Dict[str, str] = {"User-Agent": user_agent()}
         tp = get_traceparent()
         if tp:
@@ -481,6 +521,9 @@ DEFAULT_MAX_REDIRECTS = 5
             headers.update(extra_headers)
         return headers
 
+    def _build_params(
+        self, extra_params: Optional[Mapping[str, Any]], requester_id: Optional[str]
+    ) -> Dict[str, Any]:
         params: Dict[str, Any] = {}
         if self.auth_strategy is not None:
             params.update(self.auth_strategy.params_for(requester_id))
@@ -488,10 +531,12 @@ DEFAULT_MAX_REDIRECTS = 5
             params.update(extra_params)
         return params
 
+    def _maybe_modify_body(self, body: Any, requester_id: Optional[str]) -> Any:
         if self.auth_strategy is None or body is None:
             return body
         return self.auth_strategy.body_modifier(requester_id, body)
 
+    def _acquire_rate_token(self, deadline_ms: Optional[int]) -> None:
         if self.rate_limit is None:
             return
         timeout = (deadline_ms / 1000.0) if deadline_ms else None
@@ -501,6 +546,7 @@ DEFAULT_MAX_REDIRECTS = 5
                 provider=self.provider_name,
             )
 
+    def _resolve_timeout(self, deadline_ms: Optional[int]) -> float:
         # Item 47 — when no per-call deadline_ms is supplied, fall back to
         # the inbound request's remaining budget so cross-layer budgets
         # cooperate instead of stacking. A `DeadlineExceededError` raised
@@ -526,6 +572,14 @@ DEFAULT_MAX_REDIRECTS = 5
 
     # --- Public verb methods (async) ---
 
+    async def fetch(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        max_redirects: int = DEFAULT_MAX_REDIRECTS,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> FetchedResource:
         """GET ``url`` for its body, read no further than ``max_bytes``
         (the rest is dropped and ``truncated`` set), following up to
         ``max_redirects`` redirects, each of them checked by the SSRF
@@ -594,6 +648,22 @@ DEFAULT_MAX_REDIRECTS = 5
             provider=self.provider_name,
         )
 
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        model: Optional[Type[BaseModel]] = None,
+        raw: bool = False,
+        idempotency_key: Optional[str] = None,
+        deadline_ms: Optional[int] = None,
+        requester_id: Optional[str] = None,
+        json: Any = None,
+        data: Any = None,
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+        **kwargs: Any,
+    ) -> Any:
         # H-2 — refuse outbound to internal/loopback/link-local before we
         # spend pool slots, time budget, or auth headers on the request.
         try:
@@ -638,19 +708,33 @@ DEFAULT_MAX_REDIRECTS = 5
         # raw: the response itself, for a binary body decoding would corrupt.
         return response if raw else _maybe_parse_model(response, model)
 
+    async def get(self, url: str, **kw: Any) -> Any:
         return await self.request("GET", url, **kw)
 
+    async def post(self, url: str, **kw: Any) -> Any:
         return await self.request("POST", url, **kw)
 
+    async def put(self, url: str, **kw: Any) -> Any:
         return await self.request("PUT", url, **kw)
 
+    async def patch(self, url: str, **kw: Any) -> Any:
         return await self.request("PATCH", url, **kw)
 
+    async def delete(self, url: str, **kw: Any) -> Any:
         return await self.request("DELETE", url, **kw)
 
 
+class ProviderHTTPClientSync:
     """Synchronous variant of `ProviderHTTPClient` wrapping `httpx.Client`."""
 
+    def __init__(
+        self,
+        policy: Optional[ClientPolicy] = None,
+        auth_strategy: Optional[AuthStrategy] = None,
+        rate_limit: Optional[TokenBucket] = None,
+        provider_name: Optional[str] = None,
+        provider: Optional[Any] = None,
+    ) -> None:
         self.policy = policy or ClientPolicy()
         self.auth_strategy = auth_strategy
         self.rate_limit = rate_limit
@@ -674,11 +758,28 @@ DEFAULT_MAX_REDIRECTS = 5
     def _maybe_modify_body(self, *a: Any, **k: Any) -> Any:
         return self._async_helper._maybe_modify_body(*a, **k)
 
+    def _acquire_rate_token(self, deadline_ms: Optional[int]) -> None:
         self._async_helper._acquire_rate_token(deadline_ms)
 
     def _resolve_timeout(self, deadline_ms: Optional[int]) -> float:
         return self._async_helper._resolve_timeout(deadline_ms)
 
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        model: Optional[Type[BaseModel]] = None,
+        raw: bool = False,
+        idempotency_key: Optional[str] = None,
+        deadline_ms: Optional[int] = None,
+        requester_id: Optional[str] = None,
+        json: Any = None,
+        data: Any = None,
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+        **kwargs: Any,
+    ) -> Any:
         # H-2 — see ProviderHTTPClient.request for rationale.
         try:
             validate_outbound_url(url)
@@ -722,14 +823,19 @@ DEFAULT_MAX_REDIRECTS = 5
         # raw: the response itself, for a binary body decoding would corrupt.
         return response if raw else _maybe_parse_model(response, model)
 
+    def get(self, url: str, **kw: Any) -> Any:
         return self.request("GET", url, **kw)
 
+    def post(self, url: str, **kw: Any) -> Any:
         return self.request("POST", url, **kw)
 
+    def put(self, url: str, **kw: Any) -> Any:
         return self.request("PUT", url, **kw)
 
+    def patch(self, url: str, **kw: Any) -> Any:
         return self.request("PATCH", url, **kw)
 
+    def delete(self, url: str, **kw: Any) -> Any:
         return self.request("DELETE", url, **kw)
 
 

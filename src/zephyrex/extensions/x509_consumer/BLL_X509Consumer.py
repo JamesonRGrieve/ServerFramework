@@ -162,6 +162,7 @@ class X509TrustAnchorModel(
     table_comment: ClassVar[str] = "Trust anchors for X.509 client certificate sign-in"
     is_system_entity: ClassVar[bool] = True
 
+    class Create(BaseModel):
         name: str
         ca_cert_pem: str
         fingerprint_sha256: Optional[str] = Field(
@@ -182,6 +183,7 @@ class X509TrustAnchorModel(
 
     # The certificate and identity attribute are fixed: links are keyed on
     # what they name. Replace an anchor by making a new one.
+    class Update(BaseModel):
         name: Optional[str] = None
         trusted_for_email: Optional[bool] = None
         revocation_check: Optional[RevocationCheck] = None
@@ -190,6 +192,7 @@ class X509TrustAnchorModel(
         ocsp_url: Optional[str] = None
         is_enabled: Optional[bool] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         name: Optional[StringSearchModel] = None
         fingerprint_sha256: Optional[StringSearchModel] = None
         is_enabled: Optional[bool] = None
@@ -224,9 +227,11 @@ class UserX509LinkModel(
 
     table_comment: ClassVar[str] = "Links a local user to an X.509 certificate identity"
 
+    class Create(BaseModel, UserModel.Reference.ID):
         trust_anchor_id: str
         identity: str
 
+    class Update(BaseModel):
         subject_dn: Optional[str] = Field(None, description="Set by sign-in only")
         issuer_dn: Optional[str] = Field(None, description="Set by sign-in only")
         serial_number: Optional[str] = Field(None, description="Set by sign-in only")
@@ -249,9 +254,11 @@ class UserX509LinkModel(
         last_login_at: Optional[DateSearchModel] = None
 
 
+class X509LoginRequest(RouteModel):
     """Nothing: the credential is the TLS connection's client certificate."""
 
 
+class X509LoginResponse(RouteModel):
     """The password-login response (``user``, ``token``, ``preferences``,
     ``teams``, ``session_key``) for the certificate's user or, for a user
     with a verified second factor, the MFA challenge to complete at POST
@@ -277,6 +284,7 @@ class UserX509LinkModel(
 # ---------------------------------------------------------------------------
 
 
+def _from_trusted_proxy(request: Request) -> bool:
     """The connection's peer is a configured TLS terminator. A malformed
     allow-list is a misconfiguration that trusts no one (503)."""
     peer = request.client.host if request.client else None
@@ -299,6 +307,7 @@ class UserX509LinkModel(
     return any(address in network for network in networks)
 
 
+def presented_chain(request: Request) -> List[x509.Certificate]:
     """The certificate chain the client presented, leaf first: from the
     header when a trusted proxy forwarded the request, else from the ASGI
     TLS extension. 401 when there is none; 400 when it is not one."""
@@ -336,6 +345,7 @@ class UserX509LinkModel(
         raise _bad_request(str(exc)) from exc
 
 
+def _anchor(row: X509TrustAnchorModel) -> TrustAnchor:
     return TrustAnchor(
         id=str(row.id),
         certificate=load_ca_certificate(row.ca_cert_pem),
@@ -353,6 +363,7 @@ class UserX509LinkModel(
 # ---------------------------------------------------------------------------
 
 
+class X509TrustAnchorManager(AbstractBLLManager, RouterMixin):
     """Trust anchors: ROOT and SYSTEM add, change and remove them, since
     whoever adds one can sign in as anyone a certificate under it names."""
 
@@ -368,6 +379,7 @@ class UserX509LinkModel(
         RouteType.DELETE,
     ]
 
+    def _require_server_side(self) -> None:
         requester = self.optional_requester
         if requester is None or not server_side(str(requester.id)):
             raise HTTPException(
@@ -375,6 +387,7 @@ class UserX509LinkModel(
                 detail="Only ROOT or SYSTEM manage X.509 trust anchors",
             )
 
+    def _prepared(self, fields: Dict[str, Any]) -> Dict[str, Any]:
         """``fields`` with the certificate checked and normalized and the
         computed fields set; 409 for a certificate already an anchor."""
         try:
@@ -386,9 +399,11 @@ class UserX509LinkModel(
             raise _bad_request(str(exc)) from exc
         fingerprint = fingerprint_sha256(certificate)
         if self.DB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 self.DB.fingerprint_sha256 == fingerprint,
+                self.DB.deleted_at.is_(None),
             ],
         ):
             raise HTTPException(
@@ -400,12 +415,14 @@ class UserX509LinkModel(
         fields["subject_dn"] = certificate.subject.rfc4514_string()
         return fields
 
+    def create(self, **kwargs: Any) -> Any:
         self._require_server_side()
         if isinstance(kwargs.get("entities"), list):
             kwargs["entities"] = [self._prepared(dict(e)) for e in kwargs["entities"]]
             return super().create(**kwargs)
         return super().create(**self._prepared(dict(kwargs)))
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         self._require_server_side()
         for fixed in ("ca_cert_pem", "identity_attribute", "fingerprint_sha256"):
             kwargs.pop(fixed, None)
@@ -416,11 +433,14 @@ class UserX509LinkModel(
         self._require_server_side()
         super().delete(id)
 
+    def enabled_anchors(self) -> List[TrustAnchor]:
         """The enabled anchors a sign-in may verify against, oldest first."""
         rows: List[X509TrustAnchorModel] = self.DB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=X509TrustAnchorModel,
+            filters=[self.DB.is_enabled.is_(True), self.DB.deleted_at.is_(None)],
         )
         anchors: List[TrustAnchor] = []
         for row in sorted(rows, key=lambda r: r.created_at or _now()):
@@ -431,6 +451,7 @@ class UserX509LinkModel(
         return anchors
 
 
+class UserX509LinkManager(AbstractBLLManager, RouterMixin):
     """A user's certificate identities (read and unlink), and the sign-in."""
 
     _model = UserX509LinkModel
@@ -447,6 +468,7 @@ class UserX509LinkModel(
         RouteType.DELETE,
     ]
 
+    def create(self, **kwargs: Any) -> Any:
         """Link a certificate identity to a user: ROOT and SYSTEM only. The
         link is written as its user, so they can see and remove it."""
         if not server_side(str(self.requester.id)):
@@ -474,6 +496,7 @@ class UserX509LinkModel(
             )
         return self._link(trust_anchor_id, identity, user_id)
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its last certificate and login)."""
         if not server_side(str(self.requester.id)):
             raise HTTPException(
@@ -483,14 +506,18 @@ class UserX509LinkModel(
         kwargs.pop("user_id", None)
         return super().update(id, **kwargs)
 
+    def _anchor_exists(self, trust_anchor_id: str) -> bool:
         return bool(
             X509TrustAnchorModel.DB(self.model_registry.DB.manager.Base).list(
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=trust_anchor_id,
             )
         )
 
+    def _link(self, trust_anchor_id: str, identity: str, user_id: str) -> Any:
         return self.DB.create(
+            requester_id=user_id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(UserX509LinkModel),
@@ -499,21 +526,27 @@ class UserX509LinkModel(
             user_id=user_id,
         )
 
+    def linked(self, trust_anchor_id: str, identity: str) -> Optional[Any]:
         """The live link for ``identity`` under the anchor (exact match)."""
         links = self.DB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=UserX509LinkModel,
             filters=[
                 self.DB.trust_anchor_id == trust_anchor_id,
                 self.DB.identity == identity,
+                self.DB.deleted_at.is_(None),
             ],
         )
         return links[0] if links else None
 
+    def _users(self, **filters: Any) -> List[Dict[str, Any]]:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         users: List[Dict[str, Any]] = UserDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
+            filters=[UserDB.deleted_at.is_(None)]
             + [getattr(UserDB, key) == value for key, value in filters.items()],
         )
         return users
@@ -528,10 +561,14 @@ class UserX509LinkModel(
 
     # -- signing in ---------------------------------------------------------
 
+    async def verified(
+        self, chain: List[x509.Certificate]
+    ) -> Tuple[TrustAnchor, List[x509.Certificate]]:
         """The anchor that vouches for the presented chain, and the validated
         path to it, revocation checked. 503 without any anchor; 401 when
         the certificate does not verify."""
         anchors = X509TrustAnchorManager(
+            model_registry=self.model_registry, requester_id=env("ROOT_ID")
         ).enabled_anchors()
         if not anchors:
             raise HTTPException(
@@ -559,6 +596,7 @@ class UserX509LinkModel(
             detail="The client certificate is not issued by a trusted CA",
         )
 
+    def _registered(self, identity: str, email: Optional[str]) -> Dict[str, Any]:
         """A new account for ``identity``, as REGISTRATION_MODE allows.
         ``email`` is one the anchor vouches for, or None."""
         # Read through the module: the settings snapshot is replaced when
@@ -580,6 +618,7 @@ class UserX509LinkModel(
                     detail="User registration requires an invitation",
                 )
         created = UserModel.DB(self.model_registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(UserModel),
@@ -593,6 +632,9 @@ class UserX509LinkModel(
         logger.info("x509_consumer: created user %s for %s", created.id, identity)
         return self._user(str(created.id))
 
+    def resolve_user(
+        self, anchor: TrustAnchor, leaf: x509.Certificate
+    ) -> Tuple[str, Dict[str, Any]]:
         """The identity ``leaf`` names under ``anchor`` and the active local
         user it signs in as, linked (or created) on first sign-in."""
         try:
@@ -615,6 +657,7 @@ class UserX509LinkModel(
                 status_code=status.HTTP_403_FORBIDDEN, detail="The account is disabled"
             )
         self.DB.update(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=link.id,
             new_properties={

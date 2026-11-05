@@ -41,6 +41,7 @@ def _fields(**values: Any) -> Dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
+class EXT_Health(AbstractStaticExtension):
     name: ClassVar[str] = "health"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

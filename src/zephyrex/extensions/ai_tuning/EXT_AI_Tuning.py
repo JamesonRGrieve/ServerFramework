@@ -39,6 +39,7 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
+class EXT_AI_Tuning(AbstractStaticExtension):
     name: ClassVar[str] = "ai_tuning"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (

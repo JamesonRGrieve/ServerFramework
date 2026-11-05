@@ -48,6 +48,7 @@ T = TypeVar("T")
 Secret = SecretStr
 
 
+class SecretValue(Generic[T]):
     """
     Generic secret wrapper for non-string payloads (e.g., dict-shaped JWKs).
 
@@ -67,6 +68,7 @@ Secret = SecretStr
         # Symmetric API with pydantic.SecretStr.
         return self._value
 
+    def __repr__(self) -> str:  # pragma: no cover - trivial
         return "SecretValue('***')"
 
     def __str__(self) -> str:  # pragma: no cover - trivial
@@ -76,6 +78,7 @@ Secret = SecretStr
 # ----- Credential cache + DOWN markers --------------------------------------
 
 
+class _CredentialCache:
     """Thread-safe in-process cache of resolved credentials.
 
     Caches by `(tier, path, version, env_suffix)` so cache-bust on auth
@@ -83,38 +86,52 @@ Secret = SecretStr
     them via `is_marked_bad`.
     """
 
+    def __init__(self) -> None:
         self._lock = RLock()
         self._cache: Dict[tuple, str] = {}
         self._bad: set = set()
         self._registered_secrets: set = set()
 
+    def get(self, key: tuple) -> Optional[str]:
         with self._lock:
             return self._cache.get(key)
 
+    def put(self, key: tuple, value: str) -> None:
         with self._lock:
+            self._cache[key] = value
             if value:
+                self._registered_secrets.add(value)
 
+    def invalidate(self, key: tuple) -> None:
         with self._lock:
             self._cache.pop(key, None)
 
+    def mark_bad(self, key: tuple) -> None:
         with self._lock:
             self._bad.add(key)
 
+    def is_marked_bad(self, key: tuple) -> bool:
         with self._lock:
             return key in self._bad
 
+    def clear_bad(self, key: tuple) -> None:
         with self._lock:
             self._bad.discard(key)
 
+    def register_secret(self, value: str) -> None:
         with self._lock:
             if value:
+                self._registered_secrets.add(value)
 
+    def registered_secrets(self) -> List[str]:
         with self._lock:
             return list(self._registered_secrets)
 
+    def reset(self) -> None:
         with self._lock:
             self._cache.clear()
             self._bad.clear()
+            self._registered_secrets.clear()
 
 
 _CACHE = _CredentialCache()
@@ -123,6 +140,7 @@ _CACHE = _CredentialCache()
 # ----- Tier resolvers -------------------------------------------------------
 
 
+def _resolve_openbao(path: str, version: Optional[str]) -> Optional[str]:
     """Resolve via OpenBao/Vault HTTP API. Falls through (None) when no
     address is configured, hvac is not installed, or the server is
     unreachable.
@@ -149,6 +167,7 @@ _CACHE = _CredentialCache()
         kwargs: Dict[str, Any] = {"path": path}
         if version:
             kwargs["version"] = int(version)
+        resp = client.secrets.kv.v2.read_secret_version(**kwargs)
         data = resp.get("data", {}).get("data", {}) if resp else {}
         # Convention: secret is stored under the "value" key, or the leaf path component.
         if "value" in data:
@@ -157,12 +176,14 @@ _CACHE = _CredentialCache()
         if leaf in data:
             return str(data[leaf])
         return None
+    except Exception as exc:
         logging.getLogger(__name__).debug(
             "OpenBao resolve failed for %s: %s", path, exc
         )
         return None
 
 
+def _env_suffix_for(app_env: Optional[str]) -> str:
     """Item 50 paired-name discriminator. Production -> `_LIVE`,
     everything else (development, staging, tests) -> `_TEST`.
 
@@ -180,6 +201,7 @@ _CACHE = _CredentialCache()
     return "_LIVE" if (env_value or "").lower() == "production" else "_TEST"
 
 
+def _resolve_env(path: str, app_env: Optional[str]) -> Optional[str]:
     """Resolve via environment variable, honoring the paired-name suffix.
 
     First tries `{path}{suffix}` (e.g., `STRIPE_API_KEY_TEST`); falls back
@@ -187,8 +209,10 @@ _CACHE = _CredentialCache()
     """
     suffix = _env_suffix_for(app_env)
     paired = f"{path}{suffix}"
+    value = os.environ.get(paired)
     if value:
         return value
+    return os.environ.get(path)
 
 
 def _fernet_key() -> Optional[bytes]:
@@ -196,6 +220,7 @@ def _fernet_key() -> Optional[bytes]:
     return raw.encode("utf-8") if raw else None
 
 
+def _resolve_encrypted_db(path: str) -> Optional[str]:
     """Resolve via Fernet-decrypting the value at `path`. The `path` is
     treated as a JSON-pointer-shaped reference — for now we support the
     `env:<NAME>` and `inline:<ciphertext>` shapes; broader DB integration
@@ -214,6 +239,7 @@ def _fernet_key() -> Optional[bytes]:
     if path.startswith("inline:"):
         ciphertext = path[len("inline:") :]
     elif path.startswith("env:"):
+        ciphertext = os.environ.get(path[len("env:") :], "")
         if not ciphertext:
             return None
     else:
@@ -230,6 +256,7 @@ def _fernet_key() -> Optional[bytes]:
 # ----- CredentialRef --------------------------------------------------------
 
 
+class CredentialRef(BaseModel):
     """Typed reference to a secret resolvable through the documented tier
     order. See module docstring for semantics.
     """
@@ -240,6 +267,7 @@ def _fernet_key() -> Optional[bytes]:
     path: str
     version: Optional[str] = None
 
+    def _cache_key(self, env: Optional[str]) -> tuple:
         return (
             self.tier,
             self.path,
@@ -247,6 +275,7 @@ def _fernet_key() -> Optional[bytes]:
             _env_suffix_for(env) if self.tier == "env" else "",
         )
 
+    def resolve(self, env: Optional[str] = None) -> str:
         """Resolve the secret. Returns the cleartext string.
 
         Raises `RuntimeError` if the credential cannot be resolved through
@@ -302,6 +331,7 @@ def clear_bad(ref: CredentialRef, env: Optional[str] = None) -> None:
     _CACHE.clear_bad(ref._cache_key(env))
 
 
+def cache_bust_on_auth_rejection(ref: CredentialRef, env: Optional[str] = None) -> str:
     """Item 32 — credential cache-bust on upstream auth rejection.
 
     Invalidates the cached value and re-resolves from the source tier.
@@ -346,19 +376,23 @@ _SECRET_NAME_PARTS = (
 )
 
 
+def is_secret_setting(name: str) -> bool:
     """Whether a configuration setting's value must never be displayed
     (``SENDGRID_API_KEY``, ``OPENBAO_SECRET_ID``, ``SENTRY_DSN``)."""
     upper = name.upper()
     return any(part in upper for part in _SECRET_NAME_PARTS)
 
 
+def register_secret(value: str) -> None:
     """Register a secret value for redaction in log output. Idempotent."""
     _CACHE.register_secret(value)
 
 
+def registered_secrets() -> List[str]:
     return _CACHE.registered_secrets()
 
 
+def redact(text: str) -> str:
     """Replace any registered secret values found in `text` with `***`."""
     if not text:
         return text
@@ -369,6 +403,7 @@ _SECRET_NAME_PARTS = (
     return out
 
 
+class RedactingFilter(logging.Filter):
     """`logging.Filter` that scrubs registered secret values from each
     record. Attach to handlers (not loggers) so the scrub runs late.
 
@@ -378,6 +413,7 @@ _SECRET_NAME_PARTS = (
     order they attach in does not matter.
     """
 
+    def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
             if any(s and s in msg for s in registered_secrets()):
@@ -395,8 +431,10 @@ _SECRET_NAME_PARTS = (
             if pii_filter is not None:
                 try:
                     pii_filter(record)
+                except Exception:
                     # An extension bug must not drop the log record.
                     pass
+        except Exception:
             return True
         return True
 
@@ -404,6 +442,9 @@ _SECRET_NAME_PARTS = (
 # ----- Sandbox/live discriminator validation (Item 50) ----------------------
 
 
+def validate_environment_credentials(
+    app_env: str, configured_creds: Dict[str, CredentialRef]
+) -> None:
     """Refuse to start a `production` deployment that resolves any provider
     credential through a `_TEST_` env-var.
 
@@ -422,6 +463,9 @@ _SECRET_NAME_PARTS = (
         if ref.tier != "env":
             continue
         # Production requires a _LIVE_ value; if the only set var is _TEST_, refuse.
+        live = os.environ.get(f"{ref.path}_LIVE")
+        test = os.environ.get(f"{ref.path}_TEST")
+        bare = os.environ.get(ref.path)
         if not live and not bare and test:
             offenders.append(f"{label}={ref.path}")
     if offenders:

@@ -33,6 +33,7 @@ TENANT_PLACEHOLDER = "{tenantid}"
 DEFAULT_SCOPES = "openid email profile"
 
 
+class PRV_Microsoft(AbstractOIDCProvider):
     name: ClassVar[str] = "oauth_microsoft"
     public_name: ClassVar[str] = "microsoft"
     friendly_name: ClassVar[str] = "Microsoft"
@@ -55,6 +56,8 @@ DEFAULT_SCOPES = "openid email profile"
         ),
     )
 
+    @classmethod
+    def issuer(cls, instance: ProviderInstanceModel) -> str:
         authority = (cls.setting(instance, "authority") or MICROSOFT_AUTHORITY).rstrip(
             "/"
         )
@@ -65,8 +68,13 @@ DEFAULT_SCOPES = "openid email profile"
     def is_configured_instance(cls, instance: ProviderInstanceModel) -> bool:
         return text(cls.setting(instance, "client_id")) is not None
 
+    @classmethod
+    def metadata_issuer(
+        cls, instance: ProviderInstanceModel, metadata: Dict[str, Any]
+    ) -> str:
         """The configured tenant's issuer, or for a multi-tenant endpoint
         the template every tenant's issuer fills."""
+        named = text(metadata.get("issuer"))
         authority = (cls.setting(instance, "authority") or MICROSOFT_AUTHORITY).rstrip(
             "/"
         )
@@ -78,9 +86,17 @@ DEFAULT_SCOPES = "openid email profile"
             provider=cls.name,
         )
 
+    @classmethod
+    def accepted_issuers(
+        cls,
+        instance: ProviderInstanceModel,
+        endpoints: Endpoints,
+        claims: Dict[str, Any],
+    ) -> List[str]:
         issuer = endpoints.issuer or ""
         if TENANT_PLACEHOLDER not in issuer:
             return super().accepted_issuers(instance, endpoints, claims)
+        tenant = text(claims.get("tid"))
         return [issuer.replace(TENANT_PLACEHOLDER, tenant)] if tenant else []
 
     @classmethod

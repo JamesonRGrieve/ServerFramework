@@ -49,6 +49,7 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
+class EXT_X509Provider(AbstractStaticExtension):
     name: ClassVar[str] = "x509_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -81,6 +82,8 @@ def _row(model: Any) -> Dict[str, Any]:
         "x509_provider_crl",
     }
 
+    @classmethod
+    def validate_config(cls) -> List[str]:
         try:
             assert_encryption_available()
         except MissingFernetKeyError:
@@ -124,6 +127,11 @@ def _row(model: Any) -> Dict[str, Any]:
             )
         return _row(cls.certificates(requester_id).revoke(certificate_id, reason))
 
+    @classmethod
+    @ability("x509_provider_crl")
+    async def x509_provider_crl(
+        cls, ca_fingerprint: Optional[str] = None
+    ) -> Dict[str, str]:
         """The CRL (PEM) of the CA with ``ca_fingerprint``, else of the CA
         now issuing."""
         registry = ModelRegistry.attached()

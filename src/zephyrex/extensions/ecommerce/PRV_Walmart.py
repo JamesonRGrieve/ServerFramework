@@ -56,6 +56,7 @@ def _line_status(line: Mapping[str, Any]) -> str:
     return str(statuses[-1].get("status", ""))
 
 
+def walmart_order(found: Mapping[str, Any]) -> Dict[str, Any]:
     lines = _lines(found)
     statuses = {_STATUSES.get(_line_status(line), "other") for line in lines}
     status = statuses.pop() if len(statuses) == 1 else "processing"
@@ -98,6 +99,7 @@ def _line_status(line: Mapping[str, Any]) -> str:
     )
 
 
+class PRV_Walmart_ECommerce(AbstractEcommerceProvider):
     name: ClassVar[str] = "walmart"
     friendly_name: ClassVar[str] = "Walmart Marketplace"
     description: ClassVar[str] = "A Walmart Marketplace seller account"
@@ -114,9 +116,12 @@ def _line_status(line: Mapping[str, Any]) -> str:
             "Accept": "application/json",
         }
 
+    @classmethod
+    async def _token(cls, instance: ProviderInstanceModel) -> str:
         client = cls.required(instance, "api_key")
         secret = cls.required(instance, "client_secret")
 
+        async def fetch() -> Tuple[str, float]:
             answer = await cls.http().post(
                 f"{API_URL}/v3/token",
                 data={"grant_type": "client_credentials"},
@@ -321,6 +326,8 @@ def _line_status(line: Mapping[str, Any]) -> str:
         )
         return {"sku": sku, "changed": ["price"], "provider": cls.name}
 
+    @classmethod
+    def _return(cls, entry: Mapping[str, Any]) -> Dict[str, Any]:
         lines = entry.get("returnOrderLines", [])
         refunded = all(
             str(line.get("currentRefundStatus", ""))

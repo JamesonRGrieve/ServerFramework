@@ -7,6 +7,7 @@ from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Logging import logger
 
 
+class EXT_Auth_MFA(AbstractStaticExtension):
     """
     Multi-Factor Authentication extension for AGInfrastructure.
 
@@ -74,6 +75,8 @@ from zephyrex.lib.Logging import logger
     # MFA doesn't use external providers - override providers property
     _providers: ClassVar[List] = []
 
+    @classmethod
+    def on_initialize(cls) -> bool:
         """Initialize the MFA extension.
 
         Refuses to come up if encryption-at-rest is not configured. The TOTP
@@ -104,6 +107,8 @@ from zephyrex.lib.Logging import logger
         logger.debug("MFA extension initialized successfully")
         return True
 
+    @classmethod
+    def validate_config(cls) -> List[str]:
         """Validate the extension configuration."""
         issues: List[str] = []
 

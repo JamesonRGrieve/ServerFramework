@@ -51,15 +51,18 @@ class DataRegionModel(
         "Catalog of data regions tenants may pin residency to"
     )
 
+    class Create(BaseModel):
         name: str
         description: Optional[str] = None
         is_available: bool = True
         compliance_level: Optional[str] = None
 
+    class Update(BaseModel):
         description: Optional[str] = None
         is_available: Optional[bool] = None
         compliance_level: Optional[str] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         name: Optional[StringSearchModel] = None
         compliance_level: Optional[StringSearchModel] = None
         is_available: Optional[bool] = None
@@ -86,11 +89,14 @@ class DataResidencyPreferenceModel(
 
     table_comment: ClassVar[str] = "Per-tenant data-residency pinning"
 
+    class Create(BaseModel):
         data_type: str
         region_id: str
         user_id: Optional[str] = None
         team_id: Optional[str] = None
 
+        @model_validator(mode="after")
+        def _user_xor_team(self):
             if (self.user_id is None) == (self.team_id is None):
                 raise HTTPException(
                     status_code=422,
@@ -98,14 +104,17 @@ class DataResidencyPreferenceModel(
                 )
             return self
 
+    class Update(BaseModel):
         region_id: Optional[str] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         user_id: Optional[StringSearchModel] = None
         team_id: Optional[StringSearchModel] = None
         data_type: Optional[StringSearchModel] = None
         region_id: Optional[StringSearchModel] = None
 
 
+class DataRegionManager(AbstractBLLManager, RouterMixin):
     _model = DataRegionModel
     prefix: ClassVar[Optional[str]] = "/v1/privacy/data-regions"
     tags: ClassVar[Optional[List[str]]] = ["Data Residency"]
@@ -119,6 +128,7 @@ class DataResidencyPreferenceModel(
         RouteType.SEARCH,
     ]
 
+    def create_validation(self, entity) -> None:
         from zephyrex.database.StaticPermissions import is_root_id
 
         if not is_root_id(self.requester.id):
@@ -128,6 +138,7 @@ class DataResidencyPreferenceModel(
             )
 
 
+class DataResidencyPreferenceManager(AbstractBLLManager, RouterMixin):
     _model = DataResidencyPreferenceModel
     prefix: ClassVar[Optional[str]] = "/v1/privacy/data-residency"
     tags: ClassVar[Optional[List[str]]] = ["Data Residency"]
@@ -137,6 +148,7 @@ class DataResidencyPreferenceModel(
     # in ``create_validation`` once team membership is known.
     _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
+    def create_validation(self, entity) -> None:
         # Membership check for team-scoped preferences. A user must be a
         # member of the target team; ROOT bypasses.
         from zephyrex.database.StaticPermissions import is_root_id
@@ -154,6 +166,7 @@ class DataResidencyPreferenceModel(
 
         UTDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
         if not UTDB.exists(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             user_id=self.requester.id,
             team_id=entity.team_id,

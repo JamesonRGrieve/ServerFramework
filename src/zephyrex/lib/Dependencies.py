@@ -38,22 +38,29 @@ except ImportError:
     HAS_RESOLVELIB = False
 
     # Create stub classes to avoid errors when importing
+    class AbstractExtensionProvider:  # type: ignore[no-redef]
         pass
 
+    class Resolver:  # type: ignore[no-redef]
         def __init__(self, provider, reporter=None):
             pass
 
 
+def importable(module: str) -> bool:
     """Whether a provider's optional SDK or driver ``module`` imports.
     Installed is not enough: pyodbc installs without unixODBC and then fails
     to load. The provider imports the module again, typed, where it uses it."""
     try:
+        importlib.import_module(module)
     except ImportError:
         return False
     return True
 
 
 # Common utility function for executing shell commands
+def execute_command(
+    cmd: List[str], check: bool = False, capture_output: bool = True, text: bool = True
+) -> Tuple[bool, str, str]:
     """
     Execute a shell command with standardized error handling.
 
@@ -67,6 +74,7 @@ except ImportError:
         Tuple of (success, stdout, stderr)
     """
     try:
+        result = subprocess.run(
             cmd, capture_output=capture_output, text=text, check=check
         )
         return (
@@ -76,10 +84,13 @@ except ImportError:
         )
     except FileNotFoundError:
         return False, "", f"Command not found: {cmd[0]}"
+    except subprocess.SubprocessError as e:
         return False, "", str(e)
+    except Exception as e:
         return False, "", str(e)
 
 
+class Dependency(BaseModel):
     """Base class for all types of dependencies."""
 
     model_config = {"extra": "ignore", "arbitrary_types_allowed": True}
@@ -96,6 +107,7 @@ except ImportError:
     )
 
 
+class SystemPackageMapping(BaseModel):
     """Package mapping for a specific package manager."""
 
     model_config = {"extra": "ignore"}
@@ -104,6 +116,7 @@ except ImportError:
     package_name: str
 
 
+class SYS_Dependency(Dependency):
     """
     Base class for system dependencies across different package managers.
     """
@@ -113,6 +126,7 @@ except ImportError:
         description="Package mappings for different package managers",
     )
 
+    def is_satisfied(self) -> bool:
         """
         Check if the dependency is satisfied on the current OS.
 
@@ -191,10 +205,12 @@ except ImportError:
         )
 
 
+class PIP_Dependency(Dependency):
     """
     Represents a dependency on a Python package.
     """
 
+    def is_satisfied(self) -> bool:
         """
         Check if this PIP dependency is satisfied.
 
@@ -233,10 +249,12 @@ except ImportError:
             return True
         except PackageNotFoundError:
             return self.optional
+        except Exception as e:
             logger.error(f"Error checking PIP dependency {self.name}: {str(e)}")
             return self.optional
 
 
+class BREW_Dependency(SYS_Dependency):
     """
     Represents a dependency on a Homebrew package (macOS).
     For backward compatibility.
@@ -251,6 +269,7 @@ except ImportError:
             self.brew_package = self.name
 
 
+class WINGET_Dependency(SYS_Dependency):
     """
     Represents a dependency on a WinGet package (Windows).
     For backward compatibility.
@@ -265,6 +284,7 @@ except ImportError:
             self.winget_package = self.name
 
 
+def check_system_dependencies(dependencies: List[SYS_Dependency]) -> Dict[str, bool]:
     """
     Check if system dependencies are satisfied.
 
@@ -285,6 +305,9 @@ except ImportError:
 
 
 # Helper function for version checking
+def check_version_compatibility(
+    installed_version: str, required_version: Optional[str]
+) -> bool:
     """
     Check if an installed version is compatible with a requirement.
 
@@ -323,6 +346,7 @@ except ImportError:
         return True  # Assume compatible if we can't check
 
 
+class OSType(str, Enum):
     """Enumeration of supported operating systems."""
 
     DEBIAN = "debian"
@@ -334,6 +358,7 @@ except ImportError:
     UNKNOWN = "unknown"
 
 
+def get_os_type() -> OSType:
     """
     Detect the operating system type.
     Uses the distro package if available for more robust detection.
@@ -382,6 +407,7 @@ except ImportError:
         return OSType.UNKNOWN
 
 
+class PackageManager(ABC):
     """Abstract base class for package managers."""
 
     # Dictionary mapping commands to their respective arguments
@@ -390,6 +416,8 @@ except ImportError:
     # List of supported operating systems
     SUPPORTED_OS = []  # type: ignore[var-annotated]
 
+    @classmethod
+    def _build_command(cls, command_type: str, *args) -> List[str]:
         """
         Build a command using the COMMANDS template.
 
@@ -501,6 +529,8 @@ except ImportError:
             logger.error(f"Failed to install {package_name}: {stderr}")
         return success
 
+    @classmethod
+    def batch_install_packages(cls, package_names: List[str]) -> Dict[str, bool]:
         """
         Install multiple packages.
         Default implementation attempts batch installation first,
@@ -545,6 +575,7 @@ except ImportError:
         return os_type in cls.SUPPORTED_OS
 
 
+class APTPackageManager(PackageManager):
     """Package manager for APT (Debian, Ubuntu)."""
 
     SUPPORTED_OS = [OSType.DEBIAN, OSType.UBUNTU]
@@ -567,6 +598,8 @@ except ImportError:
     def _is_package_in_output(cls, package_name: str, output: str) -> bool:
         return "install ok installed" in output
 
+    @classmethod
+    def batch_install_packages(cls, package_names: List[str]) -> Dict[str, bool]:
         if not package_names:
             return {}
 
@@ -589,6 +622,7 @@ except ImportError:
         return results
 
 
+class SnapPackageManager(PackageManager):
     """Package manager for Snap (Ubuntu, other Linux)."""
 
     SUPPORTED_OS = [OSType.UBUNTU, OSType.DEBIAN, OSType.FEDORA, OSType.REDHAT]
@@ -605,6 +639,7 @@ except ImportError:
         return success
 
 
+class BrewPackageManager(PackageManager):
     """Package manager for Homebrew (macOS, Linux)."""
 
     SUPPORTED_OS = [OSType.MACOS, OSType.DEBIAN, OSType.UBUNTU]
@@ -623,6 +658,7 @@ except ImportError:
         return success
 
 
+class WinGetPackageManager(PackageManager):
     """Package manager for WinGet (Windows)."""
 
     SUPPORTED_OS = [OSType.WINDOWS]
@@ -646,6 +682,7 @@ except ImportError:
         return success
 
 
+class ChocolateyPackageManager(PackageManager):
     """Package manager for Chocolatey (Windows)."""
 
     SUPPORTED_OS = [OSType.WINDOWS]
@@ -678,6 +715,7 @@ PACKAGE_MANAGERS = {
 }
 
 
+def get_available_package_managers() -> Dict[str, Type[PackageManager]]:
     """
     Get all available package managers for the current system.
 
@@ -694,6 +732,7 @@ PACKAGE_MANAGERS = {
     return available_managers
 
 
+class DependencyFactory:
     """Factory class for creating dependencies with different configurations."""
 
     @staticmethod
@@ -764,6 +803,9 @@ PACKAGE_MANAGERS = {
         )
 
 
+def install_system_dependencies(
+    dependencies: List[SYS_Dependency], only_missing: bool = True
+) -> Dict[str, bool]:
     """
     Install system dependencies based on the detected operating system.
     Uses dependency resolution to determine installation order.
@@ -808,6 +850,9 @@ PACKAGE_MANAGERS = {
         return {dep.name: False for dep in dependencies}
 
 
+def _install_apt_dependencies(
+    dependencies: List[SYS_Dependency], only_missing: bool = True
+) -> Dict[str, bool]:
     """
     Install APT dependencies on Debian-based systems.
 
@@ -844,7 +889,9 @@ PACKAGE_MANAGERS = {
 
     # Check if we have sudo privileges
     try:
+        subprocess.run(["sudo", "-n", "true"], capture_output=True, check=False)
         has_sudo = True
+    except (FileNotFoundError, subprocess.SubprocessError):
         has_sudo = False
 
     # Determine which dependencies to install
@@ -872,10 +919,12 @@ PACKAGE_MANAGERS = {
     if has_sudo:
         try:
             # Update package lists
+            subprocess.run(["sudo", "apt-get", "update", "-qq"], check=True)
 
             # Install all packages in one command for efficiency
             pkg_names = [pkg_name for _, pkg_name in to_install]
             install_cmd = ["sudo", "apt-get", "install", "-y"] + pkg_names
+            install_result = subprocess.run(
                 install_cmd, capture_output=True, text=True, check=False
             )
 
@@ -886,6 +935,7 @@ PACKAGE_MANAGERS = {
             else:
                 # If batch install fails, try individually
                 for dep, pkg_name in to_install:
+                    pkg_result = subprocess.run(
                         ["sudo", "apt-get", "install", "-y", pkg_name],
                         capture_output=True,
                         text=True,
@@ -898,6 +948,7 @@ PACKAGE_MANAGERS = {
                         logger.error(
                             f"Failed to install APT package {pkg_name}: {pkg_result.stderr}"
                         )
+        except Exception as e:
             logger.error(f"Error installing APT dependencies: {str(e)}")
     else:
         logger.warning("Cannot install APT dependencies without sudo privileges")
@@ -905,6 +956,9 @@ PACKAGE_MANAGERS = {
     return result
 
 
+def _install_brew_dependencies(
+    dependencies: List[SYS_Dependency], only_missing: bool = True
+) -> Dict[str, bool]:
     """
     Install Homebrew dependencies on macOS systems.
 
@@ -965,6 +1019,7 @@ PACKAGE_MANAGERS = {
         # Try to install all packages in one command for efficiency
         pkg_names = [pkg_name for _, pkg_name in to_install]
         install_cmd = ["brew", "install"] + pkg_names
+        install_result = subprocess.run(
             install_cmd, capture_output=True, text=True, check=False
         )
 
@@ -975,6 +1030,7 @@ PACKAGE_MANAGERS = {
         else:
             # If batch install fails, try individually
             for dep, pkg_name in to_install:
+                pkg_result = subprocess.run(
                     ["brew", "install", pkg_name],
                     capture_output=True,
                     text=True,
@@ -989,11 +1045,15 @@ PACKAGE_MANAGERS = {
                     )
     except FileNotFoundError:
         logger.error("Homebrew (brew) not found; cannot install dependencies")
+    except Exception as e:
         logger.error(f"Error installing Homebrew dependencies: {str(e)}")
 
     return result
 
 
+def _install_winget_dependencies(
+    dependencies: List[SYS_Dependency], only_missing: bool = True
+) -> Dict[str, bool]:
     """
     Install WinGet dependencies on Windows systems.
 
@@ -1055,6 +1115,7 @@ PACKAGE_MANAGERS = {
         # So we'll install them one by one
         for dep, pkg_name in to_install:
             # Note: --accept-source-agreements is needed to bypass prompts
+            pkg_result = subprocess.run(
                 [
                     "winget",
                     "install",
@@ -1076,11 +1137,13 @@ PACKAGE_MANAGERS = {
                 )
     except FileNotFoundError:
         logger.error("WinGet not found; cannot install dependencies")
+    except Exception as e:
         logger.error(f"Error installing WinGet dependencies: {str(e)}")
 
     return result
 
 
+def check_pip_dependencies(dependencies: List[PIP_Dependency]) -> Dict[str, bool]:
     """
     Check if PIP dependencies are satisfied.
 
@@ -1100,6 +1163,9 @@ PACKAGE_MANAGERS = {
     return result
 
 
+def install_pip_dependencies(
+    dependencies: List[PIP_Dependency], only_missing: bool = True
+) -> Dict[str, bool]:
     """
     Install PIP dependencies based on resolved dependency order.
 
@@ -1166,6 +1232,7 @@ PACKAGE_MANAGERS = {
         else:
             pip_cmd = [sys.executable, "-m", "pip", "install"] + pkg_specs
 
+        install_result = subprocess.run(
             pip_cmd, capture_output=True, text=True, check=False
         )
 
@@ -1182,6 +1249,7 @@ PACKAGE_MANAGERS = {
                 else:
                     individual_cmd = [sys.executable, "-m", "pip", "install", spec]
 
+                pkg_result = subprocess.run(
                     individual_cmd,
                     capture_output=True,
                     text=True,
@@ -1194,6 +1262,7 @@ PACKAGE_MANAGERS = {
                     logger.error(
                         f"Failed to install PIP package {spec}: {pkg_result.stderr}"
                     )
+    except Exception as e:
         logger.error(f"Error installing PIP dependencies: {str(e)}")
         for name, _ in to_install:
             result[name] = False
@@ -1202,11 +1271,13 @@ PACKAGE_MANAGERS = {
 
 
 # Define dependency resolution classes
+class DependencyResolutionError(Exception):
     """Exception raised for errors in the dependency resolution process."""
 
     pass
 
 
+class DependencyNode:
     """A node in the dependency graph representing a dependency."""
 
     def __init__(self, name: str, version: str = "0.0.0"):
@@ -1224,6 +1295,7 @@ PACKAGE_MANAGERS = {
         return f"<DependencyNode {self.name}@{self.version}>"
 
 
+class DependencyProvider(AbstractExtensionProvider):
     """Provider for resolvelib that handles dependency resolution."""
 
     def __init__(self, dependency_map: Dict[str, List[DependencyNode]]):
@@ -1235,6 +1307,7 @@ PACKAGE_MANAGERS = {
         """
         self.dependency_map = dependency_map
 
+    def identify(self, requirement_or_candidate):
         """Get the name of the dependency."""
         if hasattr(requirement_or_candidate, "name"):
             return requirement_or_candidate.name
@@ -1247,6 +1320,7 @@ PACKAGE_MANAGERS = {
         """Get the preference for a dependency (higher versions preferred)."""
         return len(candidates)
 
+    def find_matches(self, identifier, requirements, incompatibilities):
         """Find candidates matching the requirements."""
         if identifier not in self.dependency_map:
             return []
@@ -1277,12 +1351,16 @@ PACKAGE_MANAGERS = {
         version_constraint = getattr(requirement, "version_constraint", None)
         return self._check_version_compatibility(candidate.version, version_constraint)
 
+    def get_dependencies(self, candidate):
         """Get dependencies of a candidate."""
         return [
             DependencyRequirement(name, version_constraint)
             for name, version_constraint in candidate.dependencies.items()
         ]
 
+    def _check_version_compatibility(
+        self, version: str, version_constraint: Optional[str]
+    ) -> bool:
         """
         Check if a version is compatible with a constraint.
 
@@ -1319,6 +1397,7 @@ PACKAGE_MANAGERS = {
             return True
 
 
+class DependencyRequirement:
     """Represents a requirement for resolvelib."""
 
     def __init__(self, name: str, version_constraint: Optional[str] | None = None):
@@ -1331,6 +1410,7 @@ PACKAGE_MANAGERS = {
         return f"<Requirement {self.name}>"
 
 
+class BaseReporter:
     """Basic reporter implementation for resolvelib."""
 
     def starting(self):
@@ -1355,6 +1435,7 @@ PACKAGE_MANAGERS = {
         pass
 
 
+def resolve_dependencies(dependencies: Dict[str, Dependency]) -> Dict[str, Dependency]:
     """
     Resolve dependencies using resolvelib.
 
@@ -1414,13 +1495,19 @@ PACKAGE_MANAGERS = {
 
         return resolved_deps
 
+    except Exception as e:
         # If we get an exception, log it and fall back to original dependencies
         logger.error(f"Dependency resolution failed: {str(e)}")
         raise DependencyResolutionError(f"Failed to resolve dependencies: {str(e)}")
 
 
+def resolve_extension_dependencies(available_extensions: Dict[str, any]) -> List[str]:  # type: ignore[valid-type]
+    """
+    DEPRECATED: Use ExtensionRegistry.resolve_extension_dependencies instead.
 
+    Resolve loading order for extensions based on their dependencies using topological sort.
 
+    Args:
         available_extensions: Dictionary mapping extension names to extension classes or objects
 
     Returns:
@@ -1484,6 +1571,7 @@ PACKAGE_MANAGERS = {
     return result
 
 
+class EXT_Dependency(Dependency):
     """
     Represents a dependency of an extension on another extension.
     """
@@ -1509,6 +1597,7 @@ PACKAGE_MANAGERS = {
         ),
     )
 
+    def is_satisfied(self, loaded_extensions: Dict[str, str]) -> bool:
         """
         Check if this dependency is satisfied.
 
@@ -1530,6 +1619,7 @@ PACKAGE_MANAGERS = {
                 )
                 try:
                     callback(self.name)
+                except Exception as err:  # pragma: no cover - defensive
                     logger.warning(
                         f"on_optional_missing callback for {self.name} raised: {err}"
                     )
@@ -1564,6 +1654,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
     )
 
 
+def print_optional_skip_banner(skipped: List[Tuple[str, str]]) -> str:
     """Render a startup banner naming every skipped optional dependency.
 
     Args:
@@ -1592,6 +1683,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
     return rendered
 
 
+class SysDependencies(List[SYS_Dependency]):
     """List of system dependencies with installation ability."""
 
     def install(self, only_missing: bool = True) -> Dict[str, bool]:
@@ -1603,6 +1695,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         return check_system_dependencies(self)
 
 
+class PipDependencies(List[PIP_Dependency]):
     """List of PIP dependencies with installation ability."""
 
     def install(self, only_missing: bool = True) -> Dict[str, bool]:
@@ -1614,8 +1707,10 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         return check_pip_dependencies(self)
 
 
+class ExtDependencies(List[EXT_Dependency]):
     """List of extension dependencies with checking ability."""
 
+    def install(self, only_missing: bool = True) -> Dict[str, bool]:
         """Extension dependencies cannot be installed automatically."""
         logger.warning(
             "Extension dependencies cannot be installed automatically. They must be loaded by the extension system."
@@ -1644,6 +1739,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         """
         return ",".join(dep.name for dep in self)
 
+    def server(self):
         """
         Create an isolated test server with only these extension dependencies.
         Uses dependency-based extension loading by temporarily setting APP_EXTENSIONS.
@@ -1659,6 +1755,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         return _ExtServerContext(self.env)
 
 
+class _ExtServerContext:
     """Context manager for extension test servers."""
 
     def __init__(self, extensions_csv: str):
@@ -1691,6 +1788,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
             pass  # Ignore cleanup errors
 
 
+class Dependencies(List[Dependency]):
     """
     Unified dependencies list with type-specific properties and installation methods.
 
@@ -1727,6 +1825,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         super().__init__(dependencies)
         self._validate_against_requirements()
 
+    def _validate_against_requirements(self) -> None:
         """
         Validate PIP dependencies against requirements.txt file.
         Issues warnings for duplicates and errors for conflicts.
@@ -1773,8 +1872,10 @@ def _default_optional_missing_callback(dep_name: str) -> None:
                             f"but no version specified in requirements.txt."
                         )
 
+        except Exception as e:
             logger.debug(f"Could not validate against requirements.txt: {e}")
 
+    def _parse_requirements_txt(self) -> Dict[str, Optional[str]]:
         """
         Parse requirements.txt file and extract package names and versions.
 
@@ -1806,6 +1907,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         try:
             with open(requirements_file, "r", encoding="utf-8") as f:
                 content = f.read()
+        except Exception as e:
             logger.debug(f"Could not read requirements.txt: {e}")
             return {}
 
@@ -1853,6 +1955,9 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         )
         return requirements
 
+    def _has_version_conflict(
+        self, package_name: str, dep_semver: str, req_version: str
+    ) -> bool:
         """
         Check if there's a version conflict between dependency semver and requirements.txt version.
 
@@ -1927,9 +2032,11 @@ def _default_optional_missing_callback(dep_name: str) -> None:
             # For now, assume no conflict if we can't determine
             return False
 
+        except Exception as e:
             logger.debug(f"Error checking version conflict for {package_name}: {e}")
             return False
 
+    def _version_compare(self, version1: str, version2: str) -> int:
         """
         Compare two version strings.
 
@@ -1956,6 +2063,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
 
             return 0
 
+        except Exception:
             # Fallback to string comparison
             if version1 < version2:
                 return -1
@@ -1982,6 +2090,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         ext_deps = [dep for dep in self if isinstance(dep, EXT_Dependency)]
         return ExtDependencies(ext_deps)
 
+    def install(self, only_missing: bool = True) -> Dict[str, bool]:
         """
         Install all dependencies in the correct order.
 
@@ -2013,6 +2122,9 @@ def _default_optional_missing_callback(dep_name: str) -> None:
 
         return results
 
+    def check(
+        self, loaded_extensions: Optional[Dict[str, str]] | None = None
+    ) -> Dict[str, bool]:
         """
         Check if all dependencies are satisfied.
 
@@ -2057,6 +2169,7 @@ def _default_optional_missing_callback(dep_name: str) -> None:
         missing_deps = [dep for dep in self if not status.get(dep.name, False)]
         return Dependencies(missing_deps)
 
+    def get_by_type(self, dependency_type: Type[Dependency]) -> List[Dependency]:
         """
         Get dependencies of a specific type.
 

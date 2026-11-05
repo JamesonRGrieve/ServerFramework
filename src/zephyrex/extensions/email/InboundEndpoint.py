@@ -100,6 +100,7 @@ def verified(
     return INBOUND_SIGNING.verified(secret, headers, body, now)
 
 
+def envelope_recipients(header: str) -> List[str]:
     """The addresses an ``X-Zephyrex-Recipients`` value names. ValueError
     for one that is not a bare address, or for too many."""
     addresses = [part.strip() for part in header.split(",") if part.strip()]
@@ -145,6 +146,7 @@ def operator_instance(
     return instance
 
 
+def signing_secret(instance: ProviderInstanceModel) -> Optional[str]:
     """The instance's inbound signing secret when its provider is an email
     provider and the secret is strong enough, else None."""
     from zephyrex.extensions.email.EXT_EMail import EXT_EMail

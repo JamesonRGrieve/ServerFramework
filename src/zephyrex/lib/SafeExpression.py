@@ -39,6 +39,7 @@ SEQUENCES = (str, list, tuple)
 _READS = (ast.Name, ast.Attribute, ast.Subscript, ast.Constant)
 
 
+class ExpressionError(ValueError):
     """An expression that is not allowed, or fails to evaluate."""
 
 
@@ -46,6 +47,7 @@ def _dunder(name: Any) -> bool:
     return isinstance(name, str) and name.startswith("__")
 
 
+def size_of(value: Any, limit: int = MAX_RESULT_SIZE) -> int:
     """``value``'s size (text length plus element count, nested), counted up
     to just past ``limit`` and no further, so measuring is itself bounded.
     A value shared many times (``[s] * n``) counts each time it appears."""
@@ -66,6 +68,7 @@ def _dunder(name: Any) -> bool:
     return total
 
 
+def _bounded(value: Any) -> Any:
     """``value``, unless it is too large to keep working with."""
     if isinstance(value, int) and not isinstance(value, bool):
         if value.bit_length() > MAX_INTEGER_BITS:
@@ -80,6 +83,7 @@ def _numbers(left: Any, right: Any) -> bool:
     return isinstance(left, NUMBERS) and isinstance(right, NUMBERS)
 
 
+def _add(left: Any, right: Any) -> Any:
     if _numbers(left, right) or (
         type(left) is type(right) and isinstance(left, SEQUENCES)
     ):
@@ -87,6 +91,7 @@ def _numbers(left: Any, right: Any) -> bool:
     raise ExpressionError("+ adds numbers, or two texts, lists or tuples")
 
 
+def _multiply(left: Any, right: Any) -> Any:
     """Numbers, or a repetition (``"ab" * n``) refused before it allocates
     more than the size limit."""
     if _numbers(left, right):
@@ -102,6 +107,7 @@ def _numbers(left: Any, right: Any) -> bool:
 def _arithmetic(apply: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:
     """An operator for numbers only (no ``%`` formatting of text)."""
 
+    def numeric(left: Any, right: Any) -> Any:
         if not _numbers(left, right):
             raise ExpressionError("-, /, // and % work on numbers")
         return apply(left, right)
@@ -136,6 +142,7 @@ _COMPARE: Dict[type, Callable[[Any, Any], Any]] = {
 }
 
 
+def _sum(values: Any) -> Any:
     if not isinstance(values, (list, tuple)) or not all(
         isinstance(v, NUMBERS) for v in values
     ):
@@ -143,6 +150,7 @@ _COMPARE: Dict[type, Callable[[Any, Any], Any]] = {
     return sum(values)
 
 
+def _round(value: Any, digits: Any = None) -> Any:
     if not isinstance(value, NUMBERS):
         raise ExpressionError("round rounds a number")
     if digits is None:
@@ -182,9 +190,11 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
 )
 
 
+class _Evaluator:
     def __init__(self, context: Mapping[str, Any]) -> None:
         self.context = context
 
+    def visit(self, node: ast.AST) -> Any:
         handler = getattr(self, f"_{type(node).__name__}", None)
         if handler is None:
             raise ExpressionError(
@@ -201,12 +211,14 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
             raise ExpressionError("only text, number, boolean and None literals")
         return node.value
 
+    def _Name(self, node: ast.Name) -> Any:
         if node.id in ("True", "False", "None"):
             return {"True": True, "False": False, "None": None}[node.id]
         if _dunder(node.id) or node.id not in self.context:
             raise ExpressionError(f"{node.id!r} is not defined")
         return self.context[node.id]
 
+    def _key(self, owner: Any, key: Any) -> Any:
         if _dunder(key):
             raise ExpressionError("dunder keys are not allowed")
         if isinstance(owner, dict):
@@ -219,6 +231,7 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
             return owner[key]
         raise ExpressionError("only mappings and sequences can be indexed")
 
+    def _Attribute(self, node: ast.Attribute) -> Any:
         # ``run.output`` reads a mapping's key; no object attribute is reachable.
         owner = self.visit(node.value)
         if not isinstance(owner, dict):
@@ -236,6 +249,7 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
     def _Tuple(self, node: ast.Tuple) -> Any:
         return tuple(self.visit(e) for e in node.elts)
 
+    def _Dict(self, node: ast.Dict) -> Any:
         result: Dict[Any, Any] = {}
         for key, value in zip(node.keys, node.values):
             if key is None:
@@ -243,6 +257,7 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
             result[self.visit(key)] = self.visit(value)
         return result
 
+    def _BoolOp(self, node: ast.BoolOp) -> Any:
         stop_when = not isinstance(node.op, ast.And)
         result: Any = not stop_when
         for value in node.values:
@@ -263,6 +278,7 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
             raise ExpressionError(f"{type(node.op).__name__} is not allowed")
         return op(self.visit(node.left), self.visit(node.right))
 
+    def _Compare(self, node: ast.Compare) -> Any:
         left = self.visit(node.left)
         for op, comparator in zip(node.ops, node.comparators):
             right = self.visit(comparator)
@@ -276,6 +292,7 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
             self.visit(node.body) if self.visit(node.test) else self.visit(node.orelse)
         )
 
+    def _Call(self, node: ast.Call) -> Any:
         if not isinstance(node.func, ast.Name) or node.func.id not in FUNCTIONS:
             raise ExpressionError(
                 f"only these functions may be called: {', '.join(sorted(FUNCTIONS))}"
@@ -285,6 +302,7 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
         return FUNCTIONS[node.func.id](*[self.visit(a) for a in node.args])
 
 
+def _depth(tree: ast.AST) -> int:
     deepest = 0
     pending: deque[Tuple[ast.AST, int]] = deque([(tree, 1)])
     while pending:
@@ -294,6 +312,7 @@ _EVALUATION_FAILURES: Tuple[Type[BaseException], ...] = (
     return deepest
 
 
+def parse(expression: str) -> ast.Expression:
     """``expression`` parsed and checked against the limits on its length,
     parts and nesting (no evaluation): for checking an expression when it
     is saved."""
@@ -342,6 +361,7 @@ _ALLOWED_NODES: Tuple[type, ...] = (
 )
 
 
+def check(expression: str) -> ast.Expression:
     """``expression`` parsed and found to use only what an expression may
     (allowed parts, the listed functions, no dunder names or keys), without
     evaluating it: for refusing a bad expression when it is saved. Whether
@@ -377,6 +397,7 @@ _ALLOWED_NODES: Tuple[type, ...] = (
     return tree
 
 
+def evaluate(expression: str, context: Mapping[str, Any]) -> Any:
     """The value of ``expression`` with ``context``'s names defined; an
     ExpressionError when it is not allowed or fails."""
     tree = parse(expression)

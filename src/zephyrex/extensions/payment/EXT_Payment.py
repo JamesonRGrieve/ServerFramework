@@ -86,6 +86,7 @@ _CURRENCY = re.compile(r"^[A-Za-z]{3}$")
 _IP = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
 
 
+def checked_amount(value: Any, what: str = "amount") -> Decimal:
     """A positive, finite amount in major units (``"12.50"``)."""
     if isinstance(value, (bool, float)):
         raise InvalidInputExternalError(f"{what} is a decimal string or an integer")
@@ -100,11 +101,13 @@ _IP = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
     return amount
 
 
+def checked_currency(value: Any) -> str:
     if not isinstance(value, str) or not _CURRENCY.match(value):
         raise InvalidInputExternalError("currency is a three-letter ISO 4217 code")
     return value.upper()
 
 
+def checked_text(value: Optional[str], what: str) -> Optional[str]:
     if value is None:
         return None
     if not isinstance(value, str) or len(value) > MAX_TEXT:
@@ -114,16 +117,19 @@ _IP = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
     return value
 
 
+def checked_ip(value: Optional[str]) -> Optional[str]:
     if value is not None and not _IP.match(value):
         raise InvalidInputExternalError("customer_ip is an IP address")
     return value
 
 
+def checked_trial(days: Optional[int]) -> Optional[int]:
     if days is not None and (isinstance(days, bool) or not 1 <= days <= MAX_TRIAL_DAYS):
         raise InvalidInputExternalError(f"trial_days is 1-{MAX_TRIAL_DAYS}")
     return days
 
 
+def checked_metadata(metadata: Optional[Mapping[str, Any]]) -> Dict[str, str]:
     """Up to 20 short string pairs: what every provider can carry."""
     if metadata is None:
         return {}
@@ -143,6 +149,8 @@ def new_idempotency_key() -> str:
     return str(uuid.uuid4())
 
 
+@dataclass(frozen=True)
+class PaymentRequest:
     """A charge for ``user_id``, in major units of ``currency``."""
 
     amount: Decimal
@@ -157,6 +165,8 @@ def new_idempotency_key() -> str:
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class MoneyAction:
     """A capture or refund of a payment in ``currency``: all of what is
     left when ``amount`` is None."""
 
@@ -167,12 +177,16 @@ def new_idempotency_key() -> str:
     customer_ip: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class CustomerRequest:
     email: str
     user_id: str
     idempotency_key: str
     name: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class SubscriptionRequest:
     plan_id: str
     user_id: str
     idempotency_key: str
@@ -181,6 +195,7 @@ def new_idempotency_key() -> str:
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
+def quoted_values(text: str, name: str) -> List[str]:
     """Every string value of a ``"name": "…"`` member in JSON ``text``,
     whole or cut short."""
     pattern = re.compile(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % re.escape(name))
@@ -197,15 +212,20 @@ def lowered(headers: Mapping[str, str]) -> Dict[str, str]:
     return {str(name).lower(): str(value) for name, value in headers.items()}
 
 
+def one_matches(expected: str, candidates: Iterable[str]) -> bool:
     """Whether any candidate equals ``expected``, each compared in constant
     time (every candidate is compared)."""
     found = False
     for candidate in candidates:
+        found |= hmac.compare_digest(expected.encode(), candidate.encode())
     return found
 
 
+def hmac_sha256(key: bytes, message: bytes) -> bytes:
+    return hmac.new(key, message, hashlib.sha256).digest()
 
 
+def fresh(timestamp: Any, now: float) -> bool:
     """Whether a signed timestamp (Unix seconds) is within the tolerance."""
     try:
         moment = int(str(timestamp))
@@ -214,6 +234,7 @@ def lowered(headers: Mapping[str, str]) -> Dict[str, str]:
     return abs(now - moment) <= WEBHOOK_TOLERANCE_SECONDS
 
 
+class AbstractPaymentProvider(AbstractStaticProvider):
     """A payment platform; each instance is one merchant account. What a
     platform's API cannot do keeps the refusing defaults below, and is left
     out of its ``_abilities`` so a rotation never picks it for that."""
@@ -327,6 +348,8 @@ def lowered(headers: Mapping[str, str]) -> Dict[str, str]:
     # The JSON string fields a refusal's body gives its reason in.
     refusal_fields: ClassVar[Tuple[str, ...]] = ()
 
+    @classmethod
+    def refusal_detail(cls, payload: Any) -> str:
         """The platform's own reason in a refusal's body, where it gives
         one. Read as text, since the error body is cut short."""
         return "; ".join(
@@ -336,6 +359,10 @@ def lowered(headers: Mapping[str, str]) -> Dict[str, str]:
             if value
         )
 
+    @classmethod
+    async def call(
+        cls, method: str, url: str, *, moves_money: bool = False, **options: Any
+    ) -> Any:
         """One request through ``http()``: the decoded answer, or a typed
         error carrying the platform's reason. A request that ``moves_money``
         and gets no clear answer may still have been carried out, so it is
@@ -554,6 +581,7 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
+class EXT_Payment(AbstractStaticExtension):
     name: ClassVar[str] = "payment"
     friendly_name: ClassVar[str] = "Payments"
     version: ClassVar[str] = "2.0.0"
@@ -600,6 +628,8 @@ def _row(model: Any) -> Dict[str, Any]:
 
         return cls.as_requester(PaymentSubscriptionManager, requester_id)
 
+    @classmethod
+    def _merchant(cls, requester_id: str) -> str:
         """The merchant's side (captures, refunds) is the server's: a payer
         must never refund or capture their own payment."""
         from zephyrex.logic.AbstractLogicManager.ownership import server_side
@@ -611,6 +641,7 @@ def _row(model: Any) -> Dict[str, Any]:
             )
         from zephyrex.lib.Environment import env
 
+        return str(env("ROOT_ID"))
 
     @classmethod
     def _link(cls, requester_id: str) -> Tuple[Any, Optional[Tuple[str, str]]]:
@@ -624,6 +655,11 @@ def _row(model: Any) -> Dict[str, Any]:
 
     # Customers.
 
+    @classmethod
+    @ability("customer_create")
+    async def customer_create(
+        cls, requester_id: str, name: Optional[str] = None
+    ) -> Dict[str, Any]:
         """The requester's customer record at a provider, made (and linked
         to them) when they have none: under their own email, never one the
         caller names."""
@@ -661,6 +697,20 @@ def _row(model: Any) -> Dict[str, Any]:
 
     # Payments.
 
+    @classmethod
+    @ability("payment_create")
+    async def payment_create(
+        cls,
+        requester_id: str,
+        amount: Union[Decimal, int, str],
+        currency: str,
+        payment_method_id: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        capture: bool = True,
+        customer_ip: Optional[str] = None,
+        product_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Charge the requester ``amount`` (major units) of ``currency``,
         with their payment method (a card token, a Square source) where the
         provider takes one, or to be approved by the payer (Stripe's
@@ -785,6 +835,15 @@ def _row(model: Any) -> Dict[str, Any]:
 
     # Subscriptions.
 
+    @classmethod
+    @ability("subscription_create")
+    async def subscription_create(
+        cls,
+        requester_id: str,
+        plan_id: str,
+        trial_days: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Subscribe the requester to ``plan_id`` (a Stripe price, a Square
         plan variation, a PayPal plan): on the account holding their
         customer record, or where the provider needs none (PayPal, whose
@@ -864,6 +923,9 @@ def _row(model: Any) -> Dict[str, Any]:
         )
         return _row(subscriptions.mirror(record, answer))
 
+    @classmethod
+    @ability("subscription_status")
+    async def subscription_status(cls, requester_id: str) -> Dict[str, Any]:
         """Whether any of the requester's subscriptions is active, each read
         again from its provider (the last record where one cannot be)."""
         from zephyrex.extensions.payment.BLL_Payment import refreshed

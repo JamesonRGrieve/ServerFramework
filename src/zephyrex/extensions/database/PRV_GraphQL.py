@@ -30,6 +30,7 @@ GRAPHQL_DEFAULT_PORT = 4000
 GRAPHQL_TRANSPORT_RETRIES = 3
 
 
+class PRV_GraphQL(AbstractDatabaseProvider):
     """GraphQL endpoint provider (static, rotation-compatible)."""
 
     name: ClassVar[str] = "GraphQL"
@@ -48,6 +49,10 @@ GRAPHQL_TRANSPORT_RETRIES = 3
 
     _abilities = {"database", "data_storage", "graph_db", "graphql"}
 
+    @classmethod
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
         endpoint = cls.resolve_setting(instance, "graphql_endpoint", "GRAPHQL_ENDPOINT")
         if not endpoint:
             host = cls.resolve_setting(

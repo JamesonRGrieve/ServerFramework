@@ -31,10 +31,12 @@ CERTIFICATE_SETTING = "ca_certificate"
 KEY_SETTING = "ca_key"
 
 
+class AuthorityMissing(LookupError):
     """No CA is configured, or the one configured is unusable. The text
     names what to fix, never a key's value."""
 
 
+class PRV_X509CertificateAuthority(AbstractStaticProvider):
     name: ClassVar[str] = "x509_certificate_authority"
     friendly_name: ClassVar[str] = "X.509 certificate authority"
     description: ClassVar[str] = (
@@ -76,6 +78,8 @@ KEY_SETTING = "ca_key"
         except CertificateRefused:
             return None
 
+    @classmethod
+    def authority(cls, instance: Optional[ProviderInstanceModel]) -> Authority:
         """The CA ``instance`` holds (the environment's, for None), its key
         checked to be the certificate's and the certificate a CA's."""
         certificate = cls.setting(instance, CERTIFICATE_SETTING)

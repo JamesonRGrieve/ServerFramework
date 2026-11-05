@@ -24,6 +24,7 @@ from zephyrex.extensions.database.EXT_Database import (
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
+class PRV_Fake_Database(AbstractDatabaseExtensionProvider):
     """In-memory fake database provider for tests.
 
     Returns deterministic strings from each method so tests can assert

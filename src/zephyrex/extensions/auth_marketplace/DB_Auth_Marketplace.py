@@ -6,6 +6,7 @@ from zephyrex.database.DB_Auth import TeamRefMixin, UserRefMixin
 from zephyrex.database.DB_Providers import ProviderRefMixin
 
 
+class UserPaymentPortal(Base, BaseMixin, UpdateMixin, UserRefMixin, ProviderRefMixin):
     __tablename__ = "user_payment_portals"
     __table_args__ = {
         "comment": "Links users to payment providers for processing payments and subscriptions"

@@ -42,6 +42,7 @@ MIN_VLAN_ID = 1
 MAX_VLAN_ID = 4094
 
 
+class RadiusClientModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """A NAS allowed to send Access-Requests."""
 
     name: str = Field(..., description="What the NAS is")
@@ -58,18 +59,21 @@ MAX_VLAN_ID = 4094
 
     table_comment: ClassVar[str] = "NAS clients the RADIUS authenticator answers"
 
+    class Create(BaseModel):
         name: str
         address: str
         shared_secret: str
         required_team_id: Optional[str] = None
         is_enabled: bool = True
 
+    class Update(BaseModel):
         name: Optional[str] = None
         address: Optional[str] = None
         shared_secret: Optional[str] = None
         required_team_id: Optional[str] = None
         is_enabled: Optional[bool] = None
 
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         name: Optional[StringSearchModel] = None
         address: Optional[StringSearchModel] = None
         is_enabled: Optional[bool] = None
@@ -93,11 +97,13 @@ class RadiusTeamPolicyModel(
 
     table_comment: ClassVar[str] = "RADIUS reply attributes per team"
 
+    class Create(BaseModel, TeamModel.Reference.ID):
         vlan_id: Optional[int] = Field(None, ge=MIN_VLAN_ID, le=MAX_VLAN_ID)
         filter_id: Optional[str] = None
         session_timeout_seconds: Optional[int] = Field(None, ge=1)
         priority: int = 100
 
+    class Update(BaseModel):
         vlan_id: Optional[int] = Field(None, ge=MIN_VLAN_ID, le=MAX_VLAN_ID)
         filter_id: Optional[str] = None
         session_timeout_seconds: Optional[int] = Field(None, ge=1)
@@ -109,6 +115,7 @@ class RadiusTeamPolicyModel(
         priority: Optional[int] = None
 
 
+def normalized_address(address: str) -> str:
     """An address as the network it names: ``10.0.0.5`` is ``10.0.0.5/32``.
     A network with host bits set is ambiguous and refused."""
     try:
@@ -121,6 +128,7 @@ class RadiusTeamPolicyModel(
         )
 
 
+def sealed_secret(secret: str) -> str:
     """A shared secret checked for strength and encrypted for storage."""
     if not MIN_SHARED_SECRET_LENGTH <= len(secret) <= MAX_SHARED_SECRET_LENGTH:
         raise HTTPException(
@@ -134,9 +142,11 @@ class RadiusTeamPolicyModel(
     return sealed
 
 
+class RootManagedManager(AbstractBLLManager):
     """A manager of server configuration: anyone but root is refused before
     any read or write."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         requester = self.optional_requester
         if requester is not None and not is_root_id(requester.id):
@@ -150,13 +160,16 @@ class RadiusTeamPolicyModel(
         applying."""
         return self.DB.deleted_at.is_(None)
 
+    def _require_team(self, team_id: str) -> None:
         if not TeamModel.DB(self.model_registry.DB.manager.Base).exists(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=team_id,
         ):
             raise HTTPException(status_code=404, detail="Team not found")
 
 
+class RadiusClientManager(RootManagedManager, RouterMixin):
     _model = RadiusClientModel
 
     prefix: ClassVar[Optional[str]] = "/v1/radius/client"
@@ -172,12 +185,14 @@ class RadiusTeamPolicyModel(
                     status_code=409, detail="A client already has that address"
                 )
 
+    def create_validation(self, entity: Any) -> None:
         entity.address = normalized_address(entity.address)
         self._require_unique_address(entity.address)
         entity.shared_secret = sealed_secret(entity.shared_secret)
         if entity.required_team_id:
             self._require_team(entity.required_team_id)
 
+    def update(self, id: str, **kwargs: Any) -> RadiusClientModel:
         if kwargs.get("address") is not None:
             kwargs["address"] = normalized_address(kwargs["address"])
             self._require_unique_address(kwargs["address"], other_than=id)
@@ -195,6 +210,7 @@ class RadiusTeamPolicyModel(
         return clients
 
 
+class RadiusTeamPolicyManager(RootManagedManager, RouterMixin):
     _model = RadiusTeamPolicyModel
 
     prefix: ClassVar[Optional[str]] = "/v1/radius/team-policy"
@@ -204,6 +220,7 @@ class RadiusTeamPolicyModel(
     def create_validation(self, entity: Any) -> None:
         self._require_team(entity.team_id)
 
+    def for_teams(self, team_ids: Iterable[str]) -> Optional[RadiusTeamPolicyModel]:
         """The policy that applies to a member of ``team_ids``: the lowest
         priority, then the lowest id, so the choice is stable."""
         wanted = set(team_ids)
@@ -218,5 +235,7 @@ class RadiusTeamPolicyModel(
 RootManaged = TypeVar("RootManaged", bound=RootManagedManager)
 
 
+def root_manager(manager_class: Type[RootManaged], model_registry: Any) -> RootManaged:
     """``manager_class`` acting as root: how the authenticator reads its own
     configuration."""
+    return manager_class(model_registry=model_registry, requester_id=env("ROOT_ID"))

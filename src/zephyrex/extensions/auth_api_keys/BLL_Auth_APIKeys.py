@@ -105,6 +105,7 @@ class APIKeyModel(
         name: str
         expires_at: Optional[datetime] = None
 
+    class Update(BaseModel):
         name: Optional[str] = None
         expires_at: Optional[datetime] = None
 
@@ -120,6 +121,7 @@ class APIKeyModel(
         expires_at: Optional[DateSearchModel] = None
 
 
+class APIKeyIssueResponse(BaseModel):
     """Returned exactly once at issuance. ``key`` is the raw value to
     present to the API; the server only stores its hash from this point on."""
 
@@ -131,6 +133,7 @@ class APIKeyModel(
     expires_at: Optional[datetime] = None
 
 
+class APIKeyIssueRequest(BaseModel):
     name: str
     user_id: Optional[str] = None
     team_id: Optional[str] = None
@@ -138,18 +141,22 @@ class APIKeyModel(
     expires_at: Optional[datetime] = None
 
 
+class APIKeyValidateRequest(BaseModel):
     api_key: str = Field(..., description="Raw API key to validate")
 
 
+class APIKeyValidateResponse(BaseModel):
     valid: bool
     user_id: Optional[str] = None
     team_id: Optional[str] = None
     role_id: Optional[str] = None
 
 
+class APIKeyRotateRequest(BaseModel):
     key_id: str = Field(..., description="ID of the key to rotate")
 
 
+class APIKeyManager(AbstractBLLManager, RouterMixin):
     _model = APIKeyModel
     prefix: ClassVar[Optional[str]] = "/v1/auth/api-keys"
     tags: ClassVar[Optional[List[str]]] = ["API Keys"]
@@ -167,6 +174,7 @@ class APIKeyModel(
         RouteType.DELETE,
     ]
 
+    def create_validation(self, entity) -> None:
         """Refuse non-root direct CREATE; raw keys must flow through ``issue_key``.
 
         The CRUD ``Create`` schema deliberately omits ``key_hash``, so a
@@ -184,6 +192,11 @@ class APIKeyModel(
                 "use POST /v1/auth/api-keys/issue",
             )
 
+    def _assert_can_act_on(
+        self,
+        user_id: Optional[str],
+        team_id: Optional[str],
+    ) -> None:
         """Caller must be acting on themselves (user_id == requester) or be
         ROOT_ID. Team-scoped keys additionally require team membership."""
         from zephyrex.database.StaticPermissions import is_root_id
@@ -198,6 +211,7 @@ class APIKeyModel(
         if team_id is not None:
             require_team_membership(self.requester.id, team_id, self.model_registry)
 
+    def _assert_can_assign_role(self, role_id: Optional[str]) -> None:
         """Only ROOT_ID may bind a role to a key. A caller-chosen role would
         let any user mint a credential carrying a role they do not hold."""
         from zephyrex.database.StaticPermissions import is_root_id
@@ -208,6 +222,14 @@ class APIKeyModel(
                 detail="Only root may assign a role to an API key",
             )
 
+    def issue_key(
+        self,
+        name: str,
+        user_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        role_id: Optional[str] = None,
+        expires_at: Optional[datetime] = None,
+    ) -> APIKeyIssueResponse:
         if user_id is None and team_id is None:
             user_id = self.requester.id
         self._assert_can_act_on(user_id, team_id)
@@ -220,9 +242,19 @@ class APIKeyModel(
             expires_at=expires_at,
         )
 
+    def _mint_key(
+        self,
+        name: str,
+        user_id: Optional[str],
+        team_id: Optional[str],
+        role_id: Optional[str],
+        expires_at: Optional[datetime],
+    ) -> APIKeyIssueResponse:
         """Generate and persist a key. Callers authorize before minting."""
+        raw = secrets.token_urlsafe(32)
         key_hash = _hash_key(raw)
         record = self.DB.create(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -304,10 +336,12 @@ class APIKeyModel(
         reasons. Authorization rides through ``revoke_key``."""
         self.revoke_key(id)
 
+    def revoke_key(self, key_id: str) -> APIKeyModel:
         """Soft-revoke a key. Authorization: the requester must own the
         key (user_id) or be ROOT_ID. Team-scoped keys check membership."""
         KeyDB = APIKeyModel.DB(self.model_registry.DB.manager.Base)
         existing = KeyDB.get(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=key_id,
             return_type="dto",
@@ -321,6 +355,7 @@ class APIKeyModel(
         # ROOT-created row, and its owner must still be able to revoke (and
         # therefore rotate) it.
         return KeyDB.update(  # type: ignore[no-any-return]
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=key_id,
             new_properties={"is_revoked": True},
@@ -328,10 +363,12 @@ class APIKeyModel(
             override_dto=APIKeyModel,
         )
 
+    def rotate_key(self, key_id: str) -> APIKeyIssueResponse:
         """Issue a replacement key, revoke the old one. Atomic-from-the-
         client's-perspective: caller persists the new ``key`` value before
         the old one is no longer accepted (revoke runs after create)."""
         existing = APIKeyModel.DB(self.model_registry.DB.manager.Base).get(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=key_id,
             return_type="dto",
@@ -357,6 +394,7 @@ class APIKeyModel(
 APIKeyModel.Manager = APIKeyManager
 
 
+def validate_api_key(raw: str, model_registry: Any) -> Optional[APIKeyModel]:
     """Resolve ``raw`` to an active (unrevoked, unexpired) key record, or None.
 
     Stamps ``last_used_at`` on a match. Constant-time comparison after a
@@ -369,6 +407,7 @@ APIKeyModel.Manager = APIKeyManager
     KeyDB = APIKeyModel.DB(model_registry.DB.manager.Base)
     rows: List[APIKeyModel] = (
         KeyDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             filters=[
                 KeyDB.key_hash == candidate_hash,
@@ -383,9 +422,11 @@ APIKeyModel.Manager = APIKeyManager
     for record in rows:
         if record.expires_at is not None and ensure_utc(record.expires_at) < now:
             continue
+        if record.key_hash is not None and hmac.compare_digest(
             record.key_hash, candidate_hash
         ):
             KeyDB.update(
+                requester_id=env("ROOT_ID"),
                 model_registry=model_registry,
                 id=record.id,
                 new_properties={"last_used_at": now},
@@ -394,6 +435,7 @@ APIKeyModel.Manager = APIKeyManager
     return None
 
 
+def resolve_api_key_principal(raw: str, model_registry: Any) -> Optional[str]:
     """``_api_key_hooks["resolve_principal"]`` implementation.
 
     Returns the ``user_id`` a live issued key authenticates as. Team-only
@@ -427,6 +469,7 @@ register_api_key_auth()
 # ---------------------------------------------------------------------------
 
 
+def _merge_handler(ctx) -> None:
     """Revoke (don't migrate) the target user's API keys.
 
     API keys are bearer credentials that may have been distributed to
@@ -442,6 +485,7 @@ register_api_key_auth()
     KeyDB = APIKeyModel.DB(ctx.model_registry.DB.manager.Base)
     target_keys = (
         KeyDB.list(
+            requester_id=_env("ROOT_ID"),
             model_registry=ctx.model_registry,
             filters=[
                 KeyDB.user_id == ctx.target_user_id,
@@ -455,12 +499,14 @@ register_api_key_auth()
     now = datetime.now(timezone.utc)
     for key in target_keys:
         KeyDB.update(
+            requester_id=_env("ROOT_ID"),
             model_registry=ctx.model_registry,
             id=key.id,
             new_properties={"is_revoked": True, "last_used_at": now},
         )
 
 
+def register_merge_participation() -> None:
     try:
         from zephyrex.extensions.auth_merge.BLL_Auth_Merge import make_merge_registrar
     except ImportError:

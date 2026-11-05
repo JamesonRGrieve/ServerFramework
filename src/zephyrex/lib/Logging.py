@@ -110,6 +110,7 @@ _INLINE_PATTERNS = [
 ]
 
 
+def _scrub_value(value):
     """Recursively redact sensitive entries in dict/list/str structures."""
     if isinstance(value, dict):
         return {
@@ -125,6 +126,7 @@ _INLINE_PATTERNS = [
     return value
 
 
+def _scrub_string(text):
     """Apply inline-secret regex scrubbing to a message string."""
     if not text:
         return text
@@ -133,6 +135,7 @@ _INLINE_PATTERNS = [
     return text
 
 
+def _redaction_patcher(record):
     """Loguru patcher: scrub sensitive keys/values and inject the
     per-request ``correlation_id`` before any sink sees the record.
     """
@@ -162,6 +165,7 @@ _INLINE_PATTERNS = [
     record["message"] = _scrub_string(record.get("message", ""))
 
 
+class StdlibCompatibleLogger:
     """The framework logger: loguru, plus the stdlib calling conventions the
     Python standard prescribes.
 
@@ -180,6 +184,7 @@ _INLINE_PATTERNS = [
     def __init__(self, inner: Any) -> None:
         self._inner = inner
 
+    def _emit(self, level: Any, message: Any, args: tuple, kwargs: dict) -> None:
         exc_info = kwargs.pop("exc_info", None)
         target = self._inner.opt(depth=self._WRAPPER_DEPTH, exception=exc_info or None)
         if args and isinstance(message, str) and "%" in message:
@@ -233,6 +238,7 @@ _INLINE_PATTERNS = [
 logger = StdlibCompatibleLogger(_loguru_logger.patch(_redaction_patcher))
 
 
+def format_with_timezone(record):
     """Format log record with server timezone"""
     if server_timezone != "UTC":
         # Convert UTC time to server timezone for display
@@ -275,6 +281,7 @@ else:
 # ---------------------------------------------------------------------------
 
 
+class ErrorReporter(ABC):
     """Pluggable error-reporting sink.
 
     Concrete subclasses route exceptions to a backend (Sentry, Rollbar,
@@ -289,6 +296,8 @@ else:
     delegating to the subclass.
     """
 
+    @abstractmethod
+    def report(self, exception: BaseException, context: Mapping[str, Any]) -> None:
         """Send ``exception`` (with its traceback) to the underlying
         reporting backend. ``context`` is a free-form mapping of extra
         fields the caller wants attached (e.g. request path, user id).
@@ -297,6 +306,7 @@ else:
         misconfigured reporter."""
 
 
+class NoopErrorReporter(ErrorReporter):
     """Default reporter — silently drops every report. Used in tests
     and in deployments that have not configured an external backend."""
 
@@ -307,8 +317,10 @@ else:
 _active_reporter: ErrorReporter = NoopErrorReporter()
 
 
+def set_error_reporter(reporter: ErrorReporter) -> None:
     """Install ``reporter`` as the framework-wide error sink. Called once
     at startup from deployment-specific bootstrap code."""
+    global _active_reporter
     if not isinstance(reporter, ErrorReporter):
         raise TypeError(
             "set_error_reporter requires an ErrorReporter subclass; "
@@ -332,6 +344,7 @@ def installed_error_reporter() -> ErrorReporter:
     return _active_reporter
 
 
+class _ContextEnrichingReporter(ErrorReporter):
     """Decorator around an :class:`ErrorReporter` that, on every
     :meth:`report` call, copies the current ``correlation_id``,
     ``request_user``, and ``traceparent`` into the caller's context
@@ -342,6 +355,7 @@ def installed_error_reporter() -> ErrorReporter:
     def __init__(self, inner: ErrorReporter) -> None:
         self._inner = inner
 
+    def report(self, exception: BaseException, context: Mapping[str, Any]) -> None:
         enriched: dict[str, Any] = dict(context) if context else {}
         try:
             from zephyrex.lib.RequestContext import get_correlation_id, get_request_user

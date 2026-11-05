@@ -47,6 +47,7 @@ class RateLimit:
     burst: int = 10
 
 
+class TokenBucket:
     """Classic token-bucket implementation.
 
     Tokens accrue at `rate.rps` per second up to `rate.burst`. Acquire
@@ -82,6 +83,7 @@ class RateLimit:
                 return True
             return False
 
+    def acquire_blocking(self, timeout: Optional[float] = None, n: int = 1) -> bool:
         """Block until a token is available or `timeout` elapses.
 
         Returns True on success, False on timeout. `timeout=None` waits forever.
@@ -116,6 +118,7 @@ class RateLimit:
 # ----- Concurrency cap ------------------------------------------------------
 
 
+class ConcurrencyLimit:
     """Per-provider concurrency cap. Wraps a `threading.Semaphore`.
 
     Use as a context manager: ``with limit: ...``. `acquire(timeout)`
@@ -201,6 +204,7 @@ def _run_async(coro) -> bool:
             return True
 
 
+class DistributedRateLimit(TokenBucket):
     """Cross-instance rate-limit anchored on Item 69's ``DistributedCounter``.
 
     The local ``TokenBucket`` continues to bound per-process burst /
@@ -232,6 +236,7 @@ def _run_async(coro) -> bool:
             period_key=period_key,
         )
 
+    def try_acquire(self, n: int = 1) -> bool:
         if not super().try_acquire(n):
             return False
         if not _run_async(self._counter.try_consume(amount=n)):

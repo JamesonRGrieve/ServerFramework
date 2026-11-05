@@ -52,6 +52,7 @@ _RETURN_STATES = {
 }
 
 
+def ebay_status(found: Mapping[str, Any]) -> str:
     if (found.get("cancelStatus") or {}).get("cancelState") == "CANCELED":
         return "cancelled"
     if found.get("orderPaymentStatus") == "FULLY_REFUNDED":
@@ -64,6 +65,7 @@ _RETURN_STATES = {
     return "processing"
 
 
+def ebay_order(found: Mapping[str, Any]) -> Dict[str, Any]:
     total = (found.get("pricingSummary") or {}).get("total") or {}
     instructions = (found.get("fulfillmentStartInstructions") or [{}])[0]
     ship_to = (instructions.get("shippingStep") or {}).get("shipTo") or {}
@@ -90,6 +92,7 @@ _RETURN_STATES = {
     )
 
 
+class PRV_Ebay_ECommerce(AbstractEcommerceProvider):
     name: ClassVar[str] = "ebay"
     friendly_name: ClassVar[str] = "eBay"
     description: ClassVar[str] = "An eBay seller account"
@@ -118,11 +121,14 @@ _RETURN_STATES = {
     def _marketplace(cls, instance: ProviderInstanceModel) -> str:
         return str(cls.setting(instance, "marketplace_id") or DEFAULT_MARKETPLACE)
 
+    @classmethod
+    async def _token(cls, instance: ProviderInstanceModel) -> str:
         client = cls.required(instance, "api_key")
         secret = cls.required(instance, "client_secret")
         refresh = cls.required(instance, "refresh_token")
         host = cls._host(instance)
 
+        async def fetch() -> Tuple[str, float]:
             answer = await cls.http().post(
                 f"{host}/identity/v1/oauth2/token",
                 data={"grant_type": "refresh_token", "refresh_token": refresh},
@@ -276,6 +282,10 @@ _RETURN_STATES = {
         )
         return {"sku": sku, "quantity": quantity, "provider": cls.name}
 
+    @classmethod
+    async def update_product(
+        cls, instance: ProviderInstanceModel, sku: str, changes: Dict[str, Any]
+    ) -> Dict[str, Any]:
         path = f"/sell/inventory/v1/inventory_item/{quote(sku, safe='')}"
         if "title" in changes or "description" in changes:
             current = await cls._call(instance, "GET", path)

@@ -17,6 +17,7 @@ from zephyrex.lib.MetaGraph import meta_graph
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
+class PRV_Facebook_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "messenger"
     friendly_name: ClassVar[str] = "Facebook Messenger"
     description: ClassVar[str] = "Facebook Messenger, as a Page"

@@ -69,6 +69,7 @@ def select_coins(
     )
 
 
+class PRV_Bitcoin_Crypto(AbstractCryptoProvider):
     name: ClassVar[str] = "bitcoin"
     friendly_name: ClassVar[str] = "Bitcoin"
     description: ClassVar[str] = "A Bitcoin wallet (native SegWit)"

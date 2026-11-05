@@ -149,6 +149,7 @@ RULE_ROUTES = [
 # ---------------------------------------------------------------------------
 
 
+def normalized_host(value: str) -> str:
     """A host name or address as rules hold it: lower case, no trailing dot,
     no port. ValueError for anything else."""
     host = value.strip().lower().rstrip(".")
@@ -159,6 +160,7 @@ RULE_ROUTES = [
     return host
 
 
+def split_authority(value: str) -> Tuple[str, str]:
     """``host[:port]`` as (the normalized host, the authority to return to).
     ValueError when either part is malformed."""
     authority = value.strip().lower()
@@ -175,9 +177,11 @@ RULE_ROUTES = [
     return normalized_host(host), authority
 
 
+def _has_control_characters(text: str) -> bool:
     return any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
 
 
+def normalized_path(raw: str) -> str:
     """The path of a request target as the application will resolve it:
     query and fragment dropped, decoded once, backslashes taken as slashes,
     and ``.``, ``..`` and empty segments resolved. ValueError for one that
@@ -200,6 +204,7 @@ RULE_ROUTES = [
     return "/" + "/".join(segments)
 
 
+def covers(prefix: str, path: str) -> bool:
     """Whether a rule for ``prefix`` covers ``path``: the path itself or
     anything below it, never ``/administrator`` for ``/admin``."""
     return prefix == "/" or path == prefix or path.startswith(prefix + "/")
@@ -217,16 +222,24 @@ def header_value(text: str, *, list_item: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _checked_host(value: Optional[str]) -> Optional[str]:
     if value is None or not value.strip():
         return None
     return normalized_host(value)
 
 
+def _checked_prefix(value: str) -> str:
     if "?" in value or "#" in value:
         raise ValueError("a path prefix has no query or fragment")
     return normalized_path(value)
 
 
+class ForwardAuthRuleModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    NameMixinModel,
+    metaclass=ModelMeta,
+):
     """Who may reach a host and path through the proxy."""
 
     host: Optional[str] = Field(
@@ -246,6 +259,7 @@ def header_value(text: str, *, list_item: bool = False) -> str:
     table_comment: ClassVar[str] = "Who may reach a host and path behind the proxy"
     is_system_entity: ClassVar[bool] = True
 
+    class Create(BaseModel, NameMixinModel):
         host: Optional[str] = None
         path_prefix: str = "/"
         required_team_id: Optional[str] = None
@@ -262,6 +276,7 @@ def header_value(text: str, *, list_item: bool = False) -> str:
         def normalized_rule_prefix(cls, value: str) -> str:
             return _checked_prefix(value)
 
+    class Update(BaseModel, NameMixinModel.Optional):
         host: Optional[str] = None
         path_prefix: Optional[str] = None
         required_team_id: Optional[str] = None
@@ -280,11 +295,13 @@ def header_value(text: str, *, list_item: bool = False) -> str:
                 raise ValueError("path_prefix cannot be cleared; use /")
             return _checked_prefix(value)
 
+    class Search(ApplicationModel.Search, NameMixinModel.Search):
         host: Optional[StringSearchModel] = None
         path_prefix: Optional[StringSearchModel] = None
         enabled: Optional[bool] = None
 
 
+def _require_server_side(manager: AbstractBLLManager) -> None:
     """Rules are the server's own configuration: only ROOT or SYSTEM (the
     root API key) reads or changes them."""
     requester = manager.optional_requester
@@ -294,6 +311,7 @@ def header_value(text: str, *, list_item: bool = False) -> str:
         )
 
 
+class ForwardAuthRuleManager(AbstractBLLManager, RouterMixin):
     _model = ForwardAuthRuleModel
 
     prefix: ClassVar[Optional[str]] = "/v1/auth/forward/rule"
@@ -301,11 +319,14 @@ def header_value(text: str, *, list_item: bool = False) -> str:
     auth_type: ClassVar[AuthType] = AuthType.API_KEY
     routes_to_register: ClassVar[Optional[List[RouteType]]] = RULE_ROUTES
 
+    def _require_team(self, team_id: str) -> None:
         """The team exists and the requester can see it."""
         TeamDB = TeamModel.DB(self.model_registry.DB.manager.Base)
         if not TeamDB.list(
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=team_id,
+            filters=[TeamDB.deleted_at.is_(None)],
         ):
             raise HTTPException(status_code=404, detail="No such team")
 
@@ -326,6 +347,7 @@ def header_value(text: str, *, list_item: bool = False) -> str:
         _require_server_side(self)
         return super().search(*args, **kwargs)
 
+    def create_validation(self, entity: Any) -> None:
         if entity.required_team_id:
             self._require_team(entity.required_team_id)
 
@@ -333,6 +355,7 @@ def header_value(text: str, *, list_item: bool = False) -> str:
         _require_server_side(self)
         return super().create(**kwargs)
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         _require_server_side(self)
         if kwargs.get("required_team_id"):
             self._require_team(kwargs["required_team_id"])
@@ -346,17 +369,23 @@ def header_value(text: str, *, list_item: bool = False) -> str:
 ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
 
 
+def enabled_rules(model_registry: Any) -> List[ForwardAuthRuleModel]:
     """The rules in force: enabled, and not deleted (a ROOT read includes
     deleted rows)."""
     RuleDB = ForwardAuthRuleModel.DB(model_registry.DB.manager.Base)
     rules: List[ForwardAuthRuleModel] = RuleDB.list(
+        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
+        filters=[RuleDB.enabled.is_(True), RuleDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=ForwardAuthRuleModel,
     )
     return rules
 
 
+def governing_rule(
+    rules: Sequence[ForwardAuthRuleModel], host: str, path: str
+) -> Optional[ForwardAuthRuleModel]:
     """The rule that decides ``host`` + ``path``: the longest covering path,
     then a rule for the host over one for every host, then priority."""
     covering = [
@@ -377,11 +406,20 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     )
 
 
+@dataclass(frozen=True)
+class AccessDecision:
     allowed: bool
     reason: str
     rule_id: Optional[str] = None
 
 
+def decide(
+    rules: Sequence[ForwardAuthRuleModel],
+    host: str,
+    path: str,
+    team_ids: Sequence[str],
+    require_rule: bool,
+) -> AccessDecision:
     """Whether a signed-in user who is a live member of ``team_ids`` may
     reach ``host`` + ``path``."""
     rule = governing_rule(rules, host, path)
@@ -397,15 +435,18 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return AccessDecision(False, "Not a member of the required team", rule_id)
 
 
+def live_teams(model_registry: Any, user_id: str) -> Dict[str, str]:
     """The teams (id to name) the user is a member of through an enabled,
     unrevoked, unexpired membership of a team that is not deleted."""
     base = model_registry.DB.manager.Base
     UserTeamDB = UserTeamModel.DB(base)
     now = datetime.now(timezone.utc)
     memberships: List[UserTeamModel] = UserTeamDB.list(
+        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         user_id=user_id,
         enabled=True,
+        filters=[UserTeamDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=UserTeamModel,
     )
@@ -418,18 +459,23 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
         return {}
     TeamDB = TeamModel.DB(base)
     teams: List[TeamModel] = TeamDB.list(
+        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
+        filters=[TeamDB.id.in_(team_ids), TeamDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=TeamModel,
     )
     return {str(team.id): team.name or "" for team in teams}
 
 
+def live_user(model_registry: Any, user_id: str) -> Optional[UserModel]:
     """The user, unless deleted (a ROOT read includes deleted rows)."""
     UserDB = UserModel.DB(model_registry.DB.manager.Base)
     users: List[UserModel] = UserDB.list(
+        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         id=user_id,
+        filters=[UserDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=UserModel,
     )
@@ -441,9 +487,11 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
 # ---------------------------------------------------------------------------
 
 
+class ForwardAuthMisconfigured(ValueError):
     """A setting the operator must fix; the endpoint answers 503 until then."""
 
 
+def parse_identity_headers(raw: str) -> Tuple[Tuple[str, str], ...]:
     """``Header=claim`` pairs, comma separated, e.g.
     ``X-Forwarded-User=id,X-Forwarded-Groups=teams``."""
     pairs: List[Tuple[str, str]] = []
@@ -471,6 +519,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return tuple(pairs)
 
 
+def parse_login_url(raw: str) -> Optional[str]:
     url = raw.strip()
     if not url:
         return None
@@ -482,6 +531,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return url
 
 
+def parse_return_parameter(raw: str) -> str:
     name = raw.strip() or DEFAULT_RETURN_PARAMETER
     if not _RETURN_PARAMETER.match(name):
         raise ForwardAuthMisconfigured(
@@ -490,6 +540,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return name
 
 
+def parse_return_hosts(raw: str) -> Tuple[str, ...]:
     """Hosts a login may return to: ``app.example.com`` exactly, or
     ``.example.com`` for any host below example.com."""
     hosts: List[str] = []
@@ -505,12 +556,15 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return tuple(hosts)
 
 
+def parse_trusted_proxies(raw: str) -> Tuple[ipaddress._BaseNetwork, ...]:
     try:
         return _parse_trusted_proxies(raw.strip())
     except ValueError as exc:
         raise ForwardAuthMisconfigured(f"{TRUSTED_PROXIES_SETTING}: {exc}") from None
 
 
+@dataclass(frozen=True)
+class ForwardAuthConfig:
     trusted_proxies: Tuple[ipaddress._BaseNetwork, ...]
     identity_headers: Tuple[Tuple[str, str], ...]
     login_url: Optional[str]
@@ -518,6 +572,8 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return_hosts: Tuple[str, ...]
     require_rule: bool
 
+    @classmethod
+    def load(cls) -> "ForwardAuthConfig":
         """The settings as they stand; ForwardAuthMisconfigured names the
         first that is wrong."""
         return cls(
@@ -529,6 +585,8 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
             require_rule=env(REQUIRE_RULE_SETTING).strip().lower() == "true",
         )
 
+    @staticmethod
+    def problems() -> List[str]:
         """Every wrong setting, and a note when no proxy is trusted."""
         checks = (
             (parse_trusted_proxies, TRUSTED_PROXIES_SETTING),
@@ -549,6 +607,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
             )
         return found
 
+    def trusts(self, peer: Optional[str]) -> bool:
         if not peer:
             return False
         try:
@@ -557,11 +616,13 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
             return False
         return any(address in network for network in self.trusted_proxies)
 
+    def may_return_to(self, host: str) -> bool:
         return any(
             host.endswith(allowed) if allowed.startswith(".") else host == allowed
             for allowed in self.return_hosts
         )
 
+    def identity(self, user: UserModel, teams: Mapping[str, str]) -> Dict[str, str]:
         """Exactly the configured identity headers, each sent (empty when
         the user has no such value) so the proxy overwrites any copy the
         client sent."""
@@ -585,6 +646,8 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class ForwardAuthRefusal(Exception):
     """An answer other than 200, as the proxy will relay it."""
 
     status: int
@@ -600,6 +663,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
         )
 
 
+def _single(headers: Headers, name: str, *, list_allowed: bool = False) -> str:
     """The one value of a header the proxy sets; 400 when it is missing,
     repeated, or (where a value is one token) a list: a proxy that appends
     rather than overwrites leaves the client's own value first."""
@@ -611,6 +675,8 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return values[0].strip()
 
 
+@dataclass(frozen=True)
+class ForwardedRequest:
     """The original request, as a trusted proxy described it."""
 
     host: str
@@ -620,6 +686,8 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     proto: Optional[str]
     method: str
 
+    @classmethod
+    def of(cls, headers: Headers) -> "ForwardedRequest":
         try:
             host, authority = split_authority(_single(headers, "X-Forwarded-Host"))
         except ValueError:
@@ -655,11 +723,18 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
         """A browser navigating: a GET/HEAD that accepts HTML."""
         return self.method in _PAGE_METHODS and "text/html" in accept.lower()
 
+    def return_url(self) -> Optional[str]:
         if self.proto is None:
             return None
         return f"{self.proto}://{self.authority}{self.uri}"
 
 
+def sign_in_answer(
+    config: ForwardAuthConfig,
+    forwarded: ForwardedRequest,
+    accept: str,
+    redirect_with_401: bool,
+) -> ForwardAuthRefusal:
     """401, or for a browser the way to the login page, returning to the
     page asked for only on a host the operator allows."""
     if config.login_url is None or not forwarded.is_page_load(accept):
@@ -676,6 +751,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     return ForwardAuthRefusal(302, "Sign in required", {"Location": location})
 
 
+class ForwardAuthManager(AbstractBLLManager, RouterMixin):
     """The forward-auth endpoint: no table of its own."""
 
     prefix: ClassVar[Optional[str]] = "/v1/auth/forward"
@@ -683,6 +759,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
     auth_type: ClassVar[AuthType] = AuthType.NONE
     routes_to_register: ClassVar[Optional[List[RouteType]]] = []
 
+    def signed_in_user(self, request: Request) -> Optional[UserModel]:
         """The user the request's session (cookie, bearer token or API key)
         belongs to, as the framework authenticates any request; None when
         it carries none that is valid. 403 for a disabled account."""
@@ -690,6 +767,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
             ForwardAuthManager, self.model_registry, AuthType.JWT
         )
         try:
+            requester_id = authenticate(request=request).requester_id
         except HTTPException as exc:
             if exc.status_code == 403:
                 raise ForwardAuthRefusal(403, "This account is disabled") from None
@@ -703,6 +781,7 @@ ForwardAuthRuleModel.Manager = ForwardAuthRuleManager
             raise ForwardAuthRefusal(403, "This account is disabled")
         return user
 
+    def answer(self, request: Request, redirect_with_401: bool) -> Response:
         try:
             config = ForwardAuthConfig.load()
         except ForwardAuthMisconfigured as exc:

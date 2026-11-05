@@ -71,6 +71,7 @@ def transaction_limit(limit: int) -> int:
     return limit
 
 
+class AbstractCryptoProvider(AbstractStaticProvider):
     """A blockchain; each instance is one wallet on one of its networks."""
 
     name: ClassVar[str] = ""
@@ -213,6 +214,7 @@ def transaction_limit(limit: int) -> int:
         return ["crypto_wallet"]
 
 
+class EXT_Crypto(AbstractStaticExtension):
     name: ClassVar[str] = "crypto"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

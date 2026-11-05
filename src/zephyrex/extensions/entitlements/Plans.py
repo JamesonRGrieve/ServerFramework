@@ -77,6 +77,7 @@ class Product:
         default=None, compare=False, repr=False
     )
 
+    def __post_init__(self) -> None:
         try:
             positive = Decimal(self.amount) > 0
         except InvalidOperation:

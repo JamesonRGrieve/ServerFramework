@@ -113,6 +113,7 @@ def _attendees(component: Any) -> List[str]:
     ]
 
 
+def _span(component: Any) -> Optional[Interval]:
     """When a VEVENT blocks time, as UTC; None for an all-day date-only event
     with no time, or one that is transparent or cancelled."""
     if str(component.get("TRANSP", "")).upper() == "TRANSPARENT":
@@ -137,6 +138,7 @@ def _attendees(component: Any) -> List[str]:
     return aware(begin), aware(finish)
 
 
+def apply_fields(component: Any, fields: Dict[str, Any]) -> None:
     """Write the calendar extension's event ``fields`` onto a VEVENT."""
     if fields.get("online_meeting"):
         raise InvalidInputExternalError("CalDAV calendars have no online meetings")
@@ -184,6 +186,7 @@ def changed_calendar(ics: str, changes: Dict[str, Any]) -> bytes:
     return bytes(calendar.to_ical())
 
 
+class PRV_CalDAV_Calendar(AbstractCalendarProvider):
     name: ClassVar[str] = "caldav"
     friendly_name: ClassVar[str] = "CalDAV"
     description: ClassVar[str] = (

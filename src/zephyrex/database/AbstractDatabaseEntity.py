@@ -47,11 +47,20 @@ from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import obj_to_dict
 
 
+def with_session(func):
     """
     Decorator to handle session creation, commit, rollback, and closing.
     Uses ModelRegistry.DB for database access.
     """
 
+    @functools.wraps(func)
+    def wrapper(
+        cls,
+        requester_id: String,
+        model_registry,
+        *args,
+        **kwargs,
+    ):
         if model_registry is None:
             raise ValueError("model_registry parameter is required")
 
@@ -72,9 +81,12 @@ from zephyrex.pydantic2.registry import obj_to_dict
         except (StaleVersionError, PreconditionError):
             # A client's stale or missing If-Match: an expected outcome, not
             # an error.
+            session.rollback()
             raise
+        except Exception as e:
             logger.error(e)
             logger.debug(f"Rolling back {func.__name__}...")
+            session.rollback()
             raise e
         finally:
             logger.debug("Closing session...")
@@ -83,6 +95,7 @@ from zephyrex.pydantic2.registry import obj_to_dict
     return wrapper
 
 
+def get_dto_class(cls, override_dto=None):
     """
     Determine which DTO class to use based on provided override or class default.
     """
@@ -107,6 +120,7 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def validate_fields(cls, fields):
     """
     Validate that the fields exist on the model class.
 
@@ -133,6 +147,17 @@ def utc_now() -> datetime:
         )
 
 
+def build_query(
+    session,
+    cls,
+    joins=[],
+    options=[],
+    filters=[],
+    order_by=None,
+    limit=None,
+    offset=None,
+    **kwargs,
+):
     to_return = session.query(cls)
 
     if len(joins) > 0:
@@ -159,6 +184,7 @@ def utc_now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+def _apply_soft_delete_filter(db_cls, requester_id: str, filters: list) -> list:
     """Return *filters* with a ``deleted_at IS NULL`` clause when applicable.
 
     Creates a **new** list when *filters* is empty to avoid mutating the
@@ -166,11 +192,15 @@ def utc_now() -> datetime:
     """
     from zephyrex.database.StaticPermissions import is_root_id
 
+    if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
         if filters:
+            filters.append(db_cls.deleted_at == None)
         else:
+            filters = [db_cls.deleted_at == None]
     return filters
 
 
+def _should_include_deleted(db_cls, requester_id: str) -> bool:
     """Return True when the query should set ``include_deleted=True``.
 
     ROOT users bypass the DB-layer auto-filter so admin/audit reads
@@ -178,8 +208,10 @@ def utc_now() -> datetime:
     """
     from zephyrex.database.StaticPermissions import is_root_id
 
+    return is_root_id(requester_id) and hasattr(db_cls, "deleted_at")
 
 
+def _require_system_user(cls, requester_id: str, action_verb: str) -> None:
     """Raise 403 if ``cls`` is system-flagged and requester is not root/system."""
     from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 
@@ -191,17 +223,20 @@ def utc_now() -> datetime:
             )
 
 
+def _check_creator_ownership(entity, requester_id: str) -> None:
     """Raise 403 if the entity was created by ROOT/SYSTEM and requester lacks privileges."""
     from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 
     if not hasattr(entity, "created_by_user_id"):
         return
 
+    if entity.created_by_user_id == env("ROOT_ID") and not is_root_id(requester_id):
         raise HTTPException(
             status_code=403,
             detail="Only ROOT can modify records created by ROOT",
         )
 
+    if entity.created_by_user_id == env("SYSTEM_ID") and not (
         is_root_id(requester_id) or is_system_id(requester_id)
     ):
         raise HTTPException(
@@ -210,6 +245,7 @@ def utc_now() -> datetime:
         )
 
 
+def _locked_for(query: Query, db_cls, target_id: Any) -> Query:
     """A write the request holds to a version (If-Match, bound through
     ``zephyrex.lib.Preconditions``) locks its row (``SELECT ... FOR UPDATE``
     where the database has row locks), so no other write lands between the
@@ -220,8 +256,10 @@ def utc_now() -> datetime:
     _, if_match = expected_version(db_cls.__tablename__, str(target_id))
     if if_match is None:
         return query
+    return query.with_for_update(of=db_cls)
 
 
+def _check_version(entity) -> None:
     """Hold the write to the version the request's If-Match names for this
     row: ``StaleVersionError`` when the locked row has moved on, 428 when
     If-Match is required and the request sent none. Every write path
@@ -242,6 +280,13 @@ IncludePath = Tuple[str, ...]
 _INCLUDE_BATCH_SIZE = 500
 
 
+def _visible_related(
+    db: Session,
+    db_manager: Any,
+    requester_id: str,
+    relation: Any,
+    parent_ids: List[Any],
+) -> Dict[Any, List[Any]]:
     """The rows ``relation`` reaches from each of ``parent_ids`` that the
     requester may view, by parent id: the related model is queried directly,
     under the VIEW filter and soft-delete rule a read of it applies, and
@@ -279,6 +324,13 @@ _INCLUDE_BATCH_SIZE = 500
     return related
 
 
+def load_visible_includes(
+    db: Session,
+    db_manager: Any,
+    requester_id: str,
+    rows: List[Any],
+    include: Sequence[IncludePath],
+) -> None:
     """Load each relationship path in ``include`` onto ``rows`` (ORM rows of
     one model, from ``db``), keeping only the related rows the requester
     could read directly: a reference they may not see is ``None`` and a
@@ -315,6 +367,7 @@ _INCLUDE_BATCH_SIZE = 500
         )
 
 
+def _filter_dict_fields(entity_dict: dict, fields: List[str]) -> None:
     """Remove keys from *entity_dict* that are not in *fields*.
 
     Loaded SQLAlchemy relationships (dicts with an ``id`` key or lists of
@@ -343,6 +396,12 @@ _INCLUDE_BATCH_SIZE = 500
         del entity_dict[key]
 
 
+def db_to_return_type(
+    entity: Union[T, List[T]],
+    return_type: Literal["db", "dict", "dto", "model"] = "dict",
+    dto_type: Optional[Type[DtoT]] | None = None,
+    fields: List[str] = [],
+) -> Union[T, DtoT, ModelT, List[Union[T, DtoT, ModelT]]]:
     """
     Convert database entity to specified return type, handling nested objects and relationships.
     When return_type is "dict" and fields is provided, only the specified fields will be included.
@@ -437,6 +496,7 @@ def _cached_type_hints(cls):
     return hints
 
 
+def _process_nested_objects(data_dict, parent_dto_type):
     """
     Process nested objects in a dictionary based on parent DTO type annotations.
     Handles recursive conversion of nested objects and lists.
@@ -458,6 +518,7 @@ def _cached_type_hints(cls):
     return result
 
 
+def _convert_based_on_type_hint(value, type_hint):
     """
     Convert a value based on its type hint.
     Handles primitive types, lists, optionals, nested objects, and enums.
@@ -565,8 +626,10 @@ def _cached_type_hints(cls):
     return value
 
 
+class HookDict(dict):
     """Dictionary subclass that allows attribute access to dictionary items"""
 
+    def __getattr__(self, name):
         if name in self:
             value = self[name]
             if isinstance(value, dict):
@@ -585,6 +648,7 @@ _hooks_registry = {}  # type: ignore[var-annotated]
 hook_types = ["create", "update", "delete", "get", "list"]
 
 
+def get_hooks_for_class(cls):
     """Get or create hooks for a class"""
     if cls not in _hooks_registry:
         # Create a new hooks dictionary for this class with all required hook types
@@ -606,12 +670,14 @@ hook_types = ["create", "update", "delete", "get", "list"]
 
 
 # Descriptor for class-level hooks
+class HooksDescriptor:
     def __get__(self, obj, objtype=None):
         if objtype is None:
             objtype = type(obj)
         return get_hooks_for_class(objtype)
 
 
+class BaseMixin:
     system = False
     seed_list = []  # type: ignore[var-annotated]
 
@@ -628,6 +694,8 @@ hook_types = ["create", "update", "delete", "get", "list"]
     # Class-level hooks property
     hooks = HooksDescriptor()
 
+    @classmethod
+    def create_foreign_key(cls, target_entity, model_registry=None, **kwargs):
         """
         Create a foreign key column that references the target entity's id.
 
@@ -686,6 +754,16 @@ hook_types = ["create", "update", "delete", "get", "list"]
         # Use String type for user ID references for consistency
         return Column(String, nullable=True)
 
+    @classmethod
+    def user_has_read_access(
+        cls,
+        user_id,
+        id,
+        db,
+        db_manager: DatabaseManager,
+        minimum_role=None,
+        referred=False,
+    ):
         """
         Checks if a user has read access to a specific record.
 
@@ -720,6 +798,7 @@ hook_types = ["create", "update", "delete", "get", "list"]
             return False
 
         # Check for deleted records - only ROOT_ID can see them
+        if hasattr(record, "deleted_at") and record.deleted_at is not None:
             return is_root_id(user_id)
 
         # Check system flag - only ROOT_ID and SYSTEM_ID can access system-flagged tables
@@ -733,9 +812,11 @@ hook_types = ["create", "update", "delete", "get", "list"]
         # is still the team's).
         if (
             hasattr(record, "created_by_user_id")
+            and record.created_by_user_id == env("ROOT_ID")
             and not inherits_access(db_cls)
             and getattr(db_cls, "__tablename__", None) != ROLES_TABLE
         ):
+            return user_id == env("ROOT_ID")
 
         # For non-referred checks, use the unified permission system
         if not referred:
@@ -752,6 +833,8 @@ hook_types = ["create", "update", "delete", "get", "list"]
 
         return False
 
+    @classmethod
+    def user_has_admin_access(cls, user_id, id, db, db_manager: DatabaseManager):
         """Check if a user has admin (edit) access for a record."""
         return user_has_permission(
             user_id, cls, id, db, PermissionType.EDIT, db_manager=db_manager
@@ -764,6 +847,8 @@ hook_types = ["create", "update", "delete", "get", "list"]
             user_id, cls, id, db, PermissionType.SHARE, db_manager=db_manager
         )
 
+    @classmethod
+    def user_can_create(cls, user_id, db, team_id=None, minimum_role="user", **kwargs):
         """
         Checks if a user can create an entity of this class.
 
@@ -781,6 +866,7 @@ hook_types = ["create", "update", "delete", "get", "list"]
             check_access_to_all_referenced_entities,
             is_root_id,
             is_system_id,
+            user_can_create_referenced_entity,
         )
 
         # ROOT can create anything; so can SYSTEM, the framework's own
@@ -803,10 +889,22 @@ hook_types = ["create", "update", "delete", "get", "list"]
             return False
 
         # Check create permissions based on create_permission_reference
+        can_create, _ = user_can_create_referenced_entity(
             cls, user_id, db, minimum_role, **kwargs
         )
         return can_create
 
+    @classmethod
+    @with_session
+    def create(
+        cls: Type[T],
+        requester_id: str,
+        model_registry,
+        return_type: Literal["db", "dict", "dto", "model"] = "dict",
+        fields=[],
+        override_dto: Optional[Type[DtoT]] | None = None,
+        **kwargs,
+    ) -> T:
         """Create a new database entity."""
         from zephyrex.database.StaticPermissions import (
             PermissionResult,
@@ -830,6 +928,7 @@ hook_types = ["create", "update", "delete", "get", "list"]
         if "user_id" in create_kwargs:
             create_kwargs.pop("user_id")
 
+        if not cls.user_can_create(requester_id, db, **create_kwargs):  # type: ignore[attr-defined]
             raise HTTPException(
                 status_code=403, detail=f"Not authorized to create {cls.__name__}"
             )
@@ -860,6 +959,7 @@ hook_types = ["create", "update", "delete", "get", "list"]
         db.flush()
         if cls.__tablename__ == "users":  # type: ignore[attr-defined]
             entity.created_by_user_id = entity.id  # type: ignore[attr-defined]
+        db.commit()
         db.refresh(entity)
 
         # Get hooks for after_create
@@ -872,6 +972,19 @@ hook_types = ["create", "update", "delete", "get", "list"]
         # Convert to requested return type
         return db_to_return_type(entity, return_type, override_dto, fields)  # type: ignore[arg-type, return-value]
 
+    @classmethod
+    @with_session
+    def count(
+        cls: Type[T],
+        requester_id: str,
+        model_registry,
+        joins=[],
+        options=[],
+        filters=[],
+        check_permissions=True,
+        minimum_role=None,
+        **kwargs,
+    ) -> int:
         """
         Count records with permission filtering.
 
@@ -936,6 +1049,17 @@ hook_types = ["create", "update", "delete", "get", "list"]
         # Get count
         return query.count()  # type: ignore[no-any-return]
 
+    @classmethod
+    @with_session
+    def exists(
+        cls: Type[T],
+        requester_id: str,
+        model_registry,
+        joins=[],
+        options=[],
+        filters=[],
+        **kwargs,
+    ) -> bool:
         """Check if at least one record matching the criteria exists and is accessible."""
         from zephyrex.database.StaticPermissions import PermissionType, is_root_id
 
@@ -967,15 +1091,19 @@ hook_types = ["create", "update", "delete", "get", "list"]
             if cls.__tablename__ == "users":  # type: ignore[attr-defined]
                 # Check if the user is looking up their own record
                 if (
+                    hasattr(record, "deleted_at")
+                    and record.deleted_at is not None
                     and not is_root_id(requester_id)
                 ):
                     return False
 
+                if requester_id == record_id:
                     return True
 
                 # Check if record was created by ROOT_ID - only ROOT_ID can access
                 if (
                     hasattr(record, "created_by_user_id")
+                    and record.created_by_user_id == env("ROOT_ID")
                     and not is_root_id(requester_id)
                 ):
                     return False
@@ -1039,6 +1167,22 @@ hook_types = ["create", "update", "delete", "get", "list"]
             # Check if any results exist with permission filtering
             return query.first() is not None
 
+    @classmethod
+    @with_session
+    def get(
+        cls: Type[T],
+        requester_id: str,
+        model_registry,
+        return_type: Literal["db", "dict", "dto", "model"] = "dict",
+        joins=[],
+        options=[],
+        filters=[],
+        fields=[],
+        allow_nonexistent=False,
+        override_dto: Optional[Type[DtoT]] | None = None,
+        include: Sequence[IncludePath] = (),
+        **kwargs,
+    ) -> T:
         """One record the requester may view, with the relationship paths in
         ``include`` loaded under the same rule (``load_visible_includes``)."""
         # Extract db and db_manager from kwargs (injected by decorator)
@@ -1112,9 +1256,11 @@ hook_types = ["create", "update", "delete", "get", "list"]
                 )
             if allow_nonexistent:
                 return None  # type: ignore[return-value]
+            if hasattr(db_cls, "deleted_at"):
                 tombstone = build_query(db, db_cls, **kwargs).first()
                 if (
                     tombstone is not None
+                    and getattr(tombstone, "deleted_at", None) is not None
                 ):
                     if (
                         hasattr(tombstone, "privacy_erased")
@@ -1131,6 +1277,26 @@ hook_types = ["create", "update", "delete", "get", "list"]
                 detail=f"Request uncovered multiple {cls.__name__} when only one was expected.",
             )
 
+    @classmethod
+    @with_session
+    def list(
+        cls: Type[T],
+        requester_id: str,
+        model_registry,
+        return_type: Literal["db", "dict", "dto", "model"] = "dict",
+        joins=[],
+        options=[],
+        filters=[],
+        order_by=None,
+        limit=None,
+        offset=None,
+        fields=[],
+        override_dto: Optional[Type[DtoT]] | None = None,
+        check_permissions=True,
+        minimum_role=None,
+        include: Sequence[IncludePath] = (),
+        **kwargs,
+    ) -> List[T]:
         """
         List records with permission filtering.
 
@@ -1226,6 +1392,7 @@ hook_types = ["create", "update", "delete", "get", "list"]
         )
 
 
+class SoftDeleteMixin:
     """Soft-delete primitive: tags an entity for DB-layer soft-delete enforcement.
 
     How to use:
@@ -1258,8 +1425,11 @@ hook_types = ["create", "update", "delete", "get", "list"]
     def deleted_at(cls):
         return Column(DateTime, default=None, nullable=True, index=True)
 
+    def soft_delete(self, db: Session) -> None:
         """Tombstone this row by setting `deleted_at = now(UTC)` and committing."""
+        self.deleted_at = datetime.now(timezone.utc)
         db.add(self)
+        db.commit()
 
 
 @contextmanager
@@ -1277,6 +1447,7 @@ def include_deleted(db: Session):
         db.info["include_deleted"] = prior
 
 
+def _query_has_deleted_at_filter(query: Query) -> bool:
     """Return True if `query` already filters on `deleted_at`.
 
     Walks the WHERE-clause for any reference to a column named `deleted_at`,
@@ -1293,14 +1464,20 @@ def include_deleted(db: Session):
 
         found = {"v": False}
 
+        def _visit(elem):
+            if hasattr(elem, "key") and elem.key == "deleted_at":
                 found["v"] = True
+            if hasattr(elem, "name") and elem.name == "deleted_at":
                 found["v"] = True
 
         visitors.traverse(whereclause, {}, {"column": _visit, "binary": _visit})
         return found["v"]
+    except Exception:
         return False
 
 
+@event.listens_for(Query, "before_compile", retval=True)
+def _soft_delete_before_compile(query: Query) -> Query:
     """Auto-inject `deleted_at IS NULL` for SoftDeleteMixin-tagged entities.
 
     Honors `session.info["include_deleted"]` and `query.execution_options(
@@ -1311,6 +1488,7 @@ def include_deleted(db: Session):
     try:
         if query._execution_options.get("include_deleted", False):
             return query
+    except Exception:
         pass
 
     # Bypass via session.info
@@ -1318,9 +1496,11 @@ def include_deleted(db: Session):
         sess = query.session
         if sess is not None and sess.info.get("include_deleted", False):
             return query
+    except Exception:
         pass
 
     # Skip if the query already filters on deleted_at
+    if _query_has_deleted_at_filter(query):
         return query
 
     for desc in query.column_descriptions:
@@ -1329,10 +1509,13 @@ def include_deleted(db: Session):
             continue
         if not getattr(entity, "__soft_delete__", False):
             continue
+        if not hasattr(entity, "deleted_at"):
             continue
+        query = query.enable_assertions(False).filter(entity.deleted_at.is_(None))  # type: ignore[union-attr]
     return query
 
 
+class UpdateMixin(SoftDeleteMixin):
     """Adds update and delete hooks to the hooks registry.
 
     Inherits `SoftDeleteMixin` so the `deleted_at` column and DB-layer filter
@@ -1340,6 +1523,8 @@ def include_deleted(db: Session):
     """
 
     # Initialize hooks for update and delete
+    @classmethod
+    def _initialize_update_hooks(cls):
         """Initialize update and delete hooks for this class if not already present"""
         hooks = get_hooks_for_class(cls)
 
@@ -1360,6 +1545,21 @@ def include_deleted(db: Session):
         # Use String type for user ID references for consistency
         return Column(String, nullable=True)
 
+    @classmethod
+    @with_session
+    def update(
+        cls: Type[T],
+        requester_id: str,
+        model_registry,
+        new_properties=None,
+        return_type: Literal["db", "dict", "dto", "model"] = "dict",
+        filters=[],
+        fields=[],
+        override_dto: Optional[Type[DtoT]] | None = None,
+        check_permissions=True,
+        allow_nonexistent: bool = False,
+        **kwargs,
+    ) -> T:
         """Update a database entity with new properties.
 
         A request holding this row to the version its client read (If-Match)
@@ -1460,8 +1660,10 @@ def include_deleted(db: Session):
 
         # Apply updates
         for key, value in updated.items():
+            setattr(entity, key, value)
 
         # Commit changes
+        db.commit()
         db.refresh(entity)
 
         # Get hooks for after_update
@@ -1481,6 +1683,17 @@ def include_deleted(db: Session):
         # Use String type for user ID references for consistency
         return Column(String, nullable=True)
 
+    @classmethod
+    @with_session
+    def delete(
+        cls: Type[T],
+        requester_id: str,
+        model_registry,
+        filters=[],
+        check_permissions=True,
+        allow_nonexistent: bool = False,
+        **kwargs,
+    ):
         """
         Soft delete a database entity by setting deleted_at and deleted_by_user_id.
         Enforces permission checks and system flag restrictions, and the
@@ -1568,11 +1781,15 @@ def include_deleted(db: Session):
                     hook(entity, db)
 
         # Set deleted fields
+        if hasattr(cls, "deleted_at"):
             from datetime import datetime, timezone
 
+            setattr(entity, "deleted_at", datetime.now(timezone.utc))
         if hasattr(cls, "deleted_by_user_id"):
+            setattr(entity, "deleted_by_user_id", requester_id)
 
         # Commit changes
+        db.commit()
 
         # Get hooks for after_delete
         hooks = cls.hooks["delete"]["after"]  # type: ignore[attr-defined]
@@ -1581,6 +1798,7 @@ def include_deleted(db: Session):
                 hook(entity, db)
 
 
+class ParentMixin:
     @declared_attr
     def parent_id(cls):
         # Use String type for self-referential parent IDs for consistency
@@ -1601,16 +1819,19 @@ def include_deleted(db: Session):
         )
 
 
+class ImageMixin:
     @declared_attr
     def image_url(cls):
         return Column(String, nullable=True, comment="URL of the image")
 
 
+class _OptionalRefMixin:
     """Base class for optional reference mixins"""
 
     pass
 
 
+def create_reference_mixin(target_entity, **kwargs):
     """
     Create a reference mixin class for a target entity.
 
@@ -1662,6 +1883,7 @@ def include_deleted(db: Session):
     nullable = kwargs.get("nullable", False)
 
     # Define the main mixin class
+    class RefMixin:
         """Reference mixin for providing a relationship to another entity."""
 
         pass
@@ -1675,8 +1897,11 @@ def include_deleted(db: Session):
         return cls.create_foreign_key(target_entity, nullable=nullable, **fk_kwargs)
 
     # Set the foreign key attribute
+    setattr(RefMixin, f"{lower_name}_id", id_attr)
 
     # Create and set the relationship attribute
+    @declared_attr
+    def rel_attr(cls):
         # Use provided backref_name or generate one based on the class's tablename
         # This will be evaluated at class definition time
         if backref_name is not None:
@@ -1691,12 +1916,14 @@ def include_deleted(db: Session):
         )
 
     # Set the relationship attribute
+    setattr(RefMixin, lower_name, rel_attr)
 
     # Set proper class name and module
     RefMixin.__name__ = f"{entity_name}RefMixin"
     RefMixin.__module__ = "zephyrex.database.AbstractDatabaseEntity"
 
     # Define the optional variant
+    class OptionalRefMixin:
         """Optional reference mixin where the foreign key is nullable."""
 
         pass
@@ -1712,8 +1939,11 @@ def include_deleted(db: Session):
         )  # nullable=True by default
 
     # Set the foreign key attribute for the optional variant
+    setattr(OptionalRefMixin, f"{lower_name}_id", opt_id_attr)
 
     # Create the relationship for the optional variant
+    @declared_attr
+    def opt_rel_attr(cls):
         # Use provided backref_name or generate one based on the class's tablename
         if backref_name is not None:
             backref_val = backref_name
@@ -1727,6 +1957,7 @@ def include_deleted(db: Session):
         )
 
     # Set the relationship attribute for the optional variant
+    setattr(OptionalRefMixin, lower_name, opt_rel_attr)
 
     # Set proper class name and module
     OptionalRefMixin.__name__ = f"_{entity_name}Optional"

@@ -70,6 +70,7 @@ def trend(values: List[float]) -> Dict[str, Any]:
     }
 
 
+class AbstractWearableProvider(AbstractStaticProvider):
     """A wearable platform. Every ability takes the rotated instance."""
 
     name: ClassVar[str] = ""
@@ -111,6 +112,7 @@ def trend(values: List[float]) -> Dict[str, Any]:
         return ["wearable", "health", "activity"]
 
 
+class EXT_Wearable(AbstractStaticExtension):
     name: ClassVar[str] = "wearable"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

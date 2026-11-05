@@ -76,6 +76,7 @@ MAX_TITLE = 200
 MAX_TERM = 2000
 
 
+class AgreementModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["AgreementManager"]]
     title: str = Field(..., description="What the agreement is called")
     revisit_on: Optional[date] = Field(None, description="When to look at it again")
@@ -97,6 +98,7 @@ MAX_TERM = 2000
         title: Optional[StringSearchModel] = None
 
 
+class AgreementPartyModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["AgreementPartyManager"]]
     agreement_id: str = Field(..., description="The agreement")
     user_id: str = Field(..., description="The account that is party to it")
@@ -120,6 +122,7 @@ MAX_TERM = 2000
         agreement_id: Optional[StringSearchModel] = None
 
 
+class AgreementTermModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["AgreementTermManager"]]
     agreement_id: str = Field(..., description="The agreement")
     kind: str = Field("term", description="What kind of term; the app names the kinds")
@@ -270,6 +273,7 @@ def in_effect(version: int, parties: List[Any]) -> bool:
     return bool(parties) and all(p.confirmed_version == version for p in parties)
 
 
+def _entry(agreement: Any, parties: List[Any], terms: List[Any]) -> AgreementEntry:
     return AgreementEntry(
         id=agreement.id,
         title=agreement.title,
@@ -316,6 +320,7 @@ class AgreementTermManager(AbstractBLLManager, RouterMixin):
     routes_to_register: ClassVar[Optional[List[RouteType]]] = []
 
 
+class AgreementManager(AbstractBLLManager, RouterMixin):
     """``/v1/agreements``: what the parties to an agreement see and do."""
 
     _model = AgreementModel

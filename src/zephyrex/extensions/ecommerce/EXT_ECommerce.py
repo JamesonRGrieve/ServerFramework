@@ -200,6 +200,7 @@ def a_return(
     }
 
 
+class AbstractEcommerceProvider(AbstractStaticProvider):
     """A store platform; each instance is one store. Operations a
     platform's API lacks keep the refusing defaults below."""
 
@@ -335,6 +336,7 @@ def a_return(
         return ["ecommerce"]
 
 
+class EXT_ECommerce(AbstractStaticExtension):
     name: ClassVar[str] = "ecommerce"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

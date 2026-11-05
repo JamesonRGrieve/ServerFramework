@@ -60,6 +60,7 @@ TIMED_TRANSCRIPTION = "timed_transcription"
 IMAGE_SIZES = ("1024x1024", "1024x1536", "1536x1024", "auto")
 
 
+def _image_reference(url: Any) -> str:
     if not isinstance(url, str) or not url.startswith(
         ("https://", "http://", "data:image/")
     ):
@@ -69,6 +70,7 @@ IMAGE_SIZES = ("1024x1024", "1024x1536", "1536x1024", "auto")
     return url
 
 
+def checked_messages(messages: Any) -> list[dict[str, Any]]:
     """``messages`` in the neutral shape, or an invalid-input error."""
     if not isinstance(messages, list) or not messages:
         raise InvalidInputExternalError("messages is a non-empty list")
@@ -109,6 +111,7 @@ def _tool_call(call: Any) -> dict[str, str]:
     return {"id": call["id"], "name": call["name"], "arguments": call["arguments"]}
 
 
+def checked_tools(tools: Any) -> list[dict[str, Any]] | None:
     """``tools`` in the OpenAI function-tool shape, or None for no tools."""
     if not tools:
         return None
@@ -129,6 +132,7 @@ def _tool_call(call: Any) -> dict[str, str]:
     return list(tools)
 
 
+def checked_texts(texts: Any) -> list[str]:
     if isinstance(texts, str):
         texts = [texts]
     if (
@@ -172,6 +176,7 @@ def image_size(size: str) -> str:
     return size
 
 
+def flatten_messages(messages: list[dict[str, Any]]) -> str:
     """A conversation as one labelled prompt, tool calls included."""
     lines: list[str] = []
     for message in messages:
@@ -208,6 +213,7 @@ def arguments_text(arguments: Any) -> str:
     return arguments if isinstance(arguments, str) else json.dumps(arguments or {})
 
 
+class AbstractAIProvider(AbstractStaticProvider):
     """An AI model API; each instance is one account or server. A provider
     declares the abilities it offers (``chat``, ``embeddings``,
     ``image_generation``, ``transcription``, ``text_to_speech``) and
@@ -342,6 +348,7 @@ def record_usage(
             )
 
 
+class EXT_AI(AbstractStaticExtension):
     name: ClassVar[str] = "ai"
     version: ClassVar[str] = "3.0.0"
     description: ClassVar[str] = (

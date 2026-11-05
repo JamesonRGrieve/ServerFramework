@@ -105,6 +105,7 @@ class AbstractQueryDSLTranslator(ABC):
 # ---------------------------------------------------------------------------
 
 
+class StripeSearchTranslator(AbstractQueryDSLTranslator):
     """Stripe search query string: `field:value AND field2:"value 2"`.
 
     Stripe's search syntax supports limited operators; this translator
@@ -188,6 +189,7 @@ class MongoStyleTranslator(AbstractQueryDSLTranslator):
         "not_in": "$nin",
     }
 
+    def _translate(self, flat: Dict[str, Any]) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         for field_name, value in flat.items():
             pairs = _normalize_field(value)
@@ -235,6 +237,7 @@ def _validate_soql_identifier(field: str) -> str:
     return field
 
 
+class SOQLTranslator(AbstractQueryDSLTranslator):
     """Salesforce SOQL `WHERE` clause emitter (the `WHERE` keyword is
     not included; the caller composes it into a full query).
 
@@ -270,6 +273,8 @@ def _validate_soql_identifier(field: str) -> str:
                 clauses.append(self._format_clause(field_name, op, v))
         return " AND ".join(clauses)
 
+    @staticmethod
+    def _format_clause(field: str, op: str, value: Any) -> str:
         field = _validate_soql_identifier(field)
         if op == "exact":
             return f"{field} = {SOQLTranslator._render(value)}"
@@ -359,6 +364,7 @@ class GraphQLFilterTranslator(AbstractQueryDSLTranslator):
         "is_null": "_is_null",
     }
 
+    def _translate(self, flat: Dict[str, Any]) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         for field_name, value in flat.items():
             field_dict: Dict[str, Any] = {}
@@ -376,6 +382,7 @@ class GraphQLFilterTranslator(AbstractQueryDSLTranslator):
         return out
 
 
+class IMAPSearchTranslator(AbstractQueryDSLTranslator):
     """Canonical search model -> IMAP ``SEARCH`` criteria (RFC 3501 §6.4.4).
 
     Maps message fields to their IMAP keys (``FROM``/``TO``/``SUBJECT``/

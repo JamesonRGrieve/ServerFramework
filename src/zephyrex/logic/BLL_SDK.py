@@ -29,6 +29,7 @@ _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 _ZIP_FILE_MODE = 0o644 << 16
 
 
+class SDKArtifact(BaseModel):
     language: str
     extension: str
     version: str
@@ -37,9 +38,11 @@ _ZIP_FILE_MODE = 0o644 << 16
     sha256: str
 
 
+class SDKList(BaseModel):
     sdks: List[SDKArtifact]
 
 
+def sdk_archive(directory: Path) -> Optional[bytes]:
     """The zip of every regular file under ``directory``, or None when there
     is nothing generated there."""
     if not directory.is_dir():
@@ -67,6 +70,7 @@ def archive_filename(language: str) -> str:
     return f"zephyrex-sdk-{language}.zip"
 
 
+class SDKManager(AbstractBLLManager, RouterMixin):
     """Custom routes only: the SDKs live on disk, not in a table."""
 
     prefix: ClassVar[Optional[str]] = "/v1/sdk"
@@ -77,6 +81,8 @@ def archive_filename(language: str) -> str:
     def _targets(self) -> dict[str, SDKTarget]:
         return sdk_targets_for(self.model_registry.loaded_extension_names())
 
+    @staticmethod
+    def _archive(target: SDKTarget) -> Optional[bytes]:
         directory = env(target.output_dir_env)
         return sdk_archive(Path(directory)) if directory else None
 

@@ -41,6 +41,7 @@ VALKEY_SCHEMES = ("redis", "rediss")
 DEFAULT_VALKEY_PORT = 6379
 
 
+def _off_the_server_network(url: str) -> str:
     """``url`` once the SSRF guard lets its host and port through: a
     network Valkey URL (``redis://`` or ``rediss://``) to a host outside the
     server's own and private networks. Anything else (a unix socket, another
@@ -78,6 +79,7 @@ class ValkeyConnectionStub:
         self.api_key = api_key
 
 
+class PRV_Valkey(AbstractDatabaseMemoryProvider):
     """Concrete Valkey/Redis-protocol provider.
 
     Connections are managed through a per-instance pool. The pool is
@@ -95,6 +97,8 @@ class ValkeyConnectionStub:
 
     _connections: Dict[str, Any] = {}
 
+    @classmethod
+    def _resolve_url(cls, instance: Any) -> str:
         """Pick the connection URL from the instance's `api_key` (the
         canonical credentials slot per `ProviderInstanceModel`) or, for
         the operator's instances only (``reads_environment``), from the
@@ -118,6 +122,8 @@ class ValkeyConnectionStub:
             url = env("DATABASE_MEMORY_URL") or env("VALKEY_URI") or env("VALKEY_URL")
         return str(url or LOCAL_URL)
 
+    @classmethod
+    def connect(cls, instance: Any) -> Any:
         """Return a connected async Valkey client for ``instance``.
 
         Lazy-imports `redis.asyncio` so the extension loads cleanly when
@@ -177,6 +183,7 @@ class ValkeyConnectionStub:
         )
 
 
+class _ValkeyStreamsTransport:
     """Concrete `BrokerTransport` backed by `PRV_Valkey`.
 
     Implements the same contract as `zephyrex.logic.EventBus.BrokerTransport`
@@ -206,14 +213,19 @@ class ValkeyConnectionStub:
         client = await self._client()
         await client.xadd(topic, {"data": payload})
 
+    async def subscribe(
+        self, topic: str, handler: Callable[[bytes], Awaitable[None]]
+    ) -> None:
         if self._closed:
             raise RuntimeError("Valkey streams transport is closed")
         client = await self._client()
         # Idempotent group create — `BUSYGROUP` is fine.
         try:
             await client.xgroup_create(topic, self._group, id="0", mkstream=True)
+        except Exception:  # noqa: BLE001
             pass
 
+        async def _consume() -> None:
             consumer_name = f"consumer-{id(handler)}"
             try:
                 while not self._closed:
@@ -237,6 +249,7 @@ class ValkeyConnectionStub:
                                 continue
                             try:
                                 await handler(payload)
+                            except Exception as exc:  # noqa: BLE001
                                 _logger.error(
                                     "Valkey streams handler error on %s: %s",
                                     topic,
@@ -244,6 +257,7 @@ class ValkeyConnectionStub:
                                 )
                             try:
                                 await client.xack(topic, self._group, msg_id)
+                            except Exception:  # noqa: BLE001
                                 pass
             except asyncio.CancelledError:
                 raise

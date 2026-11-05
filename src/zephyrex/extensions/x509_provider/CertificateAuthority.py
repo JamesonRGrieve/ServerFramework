@@ -79,10 +79,12 @@ _REASON_FLAGS = {
 }
 
 
+class CertificateRefused(ValueError):
     """A CSR, key or CA the policy refuses. The text says why and is safe
     to show the requester (it never carries key material)."""
 
 
+def _pem_bytes(pem: str, what: str) -> bytes:
     if not pem or not pem.strip():
         raise CertificateRefused(f"{what} is empty")
     if len(pem) > MAX_PEM_CHARS:
@@ -93,6 +95,7 @@ _REASON_FLAGS = {
         raise CertificateRefused(f"{what} is not PEM") from None
 
 
+def checked_public_key(key: object, what: str = "the key") -> PublicKey:
     """``key`` if the policy accepts it (see the module text), else
     :class:`CertificateRefused`."""
     if isinstance(key, rsa.RSAPublicKey):
@@ -116,6 +119,7 @@ _REASON_FLAGS = {
     raise CertificateRefused(f"{what} is not RSA, ECDSA (P-256/P-384) or Ed25519")
 
 
+def checked_csr(pem: str) -> x509.CertificateSigningRequest:
     """The CSR in ``pem`` if its signature verifies (the requester holds
     the private key), it is not signed with a weak hash, and its key meets
     the policy. Its subject and extensions are ignored, never refused."""
@@ -147,6 +151,7 @@ _REASON_FLAGS = {
     return csr
 
 
+def _signing_hash(key: PrivateKey) -> Union[hashes.SHA256, hashes.SHA384]:
     """The hash a signature by ``key`` uses."""
     if (
         isinstance(key, ec.EllipticCurvePrivateKey)
@@ -171,6 +176,7 @@ def certificate_pem(certificate: x509.Certificate) -> str:
     return certificate.public_bytes(serialization.Encoding.PEM).decode("ascii")
 
 
+def load_certificate(pem: str) -> x509.Certificate:
     try:
         return x509.load_pem_x509_certificate(_pem_bytes(pem, "the certificate"))
     except ValueError:
@@ -179,6 +185,7 @@ def certificate_pem(certificate: x509.Certificate) -> str:
         ) from None
 
 
+def generate_key(key_type: KeyType) -> PrivateKey:
     if key_type == "ec-p256":
         return ec.generate_private_key(ec.SECP256R1())
     if key_type == "ec-p384":
@@ -194,12 +201,16 @@ def certificate_pem(certificate: x509.Certificate) -> str:
     raise CertificateRefused(f"key_type is one of {', '.join(KEY_TYPES)}")
 
 
+@dataclass(frozen=True)
+class Identity:
     """Who a certificate is issued to, as the server knows them."""
 
     user_id: str
     username: Optional[str] = None
     email: Optional[str] = None
 
+    @property
+    def common_name(self) -> str:
         for candidate in (self.username, self.email):
             if candidate and len(candidate) <= MAX_COMMON_NAME:
                 return candidate
@@ -213,6 +224,7 @@ def certificate_pem(certificate: x509.Certificate) -> str:
             ]
         )
 
+    def alternative_names(self) -> List[x509.GeneralName]:
         names: List[x509.GeneralName] = []
         if self.email and self.email.isascii() and "@" in self.email:
             names.append(x509.RFC822Name(self.email))
@@ -223,6 +235,8 @@ def certificate_pem(certificate: x509.Certificate) -> str:
         return names
 
 
+@dataclass(frozen=True)
+class Publication:
     """Where relying parties fetch this CA's CRL and certificate (embedded
     in what it issues); None leaves the extension out."""
 
@@ -230,11 +244,15 @@ def certificate_pem(certificate: x509.Certificate) -> str:
     ca_issuers_url: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class Revocation:
     serial_number: int
     revoked_at: datetime
     reason: str
 
 
+@dataclass(frozen=True)
+class Authority:
     """A CA: its certificate and the private key it signs with."""
 
     certificate: x509.Certificate
@@ -248,6 +266,7 @@ def certificate_pem(certificate: x509.Certificate) -> str:
     def certificate_pem(self) -> str:
         return certificate_pem(self.certificate)
 
+    def key_pem(self) -> str:
         """The private key as unencrypted PKCS#8 PEM: only ever handed to
         the framework's secret storage, which encrypts it at rest."""
         return self.key.private_bytes(
@@ -256,6 +275,13 @@ def certificate_pem(certificate: x509.Certificate) -> str:
             serialization.NoEncryption(),
         ).decode("ascii")
 
+    @classmethod
+    def loaded(
+        cls,
+        certificate_pem_text: str,
+        key_pem_text: str,
+        passphrase: Optional[str] = None,
+    ) -> "Authority":
         """The CA in the PEMs given, checked: the certificate is a CA's
         (basicConstraints CA:true, keyUsage keyCertSign and cRLSign), the key
         meets the policy and is the certificate's."""
@@ -302,6 +328,10 @@ def certificate_pem(certificate: x509.Certificate) -> str:
             )
         return cls(certificate=certificate, key=key)
 
+    @classmethod
+    def generated(
+        cls, common_name: str, key_type: KeyType, lifetime: timedelta, now: datetime
+    ) -> "Authority":
         """A new self-signed CA that issues end-entity certificates only."""
         if (
             not common_name
@@ -344,6 +374,7 @@ def certificate_pem(certificate: x509.Certificate) -> str:
         )
         return cls(certificate=certificate, key=key)
 
+    def _authority_key_identifier(self) -> x509.AuthorityKeyIdentifier:
         try:
             ski = self.certificate.extensions.get_extension_for_class(
                 x509.SubjectKeyIdentifier
@@ -354,6 +385,14 @@ def certificate_pem(certificate: x509.Certificate) -> str:
                 self.key.public_key()
             )
 
+    def issue(
+        self,
+        csr_key: object,
+        identity: Identity,
+        lifetime: timedelta,
+        now: datetime,
+        publication: Publication,
+    ) -> x509.Certificate:
         """A TLS client certificate binding ``csr_key`` (a CSR's public
         key) to ``identity``."""
         public_key = checked_public_key(csr_key, "the CSR's key")
@@ -433,6 +472,9 @@ def certificate_pem(certificate: x509.Certificate) -> str:
             )
         return builder.sign(self.key, _signing_hash(self.key))
 
+    def revocation_list(
+        self, revoked: Iterable[Revocation], now: datetime, lifetime: timedelta
+    ) -> x509.CertificateRevocationList:
         """A CRL listing ``revoked``, valid for ``lifetime``. Its number
         is the issue time in milliseconds, so it only ever increases."""
         builder = (

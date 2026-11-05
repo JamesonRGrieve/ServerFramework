@@ -99,9 +99,12 @@ WRITES = frozenset({"modifyRequest", "addRequest", "delRequest", "modDNRequest"}
 UNANSWERED = frozenset({"unbindRequest", "abandonRequest"})
 
 
+class ProtocolViolation(Exception):
     """The peer sent something that is not an LDAP message."""
 
 
+@dataclass(frozen=True)
+class ListenerConfig:
     """Where to listen: ``starttls_port`` (plain LDAP, StartTLS required)
     and ``ldaps_port`` on ``host``; either may be None (off) and 0 picks a
     free port. ``tls`` is the server's TLS context."""
@@ -113,6 +116,7 @@ UNANSWERED = frozenset({"unbindRequest", "abandonRequest"})
     max_connections: int
 
 
+def server_tls_context(cert_path: str, key_path: str) -> ssl.SSLContext:
     """A server TLS context (TLS 1.2 or later) for the certificate chain at
     ``cert_path`` and its key at ``key_path``."""
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -144,6 +148,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
     return encoded
 
 
+def _entry(dn: str, attributes: List[Tuple[str, Tuple[str, ...]]]) -> Any:
     entry = SearchResultEntry()
     entry["object"] = LDAPDN(dn)
     found = PartialAttributeList()
@@ -162,6 +167,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
     return entry
 
 
+class Connection:
     """One client connection: its messages, in order, until it unbinds,
     idles out, violates the protocol or the server stops."""
 
@@ -185,6 +191,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
         self.writer.write(data)
         await self.writer.drain()
 
+    async def disconnect(self, code: ResultCode, message: str) -> None:
         """Send a Notice of Disconnection (RFC 4511 4.4.1) and close."""
         notice = _result(ExtendedResponse, code, message)
         notice["responseName"] = ResponseName(NOTICE_OF_DISCONNECTION_OID)
@@ -193,6 +200,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
         except (ConnectionError, OSError):
             pass
 
+    async def read_message(self) -> Optional[Any]:
         """The next message, or None when the peer has gone."""
         try:
             header = await asyncio.wait_for(
@@ -225,6 +233,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             raise ProtocolViolation("trailing bytes after an LDAP message")
         return message
 
+    async def run(self) -> None:
         try:
             while True:
                 message = await self.read_message()
@@ -246,6 +255,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             return False
         return any(bool(control["criticality"]) for control in controls)
 
+    async def handle(self, message: Any) -> bool:
         """Answer ``message``; False when the connection is to close."""
         message_id = int(message["messageID"])
         op = message["protocolOp"]
@@ -296,6 +306,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             )
         except (ProtocolViolation, ConnectionError, OSError):
             raise
+        except Exception:
             logger.exception("ldap_provider: %s failed", name)
             await self.send(
                 _encode(
@@ -308,6 +319,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             )
         return True
 
+    async def bind(self, message_id: int, request: Any) -> None:
         self.principal = None
         if int(request["version"]) != 3:
             raise Refused(ResultCode.PROTOCOL_ERROR, "only LDAPv3 is served")
@@ -327,6 +339,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             )
         )
 
+    async def search(self, message_id: int, request: Any) -> None:
         try:
             node = parse_filter(request["filter"])
         except FilterMalformed as exc:
@@ -359,6 +372,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             )
         )
 
+    async def compare(self, message_id: int, request: Any) -> None:
         ava = request["ava"]
         code = await asyncio.to_thread(
             self.directory.compare,
@@ -371,6 +385,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             _encode(message_id, "compareResponse", _result(CompareResponse, code))
         )
 
+    async def extended(self, message_id: int, request: Any) -> bool:
         oid = _text(request["requestName"])
         if oid == STARTTLS_OID:
             if self.encrypted:
@@ -402,6 +417,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
         )
 
 
+class LDAPServer:
     """The listeners and their connections, on the running event loop."""
 
     def __init__(self, directory: LDAPDirectory, config: ListenerConfig) -> None:
@@ -411,6 +427,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
         self._connections: Set["asyncio.Task[Any]"] = set()
         self.ports: dict[str, int] = {}
 
+    async def start(self) -> None:
         listeners = (
             ("starttls", self.config.starttls_port, None),
             ("ldaps", self.config.ldaps_port, self.config.tls),
@@ -438,6 +455,12 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             self._servers.append(server)
             self.ports[label] = int(server.sockets[0].getsockname()[1])
 
+    async def _serve(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        encrypted: bool,
+    ) -> None:
         connection = Connection(self, reader, writer, encrypted)
         task = asyncio.current_task()
         try:
@@ -454,17 +477,20 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
                 self._connections.discard(task)
             writer.close()
 
+    async def close(self) -> None:
         """Stop listening, end every connection and wait for them to go."""
         for server in self._servers:
             server.close()
         connections = list(self._connections)
         for task in connections:
             task.cancel()
+        await asyncio.gather(*connections, return_exceptions=True)
         for server in self._servers:
             await server.wait_closed()
         self._servers.clear()
 
 
+class LDAPServerThread:
     """An :class:`LDAPServer` on an event loop of its own, in a thread."""
 
     def __init__(self, directory: LDAPDirectory, config: ListenerConfig) -> None:
@@ -481,6 +507,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
     def ports(self) -> dict[str, int]:
         return self.server.ports
 
+    def start(self) -> None:
         """Listen; returns once listening, raising what stopped it if not."""
         self._thread.start()
         if not self._ready.wait(STARTUP_TIMEOUT_SECONDS):
@@ -498,9 +525,11 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
             loop.run_until_complete(loop.shutdown_default_executor())
             loop.close()
 
+    async def _serve(self) -> None:
         self._stopping = asyncio.Event()
         try:
             await self.server.start()
+        except Exception as exc:
             self._error = exc
             self._ready.set()
             await self.server.close()
@@ -509,6 +538,7 @@ def _encode(message_id: int, op_name: str, op_value: Any) -> bytes:
         await self._stopping.wait()
         await self.server.close()
 
+    def stop(self) -> None:
         """Stop listening, close every connection and end the thread."""
         loop, stopping = self._loop, self._stopping
         if loop is not None and stopping is not None and not loop.is_closed():

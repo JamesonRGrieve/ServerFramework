@@ -26,6 +26,7 @@ def _operation_id_to_tool_name(op_id: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", op_id)[:64]
 
 
+def _build_tools_from_openapi(schema: dict) -> list[types.Tool]:
     tools = []
     paths = schema.get("paths", {})
     for path, methods in paths.items():
@@ -84,6 +85,13 @@ def _operation_id_to_tool_name(op_id: str) -> str:
     return tools
 
 
+async def _call_tool_via_app(
+    app: FastAPI,
+    name: str,
+    arguments: dict[str, Any] | None,
+    tools: list[types.Tool],
+    forwarded_headers: dict[str, str],
+) -> types.CallToolResult:
     tool = next((t for t in tools if t.name == name), None)
     if not tool:
         return types.CallToolResult(
@@ -136,6 +144,7 @@ def _operation_id_to_tool_name(op_id: str) -> str:
     )
 
 
+def mount_mcp(app: FastAPI, *, name: str, mount_path: str = "/mcp") -> Server:
     """Build an MCP 2.0 server from *app*'s OpenAPI schema and mount it."""
 
     schema = app.openapi()
@@ -149,6 +158,7 @@ def _operation_id_to_tool_name(op_id: str) -> str:
     async def on_list_tools(ctx, params):
         return types.ListToolsResult(tools=tools)
 
+    async def on_call_tool(ctx, params):
         forwarded = {}
         http_request = getattr(ctx, "request", None)
         if http_request is not None:

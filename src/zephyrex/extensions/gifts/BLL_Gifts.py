@@ -91,6 +91,7 @@ def amazon_domain() -> str:
     return domain
 
 
+def tagged(url: str, tag: Optional[str]) -> str:
     """``url`` carrying the affiliate ``tag`` when it is an Amazon link
     (replacing any tag already there); anything else is left as it is."""
     parts = urlsplit(url)
@@ -113,6 +114,7 @@ def _tag() -> Optional[str]:
     return str(env("AMAZON_ASSOCIATE_TAG") or "").strip() or None
 
 
+class GiftModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     Manager: ClassVar[Type["GiftManager"]]
     for_name: str = Field(..., description="Who it is for")
     for_ref: Optional[str] = Field(

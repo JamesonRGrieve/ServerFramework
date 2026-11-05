@@ -103,6 +103,7 @@ def job(
     }
 
 
+class AbstractPrinterProvider(AbstractStaticProvider):
     """A printer's control API; each instance is one printer."""
 
     name: ClassVar[str] = ""
@@ -203,6 +204,7 @@ def job(
         return ["3d_printing"]
 
 
+class EXT_FDMSLAPrinting(AbstractStaticExtension):
     name: ClassVar[str] = "fdm_sla_printing"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

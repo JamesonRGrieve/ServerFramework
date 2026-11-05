@@ -27,6 +27,7 @@ def login(user: Optional[Mapping[str, Any]]) -> str:
     return str((user or {}).get("login", ""))
 
 
+class GitHubStyleProvider(AbstractSourceProvider):
     # The query parameter for a page's size.
     page_size_parameter: ClassVar[str] = "per_page"
 

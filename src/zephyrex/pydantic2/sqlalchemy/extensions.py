@@ -18,6 +18,7 @@ _EXTENSION_REGISTRY_COMPAT = {}  # type: ignore[var-annotated]
 _MODEL_SNAPSHOTS: Dict[str, dict] = {}
 
 
+class RemoveField:
     """
     Marker class to indicate a field should be removed from the target model.
 
@@ -31,6 +32,9 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
     pass
 
 
+def extension_model(
+    target_model: Type[BaseModel],
+) -> Callable[[Type[BaseModel]], Type[BaseModel]]:
     """
     Decorator to mark a model as an extension of another model.
     The extension will be applied by ModelRegistry when binding models.
@@ -51,6 +55,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
             some_extension_field: Optional[str] = Field(None, description="Example extension field")
     """
 
+    def decorator(extension_class: Type[BaseModel]) -> Type[BaseModel]:
         # Store metadata for registry system - NO GLOBAL STATE
         extension_class._extension_target = target_model  # type: ignore[attr-defined]
         extension_class._is_extension_model = True  # type: ignore[attr-defined]
@@ -103,6 +108,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
                     source_file=source_file,
                     source_line=source_line,
                 )
+        except Exception as exc:
             # Registration is observability — never block decoration.
             logger.debug(
                 f"register_extension_field failed for "
@@ -114,6 +120,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
     return decorator
 
 
+def _undo_model_extension(target_model: Type[BaseModel]) -> None:
     """Reverse every extension applied to ``target_model`` in place.
 
     The extension system mutates ``target_model.model_fields`` and
@@ -137,6 +144,9 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
     target_model._applied_extension_fields = set()  # type: ignore[attr-defined]
 
 
+def _apply_model_extension(
+    target_model: Type[BaseModel], extension_class: Type[BaseModel]
+) -> None:
     """
     Apply fields and attributes from extension_class to target_model.
 
@@ -261,6 +271,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
         # Copy the attribute to the target model if it's not already there
         # This includes descriptors like ExternalNavigationProperty
         if not hasattr(target_model, attr_name):
+            setattr(target_model, attr_name, attr_value)
             added_attributes.append(attr_name)
 
     # CRITICAL: Properly integrate extension fields into Pydantic's model structure
@@ -280,8 +291,10 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
                         # Set the field as a class attribute with the default value
                         default_value = getattr(field_info, "default", None)
                         if default_value is not None:
+                            setattr(target_model, field_name, default_value)
                         else:
                             # For Optional fields, default to None
+                            setattr(target_model, field_name, None)
 
             # Force Pydantic to rebuild the model with the new fields
             target_model.model_rebuild(force=True)
@@ -304,6 +317,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
                     f"Pydantic model rebuild incomplete for {target_model.__name__}"
                 )
 
+        except Exception as e:
             logger.warning(
                 f"Failed to rebuild Pydantic model {target_model.__name__}: {e}"
             )
@@ -316,8 +330,10 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
                         # Set a property or default value to ensure field access works
                         if not hasattr(target_model, field_name):
                             default_value = getattr(field_info, "default", None)
+                            setattr(target_model, field_name, default_value)
                             logger.debug(f"Set fallback field access for {field_name}")
 
+            except Exception as fallback_e:
                 logger.error(
                     f"Fallback model extension failed for {target_model.__name__}: {fallback_e}"
                 )
@@ -334,6 +350,9 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
         logger.debug(f"Added attributes to {target_model.__name__}: {added_attributes}")
 
 
+def _apply_nested_model_extensions(
+    target_model: Type[BaseModel], extension_class: Type[BaseModel]
+) -> None:
     from pydantic import BaseModel
 
     from zephyrex.lib.Logging import logger
@@ -345,6 +364,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
             extension_nested = getattr(extension_class, nested_name)
 
             if not hasattr(target_model, nested_name):
+                setattr(target_model, nested_name, type(nested_name, (BaseModel,), {}))
 
             target_nested = getattr(target_model, nested_name)
 
@@ -386,6 +406,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
                 target_nested.model_rebuild(force=True)
 
 
+def get_applied_extensions() -> Dict[str, List[str]]:
     """
     Get a dictionary of all applied extensions.
 
@@ -405,6 +426,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
     return _EXTENSION_REGISTRY_COMPAT.copy()
 
 
+def reset_extension_system() -> None:
     """
     Reset the extension system for testing purposes.
 
@@ -417,6 +439,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
     """
     from zephyrex.lib.Logging import logger
 
+    global _EXTENSION_REGISTRY_COMPAT, _MODEL_SNAPSHOTS
 
     # Restore mutated model classes to their pre-extension state
     for snap_key, snap in _MODEL_SNAPSHOTS.items():
@@ -434,6 +457,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
                         pass
         try:
             model_cls.model_rebuild(force=True)
+        except Exception:
             pass
         logger.debug(f"Restored model {snap_key} to pre-extension state")
 
@@ -441,6 +465,7 @@ _MODEL_SNAPSHOTS: Dict[str, dict] = {}
     _EXTENSION_REGISTRY_COMPAT.clear()
 
 
+def prepare_test_registry() -> None:
     """Clear registry caches and extension model mutations before creating a test server.
 
     Every test server fixture must call this before ``instance()`` to prevent

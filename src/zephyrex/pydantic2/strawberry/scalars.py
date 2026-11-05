@@ -7,6 +7,7 @@ import strawberry
 from zephyrex.lib.AbstractPydantic2 import TypeIntrospector
 
 
+def enum_serializer(value: Any) -> str:
     """Serialize enum values to their string representation"""
     if hasattr(value, "name"):
         return value.name  # type: ignore[no-any-return]

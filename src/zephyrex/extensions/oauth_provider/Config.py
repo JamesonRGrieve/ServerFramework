@@ -76,6 +76,7 @@ def key_retirement_seconds() -> int:
     return _seconds(KEY_RETIREMENT)
 
 
+def issuer() -> str:
     """The issuer identifier: this server's public HTTPS base URL, with no
     query, fragment or trailing slash (RFC 8414 §2). 503 when unset, as the
     server cannot name itself in a token without it."""
@@ -91,6 +92,7 @@ def key_retirement_seconds() -> int:
     return value.rstrip("/")
 
 
+def consent_url() -> str:
     """The page (of the UI) where a signed-in user approves or denies an
     authorization request."""
     value = env(CONSENT_URL).strip()
@@ -99,6 +101,7 @@ def key_retirement_seconds() -> int:
     return value
 
 
+def signing_algorithms() -> Tuple[str, ...]:
     """The algorithms ID tokens are signed with; RS256 is always among them
     (OpenID Connect Discovery §3)."""
     configured = tuple(

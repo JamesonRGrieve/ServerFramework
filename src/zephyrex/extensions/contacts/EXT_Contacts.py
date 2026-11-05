@@ -67,6 +67,7 @@ def contact_fields(
     return {key: value for key, value in fields.items() if value is not None}
 
 
+class AbstractContactsProvider(AbstractStaticProvider):
     """An address book service; each instance is one account (one book)."""
 
     name: ClassVar[str] = ""
@@ -161,6 +162,7 @@ def contact_fields(
         return ["contacts"]
 
 
+class EXT_Contacts(AbstractStaticExtension):
     name: ClassVar[str] = "contacts"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

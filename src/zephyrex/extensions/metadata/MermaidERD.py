@@ -38,6 +38,7 @@ def _comment(text: Any) -> str:
     return " ".join(str(text).replace('"', "'").split())
 
 
+def build_mermaid_erd(model_registry: Any) -> str:
     """Return a Mermaid ``erDiagram`` for every entity in the registry.
 
     Returns a diagram with no entities (``"erDiagram\\n"``) if the registry has

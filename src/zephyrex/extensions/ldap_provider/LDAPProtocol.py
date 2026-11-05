@@ -59,6 +59,7 @@ def negated_filter() -> univ.Sequence:
     ).subtype(implicitTag=context(2))
 
 
+class SearchRequest(univ.Sequence):
     tagSet = univ.Sequence.tagSet.tagImplicitly(
         tag.Tag(tag.tagClassApplication, tag.tagFormatConstructed, 3)
     )
@@ -74,6 +75,7 @@ def negated_filter() -> univ.Sequence:
     )
 
 
+class RequestOp(univ.Choice):
     """The protocol operations a client sends."""
 
     componentType = namedtype.NamedTypes(
@@ -90,6 +92,7 @@ def negated_filter() -> univ.Sequence:
     )
 
 
+class RequestMessage(univ.Sequence):
     """An LDAPMessage as a client sends it."""
 
     componentType = namedtype.NamedTypes(

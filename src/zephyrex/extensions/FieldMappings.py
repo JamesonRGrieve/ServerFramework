@@ -50,6 +50,7 @@ class FieldMapping(ABC):
 # ---------------------------------------------------------------------------
 
 
+class Rename(FieldMapping):
     """Rename a single field from `internal` -> `external`."""
 
     def __init__(self, internal: str, external: str) -> None:
@@ -65,6 +66,7 @@ class FieldMapping(ABC):
             internal[self.internal] = external[self.external]
 
 
+class Compose(FieldMapping):
     """Combine multiple internal fields into one external field.
 
     `fn(values_in_order_of_externals)` produces the external value;
@@ -100,6 +102,7 @@ class FieldMapping(ABC):
                 internal[name] = value
 
 
+class Decompose(FieldMapping):
     """Split a single external field into multiple internal fields."""
 
     def __init__(
@@ -126,6 +129,7 @@ class FieldMapping(ABC):
                 internal[name] = value
 
 
+class DotPath(FieldMapping):
     """Map a flat internal field to a dotted external path
     (e.g., `address.line1`).
     """
@@ -135,6 +139,7 @@ class FieldMapping(ABC):
         self.external_path = external_path
         self._segments = external_path.split(".")
 
+    def to_external(self, internal: Dict[str, Any], external: Dict[str, Any]) -> None:
         if self.internal not in internal:
             return
         cursor = external
@@ -156,6 +161,7 @@ class FieldMapping(ABC):
         internal[self.internal] = cursor
 
 
+class UnitConvert(FieldMapping):
     """Multiply / divide by a constant factor when crossing the boundary.
 
     `to_external`: external = internal * factor.
@@ -216,6 +222,7 @@ class CentsToDecimal(UnitConvert):
                 external[self.external] = int(Decimal(str(value)) * Decimal("100"))
 
 
+class EnumRemap(FieldMapping):
     """Bidirectional enum / vocabulary translation.
 
     `mapping` is the internal -> external direction; the inverse is
@@ -248,6 +255,7 @@ class CentsToDecimal(UnitConvert):
             internal[self.internal] = self.inverse.get(v, v)
 
 
+class TimestampConvert(FieldMapping):
     """Convert between a `datetime` (internal) and a string (external).
 
     `format` is an `strftime` / `strptime` format string. The empty
@@ -287,6 +295,7 @@ class CentsToDecimal(UnitConvert):
                 internal[self.internal] = v
 
 
+class Custom(FieldMapping):
     """Escape hatch for everything not expressible by the built-ins.
 
     Both `fn_to(internal_dict) -> external_partial_dict` and
@@ -401,6 +410,7 @@ def apply_from_external(
     return internal
 
 
+def _internal_fields_consumed(mapping: FieldMapping) -> List[str]:
     """Return the internal field names a mapping reads in `to_external`.
 
     Used by `apply_to_external` to decide which fields are pass-through
@@ -426,6 +436,7 @@ def apply_from_external(
     return []
 
 
+def _external_fields_consumed(mapping: FieldMapping) -> List[str]:
     """Counterpart of `_internal_fields_consumed` for the inbound pipeline."""
 
     if isinstance(mapping, Rename):

@@ -51,6 +51,7 @@ INBOUND_RATE_LIMIT = "300/min"
 MAX_RECORDED_ERROR_CHARACTERS = 500
 
 
+class EmailInboundMailboxModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """How far the IMAP poller has read one mailbox of one provider
     instance. UIDs and UIDVALIDITY are IMAP's 32-bit unsigned numbers, kept
     as text: they overflow a signed INTEGER column."""
@@ -89,6 +90,7 @@ MAX_RECORDED_ERROR_CHARACTERS = 500
         mailbox: Optional[StringSearchModel] = None
 
 
+class EmailInboundMailboxManager(AbstractBLLManager):
     """Mailbox cursors, for the poller (ROOT); anyone else is refused."""
 
     _model = EmailInboundMailboxModel

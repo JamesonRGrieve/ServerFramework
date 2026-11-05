@@ -79,6 +79,10 @@ _PRECONDITION_CODES: Dict[int, str] = {
 }
 
 
+@contextmanager
+def _mutation_precondition(
+    manager: Any, entity_id: str, if_match: Optional[str]
+) -> Iterator[None]:
     """A mutation's ``ifMatch`` holds its write as a REST If-Match does. A
     refusal is a GraphQL error whose extensions carry the REST body
     (``current`` for a stale one) with its ``code`` and HTTP ``status``."""
@@ -103,6 +107,9 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
     )
 
 
+def _input_values(
+    model: Type[BaseModel], given: Any, *, nested: bool
+) -> Dict[str, Any]:
     """A Strawberry input as ``model``'s fields: each GraphQL name
     (``apiKey``) back to the model's own (``api_key``), a nested input as its
     own model's fields. A field left out (None) is not given when it may be
@@ -117,6 +124,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
     return values
 
 
+def _input_value(annotation: Any, value: Any) -> Any:
     declared = unwrap_optional(annotation)
     if isinstance(value, list):
         args = get_args(declared) if get_origin(declared) is list else ()
@@ -130,6 +138,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
     return value
 
 
+class SchemaModelSource(Protocol):
     """What schema generation reads from a model registry."""
 
     @property
@@ -143,8 +152,14 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
     def action_managers(self) -> List[type]: ...
 
 
+class GraphQLManager(ErrorHandlerMixin):
     """Main GraphQL schema manager that generates schemas from ModelRegistry"""
 
+    def __init__(
+        self,
+        model_registry: SchemaModelSource,
+        contribution_registry: Optional[GraphQLContributionRegistry] = None,
+    ) -> None:
         """Initialize SchemaManager with ModelRegistry.
 
         ``contribution_registry`` defaults to the process-wide singleton from
@@ -167,11 +182,13 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         self._contributions.subscribe_rebuild(self._on_contributions_changed)
 
         # Legacy generator references for backward compatibility with tests
+        class MockGenerator:
             def _convert_filter_to_search_params(
                 self, filter_obj: Optional[Any]
             ) -> Dict[str, Any]:
                 return {} if filter_obj is None else {}
 
+            def _extract_nested_data(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:
                 if not data_dict:
                     return {}
                 # Extract nested fields (fields with dict/list values)
@@ -227,6 +244,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         self._types_module = ModuleType(f"{__name__}._generated_{id(self)}")
         sys.modules[self._types_module.__name__] = self._types_module
 
+    def create_schema(self) -> strawberry.Schema:
         """Create complete GraphQL schema from ModelRegistry"""
         # Generate all types, queries, mutations, and subscriptions
         self._generate_all_components()
@@ -252,6 +270,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 from strawberry.extensions import DisableIntrospection
 
                 schema_extensions.append(DisableIntrospection())
+            except Exception:
                 pass
 
         # Always enforce a query-depth limit. An attacker who nests 30+ levels
@@ -266,6 +285,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             except (TypeError, ValueError):
                 max_depth = 10
             schema_extensions.append(QueryDepthLimiter(max_depth=max_depth))
+        except Exception as e:
             logger.warning(f"Could not install QueryDepthLimiter: {e}")
 
         schema = strawberry.Schema(
@@ -280,6 +300,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
     # -- Item 46 ------------------------------------------------------------
 
+    def _apply_contributions(self) -> None:
         """Merge extension-contributed roots/types/directives into the schema.
 
         Walks the contribution registry, applies the three-stage collision
@@ -330,6 +351,9 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             )
         return strawberry.field(resolver, description=contribution.description)
 
+    def _with_strawberry_types(
+        self, resolver: Callable[..., Any]
+    ) -> Callable[..., Any]:
         """Let a contributed resolver declare plain Pydantic models.
 
         Contributions such as ``@custom_route`` methods type their ``input``
@@ -373,6 +397,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         )
         annotations["return"] = return_type
 
+        async def typed_resolver(info: Info, **kwargs: Any) -> Any:
             if input_model is not None and kwargs.get("input") is not None:
                 kwargs["input"] = input_model.model_validate(
                     _input_values(input_model, kwargs["input"], nested=False)
@@ -392,6 +417,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         )
         return typed_resolver
 
+    def _on_contributions_changed(self) -> None:
         """Subscriber callback for registry mutations.
 
         Logs the diff. The actual schema rebuild is performed lazily on the
@@ -409,6 +435,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 f" removed: {sorted(removed)}. Schema will rebuild on next access."
             )
 
+    def rebuild(self) -> strawberry.Schema:
         """Rebuild the merged schema and log the structural diff.
 
         Called by the extension install/uninstall path (Item 20) when the
@@ -454,6 +481,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         ctx["dataloaders"] = build_request_dataloaders(self._contributions)
         return ctx
 
+    def _generate_all_components(self) -> None:
         """Generate all GraphQL components from models"""
         # Table-less models (an upstream's records) are served by their
         # managers' typed routes, which reach the upstream live.
@@ -492,6 +520,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 self._generate_components_for_model(model_class, manager_class)
                 self._register_custom_routes_for_manager(manager_class)
                 successful_models.append(model_name)
+            except Exception as e:
                 module_name = model_class.__module__ if model_class else "unknown"
                 failed_models.append((model_name, module_name, str(e)))
                 logger.error(
@@ -517,6 +546,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             for model_name, module_name, error in failed_models:
                 logger.error(f"  - {model_name} ({module_name}): {error}")
 
+    def _register_custom_routes_for_manager(self, manager_class: Any) -> None:
         """Item 40 GraphQL half: project ``@custom_route`` methods into the
         contribution registry so they appear in the merged Query/Mutation.
 
@@ -525,23 +555,30 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         """
         from zephyrex.lib.CustomRoute import register_custom_routes_to_graphql
 
+        def manager_for(info: Info, auth_type: AuthType) -> Any:
             # Resolvers are built once per (manager, method) and shared by
             # every app in the process, so the registry is the serving app's,
             # read from the request, never one captured here. The requester
             # is decided as on REST: a public route runs without one; any
             # other needs the caller's.
             registry = info.context["request"].app.state.model_registry
+            requester_id = None
             if auth_type != AuthType.NONE:
+                requester_id = self._get_context_from_info(info).get("requester_id")
                 if not requester_id:
                     raise PermissionError(
                         "Unable to authenticate user for GraphQL query - no "
                         "requester_id found in context"
                     )
+            return manager_class(model_registry=registry, requester_id=requester_id)
 
         register_custom_routes_to_graphql(
             manager_class, manager_for, contribution_registry=self._contributions
         )
 
+    def _generate_components_for_model(
+        self, model_class: Type[BaseModel], manager_class: Type[ManagerContract]
+    ) -> None:
         """Generate all components for a specific model class"""
         if not model_class or not manager_class:
             return
@@ -576,6 +613,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
             try:
                 registry_model = self.model_registry.apply(base_model)
+            except Exception as e:
                 logger.warning(
                     f"Model {base_model.__name__} not found in registry during GraphQL generation "
                     f"({e.__class__.__name__}: {e})"
@@ -640,6 +678,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
             logger.log("SQL", f"Generated GraphQL components for {model_name}")
 
+        except Exception as e:
             # Include module information for better debugging
             module_info = f" (module: {model_class.__module__})" if model_class else ""
             logger.error(
@@ -648,6 +687,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             # Re-raise to be caught by the outer try-catch for proper error isolation
             raise
 
+    def _applied_model(self, model_class: Type[BaseModel]) -> Type[BaseModel]:
         """The registry-applied model (with extension fields) when the
         registry applies one, else ``model_class``."""
         apply_fn = getattr(self.model_registry, "apply", None)
@@ -655,12 +695,14 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             return model_class
         try:
             applied_model = apply_fn(model_class)
+        except Exception as e:
             logger.debug(f"Registry could not apply {model_class.__name__}: {e}")
             return model_class
         if isinstance(applied_model, type) and hasattr(applied_model, "model_fields"):
             return applied_model
         return model_class
 
+    def _create_gql_type_from_model(self, model_class: Type[BaseModel]) -> Any:
         """Create a GraphQL type from a Pydantic model.
 
         Returns the strawberry type, or for a circular reference to a type
@@ -803,6 +845,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
             # Register the type
             self._type_registry[model_class] = gql_type
+            setattr(self._types_module, type_name, gql_type)
 
             logger.debug(
                 f"Created GraphQL type '{type_name}' for model {model_class.__module__}.{model_class.__name__}"
@@ -814,6 +857,9 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             self._types_being_created.discard(model_class)
             self._pending_type_names.pop(model_class, None)
 
+    def _build_field_annotations(
+        self, model_class: Type[BaseModel]
+    ) -> Tuple[Dict[str, Type], Dict[str, str]]:
         """Build the GraphQL field annotations + a camelCase->snake_case name map.
 
         Converts each model field to its GraphQL type (camelCasing the name) and
@@ -863,6 +909,12 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         return annotations, field_name_mappings
 
+    def _build_type_fields_dict(
+        self,
+        model_class: Type[BaseModel],
+        annotations: Dict[str, Type],
+        field_name_mappings: Dict[str, str],
+    ) -> Dict[str, Any]:
         """Assemble the strawberry fields dict: annotations + name-mapping and
         reverse-navigation field resolvers. Extracted from
         _create_gql_type_from_model."""
@@ -898,6 +950,8 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             if py_field not in annotations and py_field not in graphql_name:
                 continue
 
+            def make_serialized_resolver(name: str):
+                def resolver(root) -> Any:
                     if hasattr(root, "model_dump"):
                         return root.model_dump(include={name}).get(name)
                     return getattr(root, name, None)
@@ -941,6 +995,9 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         return fields_dict
 
+    def _create_input_type_from_model(
+        self, model_class: Type[BaseModel], suffix: str
+    ) -> Type:
         """Create a GraphQL input type from a Pydantic model"""
         # Check if input type already exists in registry
         registry_key = (model_class, suffix)
@@ -1013,6 +1070,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         return input_type
 
+    def _create_filter_type_from_model(self, model_class: Type[BaseModel]) -> Type:
         """Create a filter input type for a model"""
         base_name = model_class.__name__.removesuffix("Model")
 
@@ -1046,6 +1104,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         filter_class = type(filter_name, (), {"__annotations__": annotations})
         return strawberry.input(filter_class)
 
+    def _convert_python_type_to_gql_input(self, python_type: Any) -> Any:
         """The GraphQL annotation of an input field: as
         :meth:`_convert_python_type_to_gql`, except that a nested Pydantic
         model is an input type of its own (an object type is never an
@@ -1075,6 +1134,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         """Check if a type is already Optional (Union with None)"""
         return _type_introspector.is_optional_type(python_type)
 
+    def _convert_python_type_to_gql(self, python_type: Any) -> Any:
         """The GraphQL annotation for a Python type: a strawberry type, a
         scalar, or a typing form (``Optional``/``List``/lazy) around one."""
         try:
@@ -1141,6 +1201,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
                     # Try direct strawberry conversion
                     return strawberry.enum(python_type)
+                except Exception:
                     return TYPE_MAPPING[str]
 
             # Handle constants classes and ProviderType classes
@@ -1162,6 +1223,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 # For nested Pydantic models, create a GraphQL type
                 try:
                     return self._get_or_create_type(python_type)
+                except Exception:
                     # Return fallback instead of strawberry.lazy
                     return self._type_registry.get(python_type, ANY_SCALAR)
 
@@ -1180,6 +1242,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             # Default fallback
             return ANY_SCALAR
 
+        except Exception as e:
             type_name = getattr(python_type, "__name__", str(python_type))
             module_name = getattr(python_type, "__module__", "unknown")
             logger.warning(
@@ -1187,6 +1250,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             )
             return ANY_SCALAR
 
+    def _apply_field_acl(self, manager: Any, result: Any) -> Any:
         """Item 45 — apply field-level ACL to a GraphQL resolver result.
 
         Walks the manager → requester chain to resolve ``has_permission``
@@ -1208,6 +1272,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         try:
             from zephyrex.lib.FieldACL import apply_field_acl_to_response
             from zephyrex.pydantic2.fastapi import _resolve_has_permission
+        except Exception:
             return result
 
         has_perm = _resolve_has_permission(manager)
@@ -1226,22 +1291,32 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             kwargs["sentinel_mode"] = sentinel_mode
         return apply_field_acl_to_response(result, model_cls, has_perm, **kwargs)
 
+    def _add_query_resolver(
+        self,
+        field_name: str,
+        return_type: Type,
+        manager_class: Type[ManagerContract],
+    ) -> None:
         """Add a query resolver for getting a single item"""
         # Special handling for user queries - users can only query themselves
         if self._is_self_scoped(manager_class):
 
+            async def user_resolver(info: Info, **kwargs: Optional[str]) -> return_type:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
+                    requester_id = context.get("requester_id")
                     if not requester_id:
                         raise Exception(
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # For users, always query the requester (no ID parameter allowed)
                     result = manager.get(id=requester_id, include=None, fields=None)
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
@@ -1250,34 +1325,54 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             )
         else:
             # Create resolver with only ID parameter to avoid unknown argument errors
+            async def resolver(id: str, info: Info) -> return_type:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
+                    requester_id = context.get("requester_id")
                     if not requester_id:
                         raise Exception(
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # Call manager.get with just the ID
                     result = manager.get(id=id, include=None, fields=None)
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
             self._query_fields[field_name] = _versioned_field(resolver, manager_class)
 
+    def _add_list_query_resolver(
+        self,
+        field_name: str,
+        return_type: Type,
+        manager_class: Type[ManagerContract],
+        filter_type: Type,
+    ) -> None:
         """Add a query resolver for listing items with filtering and pagination"""
         # Special handling for user list queries
         if self._is_self_scoped(manager_class):
 
+            async def user_list_resolver(
+                teamId: Optional[str] = None,
+                limit: Optional[int] = 100,
+                offset: Optional[int] = 0,
+                info: Info = None,  # type: ignore[assignment]
+                **kwargs: Optional[str],
+            ) -> List[return_type]:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
+                    requester_id = context.get("requester_id")
                     if not requester_id:
                         raise Exception(
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # If teamId is provided, return users in that team
@@ -1302,6 +1397,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                         if user is None:
                             return []
                         return [self._apply_field_acl(manager, user)]
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
@@ -1310,13 +1406,21 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             )
         else:
 
+            async def resolver(
+                filter: Optional[filter_type] = None,  # type: ignore[valid-type]
+                limit: Optional[int] = 100,
+                offset: Optional[int] = 0,
+                info: Info = None,  # type: ignore[assignment]
+            ) -> List[return_type]:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
+                    requester_id = context.get("requester_id")
                     if not requester_id:
                         raise Exception(
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # Call manager.list with pagination support
@@ -1327,11 +1431,15 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                         fields=None,
                     )
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
             self._query_fields[field_name] = _versioned_field(resolver, manager_class)
 
+    def _crud_operations(
+        self, manager_class: Type[ManagerContract]
+    ) -> FrozenSet[RouteType]:
         """The CRUD operations REST serves for ``manager_class`` (see
         ``create_router_from_manager``): none for a manager without
         RouterMixin, its ``routes_to_register`` otherwise (all when unset).
@@ -1360,6 +1468,9 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         """
         return any("register" in vars(base) for base in manager_class.__mro__)
 
+    def _authenticated_manager(
+        self, manager_class: Type[ManagerContract], info: Info
+    ) -> Tuple[ManagerContract, str]:
         """Resolve the requester from ``info`` and build an authenticated manager.
 
         Shared preamble for every CRUD mutation resolver: extracts the GraphQL
@@ -1369,14 +1480,25 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         ``(manager, requester_id)``.
         """
         context = self._get_context_from_info(info)
+        requester_id = context.get("requester_id")
         if not requester_id:
             raise Exception(
                 "Unable to authenticate user for GraphQL query - no requester_id found in context"
             )
         manager = manager_class(
+            model_registry=self.model_registry, requester_id=requester_id
         )
         return manager, requester_id
 
+    async def _publish_mutation_event(
+        self,
+        channel_base: str,
+        action: str,
+        verb: str,
+        *,
+        result: Any = _UNSET,
+        entity_id: Any = _UNSET,
+    ) -> None:
         """Publish one CRUD mutation event on the broadcast bus.
 
         Shared by the create/update/delete resolvers. The event is published on
@@ -1403,10 +1525,19 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 channel=f"{channel_base}_{action}",
                 message=json.dumps(body),
             )
+        except Exception as e:
             logger.log("SQL", f"Failed to broadcast {verb} event: {e}")
 
+    def _add_create_mutation_resolver(
+        self,
+        field_name: str,
+        return_type: Type,
+        manager_class: Type[ManagerContract],
+        input_type: Type,
+    ) -> None:
         """Add a mutation resolver for creating items"""
 
+        async def resolver(input: input_type, info: Info) -> return_type:  # type: ignore[valid-type]
             try:
                 manager, _ = self._authenticated_manager(manager_class, info)
                 data = self._convert_input_to_dict(input)
@@ -1427,16 +1558,30 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 )
 
                 return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
+            except Exception as e:
                 logger.error(f"Error in {field_name} resolver: {e}")
                 raise
 
         self._mutation_fields[field_name] = _versioned_field(resolver, manager_class)
 
+    def _add_update_mutation_resolver(
+        self,
+        field_name: str,
+        return_type: Type,
+        manager_class: Type[ManagerContract],
+        input_type: Type,
+    ) -> None:
         """Add a mutation resolver for updating items"""
         # Special handling for user update mutations - users can only update themselves
         if self._is_self_scoped(manager_class):
 
+            async def user_update_resolver(
+                input: input_type,  # type: ignore[valid-type]
+                info: Info,
+                if_match: Optional[str] = None,
+            ) -> return_type:  # type: ignore[valid-type]
                 try:
+                    manager, requester_id = self._authenticated_manager(
                         manager_class, info
                     )
                     data = self._convert_input_to_dict(input)
@@ -1453,6 +1598,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                     )
 
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
@@ -1461,6 +1607,12 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             )
         else:
 
+            async def resolver(
+                id: str,
+                input: input_type,  # type: ignore[valid-type]
+                info: Info,
+                if_match: Optional[str] = None,
+            ) -> return_type:  # type: ignore[valid-type]
                 try:
                     manager, _ = self._authenticated_manager(manager_class, info)
                     data = self._convert_input_to_dict(input)
@@ -1477,6 +1629,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                     )
 
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
@@ -1484,11 +1637,18 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 resolver, manager_class
             )
 
+    def _add_delete_mutation_resolver(
+        self, field_name: str, manager_class: Type[ManagerContract]
+    ) -> None:
         """Add a mutation resolver for deleting items"""
         # Special handling for user delete mutations - users can only delete themselves
         if self._is_self_scoped(manager_class):
 
+            async def user_delete_resolver(
+                info: Info, if_match: Optional[str] = None
+            ) -> bool:
                 try:
+                    manager, requester_id = self._authenticated_manager(
                         manager_class, info
                     )
 
@@ -1507,6 +1667,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 except GraphQLError:
                     # A refused precondition is an error, not a quiet false.
                     raise
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return False
 
@@ -1515,6 +1676,9 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             )
         else:
 
+            async def resolver(
+                id: str, info: Info, if_match: Optional[str] = None
+            ) -> bool:
                 try:
                     manager, _ = self._authenticated_manager(manager_class, info)
 
@@ -1533,6 +1697,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 except GraphQLError:
                     # A refused precondition is an error, not a quiet false.
                     raise
+                except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return False
 
@@ -1540,8 +1705,10 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 resolver, manager_class
             )
 
+    def _add_subscription_resolver(self, field_name: str, model_name: str) -> None:
         """Add a subscription resolver for model events"""
 
+        async def resolver() -> AsyncGenerator[str, None]:
             channel = f"{model_name.lower()}_created"  # Simplified for now
             async with self.broadcast.subscribe(channel=channel) as subscriber:
                 async for event in subscriber:  # type: ignore[union-attr]
@@ -1549,6 +1716,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         self._subscription_fields[field_name] = strawberry.subscription(resolver)
 
+    def _convert_filter_to_params(self, filter_obj: Optional[Any]) -> Dict[str, Any]:
         """Convert filter object to search parameters"""
         if not filter_obj:
             return {}
@@ -1562,6 +1730,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         return params
 
+    def _get_context_from_info(self, info: Info) -> Dict[str, Any]:
         """Extract context from GraphQL Info object"""
         context: Dict[str, Any] = {}
         requester_id: Optional[str] = None
@@ -1576,6 +1745,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                     if key not in ["request", "background_tasks", "response"]:
                         context[key] = value
                         if key == "requester_id":
+                            requester_id = value
 
             # Try to get requester_id from FastAPI request if not found
             if not requester_id:
@@ -1592,6 +1762,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                     if hasattr(request, "state") and hasattr(request.state, "user"):
                         user = request.state.user
                         if hasattr(user, "id"):
+                            requester_id = user.id
 
                     # Fallback: try to authenticate from Authorization header or API key
                     elif hasattr(request, "headers"):
@@ -1606,6 +1777,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
                             resolved = resolve_principal_from_api_key(api_key)
                             if resolved is not None:
+                                requester_id = resolved
                         # Fall back to JWT authentication
                         elif auth_header:
                             try:
@@ -1619,6 +1791,8 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                                         request=request,
                                     )
                                     if user and hasattr(user, "id"):
+                                        requester_id = user.id
+                            except Exception as e:
                                 logger.log(
                                     "SQL",
                                     f"Failed to authenticate user from GraphQL context: {e}",
@@ -1630,6 +1804,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         return context
 
+    def _convert_input_to_dict(self, input_obj: Any) -> Dict[str, Any]:
         """Convert input object to dictionary, converting camelCase keys to snake_case for Python/Pydantic compatibility"""
         if hasattr(input_obj, "model_dump"):
             data = input_obj.model_dump(exclude_none=True)
@@ -1667,6 +1842,9 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         # For now, return a simple placeholder
         return self._create_simple_input_type(pydantic_model, "Input")
 
+    def _create_simple_input_type(
+        self, model_class: Type[BaseModel], suffix: str = "Input"
+    ) -> Type:
         """Create a simple input type to avoid complex dependencies"""
         input_name = f"{model_class.__name__}{suffix}"
 
@@ -1681,6 +1859,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                 "updated_at",
                 "created_by_user_id",
                 "updated_by_user_id",
+                "deleted_at",
                 "deleted_by_user_id",
             ]:
                 continue
@@ -1710,6 +1889,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         return strawberry.input(input_class)
 
+    def _create_query_type(self) -> Type:
         """Create Query type with all query fields"""
         fields: Dict[str, Any] = self._query_fields.copy()
 
@@ -1726,6 +1906,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         Query = type("Query", (), fields)
         return strawberry.type(Query)
 
+    def _create_mutation_type(self) -> Type:
         """Create Mutation type with all mutation fields"""
         fields: Dict[str, Any] = self._mutation_fields.copy()
 
@@ -1742,6 +1923,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         Mutation = type("Mutation", (), fields)
         return strawberry.type(Mutation)
 
+    def _create_subscription_type(self) -> Type:
         """Create Subscription type with all subscription fields"""
         fields: Dict[str, Any] = self._subscription_fields.copy()
 
@@ -1758,6 +1940,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         Subscription = type("Subscription", (), fields)
         return strawberry.type(Subscription)
 
+    def _analyze_model_relationships(self, model_class: Type[BaseModel]) -> None:
         """Analyze a model's relationships and register them."""
         if model_class in self._analyzed_models:
             return
@@ -1823,6 +2006,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         """Check if a type is a Pydantic model."""
         return _type_introspector.is_pydantic_model(field_type)
 
+    def _get_type_name_for_model(self, model_class: Type[BaseModel]) -> str:
         """Get the GraphQL type name for a model."""
         base_name = model_class.__name__.removesuffix("Model")
 
@@ -1844,6 +2028,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         # This will recursively create any dependent types
         return self._create_gql_type_from_model(model_class)
 
+    def _get_manager_for_model(self, model_class: Type[BaseModel]) -> Optional[Type]:
         """Find the manager class for a given model."""
         # Look through model relationships
         for relationship in self.model_registry.model_relationships:
@@ -1858,12 +2043,23 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         return None
 
+    def _create_navigation_resolver(
+        self,
+        source_model: Type[BaseModel],
+        target_model: Type[BaseModel],
+        field_name: str,
+        is_reverse: bool = False,
+    ) -> Callable:
         """Create a resolver for navigation properties."""
 
         if is_reverse:
             # Reverse navigation (one-to-many)
+            async def reverse_resolver(
+                self, info: Info, limit: Optional[int] = 100, offset: Optional[int] = 0
+            ) -> List[target_model]:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
+                    requester_id = context.get("requester_id")
 
                     if not requester_id:
                         raise Exception("Authentication required")
@@ -1874,6 +2070,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                         return []
 
                     manager = manager_class(
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # Build filter based on the foreign key
@@ -1885,12 +2082,14 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
                     return results  # type: ignore[no-any-return]
 
+                except Exception as e:
                     logger.error(f"Error in reverse navigation resolver: {e}")
                     return []
 
             return reverse_resolver
         else:
             # Forward navigation (many-to-one)
+            async def forward_resolver(self, info: Info) -> Optional[target_model]:  # type: ignore[valid-type]
                 try:
                     # Check if we already have the object loaded
                     if (
@@ -1905,6 +2104,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                         return None
 
                     context = self._get_context_from_info(info)
+                    requester_id = context.get("requester_id")
 
                     if not requester_id:
                         raise Exception("Authentication required")
@@ -1915,20 +2115,24 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
                         return None
 
                     manager = manager_class(
+                        requester_id=requester_id, model_registry=self.model_registry
                     )
 
                     # Get the related item
                     result = manager.get(id=foreign_key)
 
                     # Cache it on the object for future access
+                    setattr(self, field_name, result)
 
                     return result  # type: ignore[no-any-return]
 
+                except Exception as e:
                     logger.error(f"Error in forward navigation resolver: {e}")
                     return None
 
             return forward_resolver
 
+    def _reverse_nav_loader_store(self, info: Info) -> Dict[Any, "RequestDataLoader"]:
         """Return the per-request cache of reverse-navigation DataLoaders.
 
         The cache lives on the shared GraphQL request context so that every
@@ -1947,6 +2151,17 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
             return store
         return {}
 
+    def _get_reverse_nav_dataloader(
+        self,
+        info: Info,
+        source_model: Type[BaseModel],
+        source_field: str,
+        foreign_key_field: str,
+        manager_class: Any,
+        requester_id: str,
+        limit: Optional[int],
+        offset: Optional[int],
+    ) -> "RequestDataLoader":
         """Get (or lazily build) the per-request DataLoader for one reverse
         relationship.
 
@@ -1970,10 +2185,12 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         model_registry = self.model_registry
 
+        def batch_load(keys: Sequence[Hashable]) -> List[List[Any]]:
             from zephyrex.logic.AbstractLogicManager.models import FieldComparison
 
             key_list = list(keys)
             manager = manager_class(
+                model_registry=model_registry, requester_id=requester_id
             )
             # One batched query for every parent id at once.
             rows = manager.list(
@@ -1996,6 +2213,13 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         store[cache_key] = loader
         return loader
 
+    def _get_forward_nav_dataloader(
+        self,
+        info: Info,
+        target_model: Type[BaseModel],
+        manager_class: Any,
+        requester_id: str,
+    ) -> "RequestDataLoader":
         """Get (or lazily build) the per-request DataLoader that loads
         ``target_model`` rows by id.
 
@@ -2011,10 +2235,12 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
         model_registry = self.model_registry
 
+        def batch_load(keys: Sequence[Hashable]) -> List[Any]:
             from zephyrex.logic.AbstractLogicManager.models import FieldComparison
 
             key_list = list(keys)
             manager = manager_class(
+                model_registry=model_registry, requester_id=requester_id
             )
             rows = manager.list(
                 filters=[FieldComparison(target_model, "id", "in", key_list)],
@@ -2027,13 +2253,21 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         store[cache_key] = loader
         return loader
 
+    def _create_forward_navigation_resolver(
+        self,
+        target_model: Type[BaseModel],
+        field_name: str,
+        return_type: Any,
+    ) -> Callable:
         """Create a resolver that loads the row a reference points at."""
         manager_ref: "GraphQLManager" = self
         foreign_key_field = f"{field_name}_id"
 
+        async def resolver(self, info: Info):
             foreign_key = getattr(self, foreign_key_field, None)
             if not foreign_key:
                 return None
+            requester_id = manager_ref._get_context_from_info(info).get("requester_id")
             manager_class = manager_ref._get_manager_for_model(target_model)
             if not requester_id or manager_class is None:
                 return None
@@ -2045,12 +2279,23 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
         resolver.__annotations__["return"] = return_type
         return resolver
 
+    def _create_reverse_navigation_resolver(
+        self,
+        target_model: Type[BaseModel],
+        source_model: Type[BaseModel],
+        source_field: str,
+        reverse_field_name: str,
+    ) -> Callable:
         """Create a resolver for reverse navigation properties."""
         # Store the manager reference for use in the resolver
         manager_ref: "GraphQLManager" = self
 
+        async def resolver(
+            self, info: Info, limit: Optional[int] = 100, offset: Optional[int] = 0
+        ):
             try:
                 context = manager_ref._get_context_from_info(info)
+                requester_id = context.get("requester_id")
 
                 if not requester_id:
                     logger.error("No requester_id found in GraphQL context")
@@ -2083,6 +2328,7 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
 
                 return results
 
+            except Exception as e:
                 logger.error(
                     f"Error in reverse navigation resolver for {reverse_field_name}: {e}"
                 )

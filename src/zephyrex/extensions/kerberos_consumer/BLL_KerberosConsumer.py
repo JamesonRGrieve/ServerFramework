@@ -65,6 +65,7 @@ NEGOTIATE_CHALLENGE = {"WWW-Authenticate": NEGOTIATE}
 KERBEROS_TAGS = ("Kerberos Sign-in",)
 
 
+def negotiate_token(authorization: Optional[str]) -> Optional[bytes]:
     """The GSSAPI token of an ``Authorization: Negotiate <base64>`` header;
     None when the header is absent or another scheme. A Negotiate header
     whose token is not base64 is the client's error (400)."""
@@ -80,6 +81,7 @@ KERBEROS_TAGS = ("Kerberos Sign-in",)
         ) from None
 
 
+def unauthorized(detail: str) -> HTTPException:
     """401 with the Negotiate challenge, so the client can (re)try."""
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -106,11 +108,13 @@ class KerberosPrincipalModel(
 
     table_comment: ClassVar[str] = "Kerberos principals linked to local users"
 
+    class Create(BaseModel, UserModel.Reference.ID):
         principal: str
         realm: Optional[str] = Field(
             None, description="Computed from the principal; any value sent is replaced"
         )
 
+    class Update(BaseModel):
         last_login_at: Optional[datetime] = Field(
             None, description="Set by sign-in only"
         )
@@ -125,6 +129,7 @@ class KerberosPrincipalModel(
         last_login_at: Optional[DateSearchModel] = None
 
 
+class KerberosLoginResponse(RouteModel):
     """The password-login response (``user``, ``token``, ``preferences``,
     ``teams``, ``session_key``) for the signed-in principal or, for a user
     with a verified second factor, the MFA challenge to complete at POST
@@ -144,6 +149,7 @@ class KerberosPrincipalModel(
     methods: Optional[List[Dict[str, str]]] = None
 
 
+class KerberosPrincipalManager(AbstractBLLManager, RouterMixin):
     """A user's linked principals (read and unlink), and Negotiate sign-in."""
 
     _model = KerberosPrincipalModel
@@ -159,6 +165,7 @@ class KerberosPrincipalModel(
         RouteType.DELETE,
     ]
 
+    def create(self, **kwargs: Any) -> Any:
         """Link a principal to a user: ROOT and SYSTEM only. The link is
         written as its user, so they can see and remove it."""
         if not server_side(self.requester.id):
@@ -176,6 +183,7 @@ class KerberosPrincipalModel(
                 detail="A link names its principal and its user",
             )
         refuse_internal_account(user_id)
+        if self._user(user_id)["deleted_at"]:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No such user"
             )
@@ -192,6 +200,7 @@ class KerberosPrincipalModel(
             )
         return self._link(principal, realm, user_id)
 
+    def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its ``last_login_at``); a link never
         moves to another principal or user."""
         if not server_side(self.requester.id) or set(kwargs) - {"last_login_at"}:
@@ -201,7 +210,9 @@ class KerberosPrincipalModel(
             )
         return super().update(id, **kwargs)
 
+    def _link(self, principal: str, realm: str, user_id: str) -> Any:
         return self.DB.create(
+            requester_id=user_id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(KerberosPrincipalModel),
@@ -210,18 +221,23 @@ class KerberosPrincipalModel(
             user_id=user_id,
         )
 
+    def linked(self, principal: str) -> Optional[Any]:
         """The live link for ``principal`` (exact, case-sensitive)."""
         links = self.DB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=KerberosPrincipalModel,
             filters=[
                 self.DB.principal == principal,
+                self.DB.deleted_at.is_(None),
             ],
         )
         return links[0] if links else None
 
+    def _user(self, user_id: str) -> Dict[str, Any]:
         users = UserModel.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=user_id,
         )
@@ -232,19 +248,24 @@ class KerberosPrincipalModel(
         user: Dict[str, Any] = users[0]
         return user
 
+    def trusted_acceptors(self) -> List[Tuple[str, Acceptor]]:
         """The configured keytab instances an operator owns, in creation
         order. An instance a user or team created is never trusted: its
         keytab would let them vouch for any principal."""
+        root_id = env("ROOT_ID")
         provider = ProviderManager(
+            model_registry=self.model_registry, requester_id=root_id
         ).get(name=PRV_KerberosKeytab.name)
         # ROOT's reads include deleted rows; a deleted instance is gone.
         InstanceDB = ProviderInstanceModel.DB(self.model_registry.DB.manager.Base)
         instances: List[ProviderInstanceModel] = InstanceDB.list(
+            requester_id=root_id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=ProviderInstanceModel,
             filters=[
                 InstanceDB.provider_id == provider.id,
+                InstanceDB.deleted_at.is_(None),
             ],
         )
         acceptors: List[Tuple[str, Acceptor]] = []
@@ -263,6 +284,7 @@ class KerberosPrincipalModel(
                 logger.error("kerberos_consumer: instance %s: %s", instance.name, exc)
         return acceptors
 
+    async def accept(self, token: bytes) -> Tuple[AcceptedPrincipal, Acceptor]:
         """The principal ``token`` proves, by the first trusted keytab that
         opens it. 503 when no keytab is configured; 401 when none accepts."""
         acceptors = self.trusted_acceptors()
@@ -285,6 +307,7 @@ class KerberosPrincipalModel(
             return accepted, acceptor
         raise unauthorized("Kerberos authentication failed")
 
+    def resolve_user(self, accepted: AcceptedPrincipal) -> Dict[str, Any]:
         """The local user ``accepted`` signs in as, created on first sign-in
         when registration is open."""
         link = self.linked(accepted.principal)
@@ -297,6 +320,7 @@ class KerberosPrincipalModel(
                     detail="No account is linked to this Kerberos principal",
                 )
             user = UserModel.DB(self.model_registry.DB.manager.Base).create(
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 return_type="dto",
                 override_dto=self.model_registry.apply(UserModel),
@@ -308,16 +332,31 @@ class KerberosPrincipalModel(
             )
         refuse_internal_account(link.user_id)
         found = self._user(str(link.user_id))
+        if not found["active"] or found["deleted_at"]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="The account is disabled"
             )
         self.DB.update(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=link.id,
             new_properties={"last_login_at": datetime.now(timezone.utc)},
         )
         return found
 
+    @custom_route(
+        method="GET",
+        path="/login/negotiate",
+        output_model=KerberosLoginResponse,
+        authentication_type="none",
+        openapi_tags=KERBEROS_TAGS,
+        expose_in=(ExposeIn.REST,),
+        summary="Sign in with Kerberos (HTTP Negotiate, RFC 4559)",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def negotiate_route(
+        self, request: Request, response: Response
+    ) -> KerberosLoginResponse:
         token = negotiate_token(request.headers.get("authorization"))
         if token is None:
             raise unauthorized("Kerberos sign-in: send Authorization: Negotiate")

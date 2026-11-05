@@ -22,6 +22,7 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_TTL = 60
 
 
+class ValkeyResponseCache:
     """Full HTTP response cache backed by Valkey."""
 
     def __init__(self, client: Any, default_ttl: int = _DEFAULT_TTL) -> None:

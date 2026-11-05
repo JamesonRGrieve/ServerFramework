@@ -25,6 +25,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def _validate_team_name(v):
     if v is not None:
         v = v.strip()
         if not v:
@@ -52,6 +53,7 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
 )
 
 
+class InvalidGrantError(HTTPException):
     """Raised when a passwordless grant cannot be validated or no validator
     is registered for the requested grant_type."""
 
@@ -59,6 +61,7 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
         super().__init__(status_code=401, detail=detail)
 
 
+class PendingSessionError(HTTPException):
     """Raised when an authenticated request hits a session that is still in
     the ``awaiting_approval`` pending state (Item 59 cross-device pairing)."""
 
@@ -68,6 +71,7 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
         super().__init__(status_code=401, detail=detail)
 
 
+class OneTimeTokenMixin(BaseModel):
     """Reusable primitive for short-lived, single-use tokens hashed at rest.
 
     Captures the recovery-code shape (see ``MultifactorRecoveryCodeModel`` —
@@ -98,6 +102,8 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
         None, description="IP address that generated the token"
     )
 
+    @staticmethod
+    def fingerprint(raw_code: str) -> str:
         """HMAC fingerprint used for indexed token lookup (H-5).
 
         Keyed on FRAMEWORK_FERNET_KEY when set, falling back to
@@ -115,26 +121,36 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
                 "Cannot compute HMAC fingerprint: neither "
                 "FRAMEWORK_FERNET_KEY nor JWT_SECRET is set"
             )
+        return hmac.new(
             key_material.encode("utf-8"), raw_code.encode("utf-8"), hashlib.sha256
         ).hexdigest()
 
+    def verify(self, submitted_code: str) -> bool:
         """Constant-time verification of a submitted raw code."""
         try:
+            computed = bcrypt.hashpw(
                 submitted_code.encode(), self.code_salt.encode()
             ).decode()
+        except Exception:
             return False
+        return hmac.compare_digest(computed, self.code_hash)
 
     def mark_used(self) -> None:
         self.is_used = True
         self.used_at = datetime.now(timezone.utc)
 
+    @classmethod
+    def generate(cls, ttl_minutes: int) -> Tuple[str, "OneTimeTokenMixin"]:
         """Generate 256 bits of entropy, return ``(raw_code, instance)``.
 
         The raw code is base64url-encoded for URL safety; only the bcrypt
         hash, salt, and fingerprint are persisted. The instance can be
         merged into a concrete subclass via ``.model_dump()``.
         """
+        raw_bytes = secrets.token_bytes(32)
         raw_code = _b64.urlsafe_b64encode(raw_bytes).rstrip(b"=").decode("ascii")
+        salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+        code_hash = bcrypt.hashpw(raw_code.encode(), salt).decode()
         instance = cls(
             code_hash=code_hash,
             code_salt=salt.decode(),
@@ -146,6 +162,15 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
         )
         return raw_code, instance
 
+    @classmethod
+    def resolve(
+        cls,
+        db_class: Any,
+        list_candidates: Callable[[List[Any]], Any],
+        raw_token: str,
+        *,
+        extra_filters: Sequence[Any] = (),
+    ) -> Any:
         """Resolve ``raw_token`` to its single live one-time-token row.
 
         Encapsulates the shared ``fingerprint-narrow -> expiry gate ->
@@ -189,6 +214,7 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
         return None
 
 
+class PasswordlessGrantRegistry:
     """Process-global registry of passwordless grant validators.
 
     Extensions (e.g. ``EXT_Auth_MagicLink``, ``EXT_Auth_DevicePairing``)
@@ -206,6 +232,8 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
     def register(cls, grant_type: str, validator: Callable[..., "UserModel"]) -> None:
         cls._validators[grant_type] = validator
 
+    @classmethod
+    def get(cls, grant_type: str) -> Callable[..., "UserModel"]:
         if grant_type not in cls._validators:
             raise KeyError(
                 f"No passwordless grant validator registered for grant_type={grant_type!r}"
@@ -217,6 +245,7 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
         return list(cls._validators.keys())
 
 
+class UserIdGrantPayload(BaseModel):
     """Typed payload shared by every passwordless grant validator.
 
     Carries the resolved ``user_id`` plus the ``model_registry`` needed to look
@@ -232,6 +261,9 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
     model_registry: Any = None
 
 
+def make_user_id_grant_validator(
+    label: str, *, subject: Optional[str] = None
+) -> Callable[["UserIdGrantPayload"], "UserModel"]:
     """Build a passwordless-grant validator resolving a ``UserIdGrantPayload``
     to its live ``UserModel``.
 
@@ -248,6 +280,7 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
     """
     principal = subject or label
 
+    def _validator(payload: "UserIdGrantPayload") -> "UserModel":
         if payload.model_registry is None:
             raise InvalidGrantError(
                 detail=f"{label} grant payload missing model_registry"
@@ -256,8 +289,10 @@ _DUMMY_BCRYPT_HASH = bcrypt.hashpw(
 
         UserDB = UserModel.DB(payload.model_registry.DB.manager.Base)
         user: Optional[UserModel] = UserDB.get(
+            requester_id=env("ROOT_ID"),
             model_registry=payload.model_registry,
             id=payload.user_id,
+            filters=[UserDB.deleted_at.is_(None), UserDB.active == True],
             allow_nonexistent=True,
             return_type="dto",
             override_dto=UserModel,
@@ -309,6 +344,14 @@ _session_hooks: dict = {
 }
 
 
+def register_session_hooks(
+    *,
+    issue_session=None,
+    enforce_not_revoked=None,
+    manager_factory=None,
+    revoke_user_sessions=None,
+    revoke_session_key=None,
+) -> None:
     """Called when ``auth_session.BLL_Session`` is imported.
 
     Each argument is optional — operators can swap individual hook
@@ -325,6 +368,9 @@ _session_hooks: dict = {
             _session_hooks[name] = fn
 
 
+def require_team_membership(
+    requester_id: str, team_id: str, model_registry: Any
+) -> None:
     """Raise 403 unless ``requester_id`` is ROOT_ID or an enabled member of
     ``team_id`` (a disabled or deleted membership grants nothing, as in
     StaticPermissions).
@@ -340,10 +386,12 @@ _session_hooks: dict = {
         return
     UserTeamDB = UserTeamModel.DB(model_registry.DB.manager.Base)
     if not UserTeamDB.exists(
+        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         user_id=requester_id,
         team_id=team_id,
         enabled=True,
+        filters=[UserTeamDB.deleted_at.is_(None)],
     ):
         raise HTTPException(
             status_code=403, detail="Caller is not a member of the target team"
@@ -381,6 +429,8 @@ MFALoginMethods = Callable[[str, Any], List[Dict[str, str]]]
 MFACodeVerifier = Callable[[str, str, Any], bool]
 
 
+@dataclass(frozen=True)
+class MFAMethodSource:
     """One extension's second factors.
 
     ``login_methods(user_id, model_registry)`` lists the user's usable
@@ -405,6 +455,7 @@ def register_mfa_source(name: str, source: MFAMethodSource) -> None:
     _mfa_sources[name] = source
 
 
+def mfa_login_methods(user_id: str, model_registry: Any) -> List[Dict[str, str]]:
     """Every source's methods for ``user_id``: a user with any of them is
     challenged for a second factor."""
     return [
@@ -414,6 +465,7 @@ def register_mfa_source(name: str, source: MFAMethodSource) -> None:
     ]
 
 
+def verify_mfa_login_code(user_id: str, code: str, model_registry: Any) -> bool:
     """Whether ``code`` is a current code of any source's for ``user_id``."""
     return any(
         source.verify_login_code(user_id, code, model_registry)
@@ -438,6 +490,7 @@ def register_login_check(extension_name: str, check: LoginCheck) -> None:
     _login_checks[extension_name] = check
 
 
+def run_login_checks(user_id: str, model_registry: Any) -> None:
     """Run the login check of every extension loaded into
     ``model_registry``'s app for ``user_id``; the first to refuse raises.
     ``UserManager._complete_login`` calls this for password, MFA and every
@@ -451,6 +504,7 @@ def register_login_check(extension_name: str, check: LoginCheck) -> None:
 INTERNAL_ACCOUNT_REFUSED = "Internal accounts do not sign in"
 
 
+def refuse_internal_account(user_id: Any) -> None:
     """403 for ROOT, SYSTEM and the template user. They hold every
     privilege and are seeded with predictable emails (``root@<domain>``);
     they act through API keys and server code, never a session. Every
@@ -461,6 +515,7 @@ INTERNAL_ACCOUNT_REFUSED = "Internal accounts do not sign in"
         raise HTTPException(status_code=403, detail=INTERNAL_ACCOUNT_REFUSED)
 
 
+def reset_session_hooks() -> None:
     """Test helper — clear every registered ``_session_hooks`` entry.
 
     Production code should never call this; it exists so test fixtures

@@ -70,6 +70,7 @@ def equality_filter(attribute: str, value: str) -> str:
     return f"{attribute} eq {scim_string(value)}"
 
 
+def resource_path(resource_type: str, remote_id: Optional[str] = None) -> str:
     """The path of ``resource_type``'s endpoint, or of one resource in it.
     An id is one encoded path segment: a service provider's id cannot walk
     the request to another endpoint."""
@@ -81,13 +82,16 @@ def equality_filter(attribute: str, value: str) -> str:
     return f"{endpoint}/{quote(remote_id, safe='')}"
 
 
+class _Supported(RouteModel):
     model_config = ConfigDict(extra="ignore")
     supported: bool = False
 
 
+class _FilterSupport(_Supported):
     maxResults: Optional[int] = None
 
 
+class ServiceProviderConfig(RouteModel):
     """What the service provider says it can do (RFC 7643 section 5);
     anything it leaves out it is taken not to do."""
 
@@ -102,20 +106,25 @@ def equality_filter(attribute: str, value: str) -> str:
         return min(PAGE_SIZE, most) if most and most > 0 else PAGE_SIZE
 
 
+class _Meta(RouteModel):
     model_config = ConfigDict(extra="ignore")
     version: Optional[str] = None
 
 
+class _Resource(RouteModel):
     model_config = ConfigDict(extra="allow")
     id: str = Field(..., min_length=1)
     meta: Optional[_Meta] = None
 
 
+class _ListResponse(RouteModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
     totalResults: int = Field(..., ge=0)
     resources: List[Dict[str, Any]] = Field(default_factory=list, alias="Resources")
 
 
+@dataclass(frozen=True)
+class RemoteResource:
     """A resource as the service provider answered with it: its id, its
     version (the ETag) and the whole body."""
 
@@ -124,6 +133,7 @@ def equality_filter(attribute: str, value: str) -> str:
     body: Dict[str, Any] = field(default_factory=dict)
 
 
+def remote_resource(body: Any, etag_header: Optional[str]) -> RemoteResource:
     try:
         parsed = _Resource.model_validate(body)
     except ValidationError as exc:
@@ -138,6 +148,7 @@ def patch_body(operations: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     return {"schemas": [PATCH_SCHEMA], "Operations": [dict(op) for op in operations]}
 
 
+class PRV_SCIM_SCIMProvider(AbstractStaticProvider):
     name: ClassVar[str] = "scim_target"
     friendly_name: ClassVar[str] = "SCIM 2.0 service provider"
     description: ClassVar[str] = (
@@ -175,6 +186,8 @@ def patch_body(operations: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         return AbstractProviderInstance(instance)
 
+    @classmethod
+    def required(cls, instance: ProviderInstanceModel, key: str) -> str:
         value = (cls.setting(instance, key) or "").strip()
         if not value:
             raise PermanentExternalError(
@@ -202,6 +215,17 @@ def patch_body(operations: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     def url(cls, instance: ProviderInstanceModel, path: str) -> str:
         return f"{cls.required(instance, 'base_url').rstrip('/')}/{path}"
 
+    @classmethod
+    async def call(
+        cls,
+        instance: ProviderInstanceModel,
+        method: str,
+        path: str,
+        *,
+        body: Optional[Mapping[str, Any]] = None,
+        params: Optional[Mapping[str, Any]] = None,
+        if_match: Optional[str] = None,
+    ) -> Tuple[Any, Optional[str]]:
         """One SCIM request: the decoded answer (None for an empty one) and
         its ETag header. A 429 is retried after its Retry-After (or a
         growing backoff), up to ``RATE_LIMIT_RETRIES`` times."""
@@ -247,6 +271,10 @@ def patch_body(operations: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
             return decoded, response.headers.get("ETag")
         raise AssertionError("unreachable: the last attempt returns or raises")
 
+    @classmethod
+    async def service_provider_config(
+        cls, instance: ProviderInstanceModel
+    ) -> ServiceProviderConfig:
         """What the service provider supports. One that has no
         ServiceProviderConfig is taken to support none of the options."""
         try:
@@ -264,6 +292,15 @@ def patch_body(operations: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
                 cause=exc,
             ) from exc
 
+    @classmethod
+    async def search(
+        cls,
+        instance: ProviderInstanceModel,
+        resource_type: str,
+        filter_expression: Optional[str],
+        page_size: int,
+        limit: Optional[int] = None,
+    ) -> List[RemoteResource]:
         """The resources matching ``filter_expression`` (all, when None),
         page by page (``startIndex``/``count``) until ``totalResults`` or
         ``limit`` are reached."""

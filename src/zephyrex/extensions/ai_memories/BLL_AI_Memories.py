@@ -58,6 +58,7 @@ async def embedding_of(text: str) -> Tuple[Optional[List[float]], Optional[str]]
     return (embeddings[0] if embeddings else None), found.get("model")
 
 
+def cosine(a: Sequence[float], b: Sequence[float]) -> float:
     if len(a) != len(b) or not a:
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -83,6 +84,7 @@ def rank(
     share of the query's words they contain; newest first among equals."""
     terms = set(words(query))
 
+    def score(memory: Any) -> tuple:
         similarity = 0.0
         if (
             query_embedding
@@ -170,6 +172,7 @@ class RecalledMemories(RouteModel):
     memories: List[MemoryModel]
 
 
+class MemoryManager(AbstractBLLManager, RouterMixin):
     """Memories are kept through :meth:`keep` (which the remember route and
     the abilities use, embedding first); the generic routes read, search and
     delete them."""

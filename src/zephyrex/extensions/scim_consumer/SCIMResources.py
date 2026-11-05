@@ -49,6 +49,8 @@ TRUE_WORDS = frozenset({"true"})
 FALSE_WORDS = frozenset({"false"})
 
 
+@dataclass(frozen=True)
+class UserFields:
     """A SCIM User read into the framework user's columns."""
 
     username: str
@@ -74,6 +76,8 @@ FALSE_WORDS = frozenset({"false"})
         }
 
 
+@dataclass(frozen=True)
+class GroupFields:
     """A SCIM Group read into a team's name and its members' ids."""
 
     display_name: str
@@ -81,6 +85,7 @@ FALSE_WORDS = frozenset({"false"})
     member_ids: Tuple[str, ...]
 
 
+def _text(payload: Mapping[str, Any], name: str) -> Optional[str]:
     value = get(payload, name)
     if value is None:
         return None
@@ -90,6 +95,7 @@ FALSE_WORDS = frozenset({"false"})
     return stripped or None
 
 
+def _boolean(value: Any, name: str) -> bool:
     """A boolean, also as the "True"/"False" strings Azure AD sends."""
     if isinstance(value, bool):
         return value
@@ -106,6 +112,7 @@ def _require_object(payload: Any) -> Mapping[str, Any]:
     return payload
 
 
+def _primary_email(payload: Mapping[str, Any]) -> Optional[str]:
     emails = get(payload, "emails")
     if emails is None:
         return None
@@ -125,6 +132,7 @@ def _require_object(payload: Any) -> Mapping[str, Any]:
     return chosen
 
 
+def parse_user(payload: Any) -> UserFields:
     """A User body (POST, PUT, or a patched resource) read into the
     framework's fields; 400 ``invalidValue`` when it cannot be."""
     body = _require_object(payload)
@@ -156,6 +164,7 @@ def _require_object(payload: Any) -> Mapping[str, Any]:
     )
 
 
+def parse_group(payload: Any) -> GroupFields:
     """A Group body read into a team name and member ids."""
     body = _require_object(payload)
     display_name = _text(body, "displayName")
@@ -191,6 +200,7 @@ def timestamp(value: Any) -> Optional[str]:
     return ensure_utc(value).isoformat().replace("+00:00", "Z")
 
 
+def version_of(resource: Mapping[str, Any]) -> str:
     """The resource's weak ETag: a digest of all but its ``meta``."""
     content = {k: v for k, v in resource.items() if k != "meta"}
     digest = hashlib.sha256(
@@ -217,6 +227,8 @@ def _with_meta(
     return resource
 
 
+@dataclass(frozen=True)
+class Reference:
     """A member of a group, or a group a user is in."""
 
     id: str
@@ -224,6 +236,7 @@ def _with_meta(
     location: str
 
 
+def _references(references: Iterable[Reference], kind: Optional[str]) -> List[Any]:
     rendered: List[Dict[str, Any]] = []
     for reference in sorted(references, key=lambda r: r.id):
         item: Dict[str, Any] = {"value": reference.id, "$ref": reference.location}
@@ -235,6 +248,12 @@ def _with_meta(
     return rendered
 
 
+def user_resource(
+    user: Mapping[str, Any],
+    external_id: Optional[str],
+    groups: Iterable[Reference],
+    location: str,
+) -> Dict[str, Any]:
     """A framework user (a row's columns) as a SCIM User."""
     resource: Dict[str, Any] = {"schemas": [USER_URN], "id": user["id"]}
     if external_id:
@@ -285,11 +304,17 @@ def group_resource(
     return _with_meta(resource, GROUP, team, location)
 
 
+def _names(raw: Optional[str]) -> Optional[frozenset[str]]:
     if raw is None or not raw.strip():
         return None
     return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
 
 
+def project(
+    resource: Dict[str, Any],
+    attributes: Optional[str],
+    excluded_attributes: Optional[str],
+) -> Dict[str, Any]:
     """``resource`` cut to the top-level ``attributes`` asked for, or
     without the ``excludedAttributes`` (RFC 7644 §3.4.2.5)."""
     wanted, unwanted = _names(attributes), _names(excluded_attributes)
@@ -310,9 +335,11 @@ def group_resource(
     return resource
 
 
+def page_bounds(start_index: Optional[str], count: Optional[str]) -> Tuple[int, int]:
     """``startIndex`` (1-based, below 1 means 1) and ``count`` (capped,
     below 0 means 0) from the query string (RFC 7644 §3.4.2.4)."""
 
+    def number(raw: Optional[str], name: str, default: int) -> int:
         if raw is None or raw == "":
             return default
         try:
@@ -338,11 +365,13 @@ def list_response(
     }
 
 
+def etag_matches(header: Optional[str], version: str) -> bool:
     """Whether an ``If-Match``/``If-None-Match`` value names ``version``
     (``*`` names any); weak and strong forms compare alike."""
     if header is None:
         return False
 
+    def bare(tag: str) -> str:
         tag = tag.strip()
         if tag[:2].upper() == "W/":
             tag = tag[2:]
@@ -352,6 +381,7 @@ def list_response(
     return "*" in tags or bare(version) in tags
 
 
+def service_provider_config(location: str) -> Dict[str, Any]:
     return {
         "schemas": [SERVICE_PROVIDER_CONFIG_URN],
         "patch": {"supported": True},
@@ -373,6 +403,7 @@ def list_response(
     }
 
 
+def resource_types(base: str) -> List[Dict[str, Any]]:
     return [
         {
             "schemas": [RESOURCE_TYPE_URN],
@@ -441,6 +472,7 @@ def _reference_attribute(
     )
 
 
+def schemas(base: str) -> List[Dict[str, Any]]:
     user_attributes = [
         _attribute(
             "userName",

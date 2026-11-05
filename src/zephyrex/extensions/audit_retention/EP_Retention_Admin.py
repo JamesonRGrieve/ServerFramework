@@ -10,18 +10,29 @@ from pydantic import BaseModel, ConfigDict, Field
 from zephyrex.extensions.audit_retention.BLL_RetentionService import RetentionService
 
 
+class LegalHoldReleaseRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     registration_name: str = Field(..., min_length=1)
     reason: str = Field(..., min_length=1)
 
 
+def _default_admin_check() -> None:
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="admin authentication not configured",
     )
 
 
+def create_retention_admin_router(
+    *,
+    retention_service: Optional[RetentionService] = None,
+    retention_service_resolver: Optional[
+        Callable[[], Optional[RetentionService]]
+    ] = None,
+    admin_check: Optional[Callable[..., Any]] = None,
+    requester_resolver: Optional[Callable[..., str]] = None,
+) -> APIRouter:
     """Construct the retention-admin ``APIRouter``.
 
     Either pass a ``retention_service`` directly, or pass a
@@ -40,6 +51,7 @@ from zephyrex.extensions.audit_retention.BLL_RetentionService import RetentionSe
 
     auth_dep = admin_check or _default_admin_check
 
+    def _resolve_service() -> RetentionService:
         svc = retention_service
         if svc is None and retention_service_resolver is not None:
             svc = retention_service_resolver()
@@ -50,9 +62,11 @@ from zephyrex.extensions.audit_retention.BLL_RetentionService import RetentionSe
             )
         return svc
 
+    def _resolve_requester(principal: Any) -> str:
         if requester_resolver is not None:
             try:
                 return str(requester_resolver(principal))
+            except Exception:  # noqa: BLE001
                 pass
         if principal is None:
             return "unknown"
@@ -68,10 +82,17 @@ from zephyrex.extensions.audit_retention.BLL_RetentionService import RetentionSe
 
     router = APIRouter(tags=["retention-admin"])
 
+    @router.post("/admin/retention/legal-hold/release")
+    def release_legal_hold(
+        body: LegalHoldReleaseRequest,
+        principal: Any = Depends(auth_dep),
+    ) -> dict:
         svc = _resolve_service()
+        requester_id = _resolve_requester(principal)
         event_id = svc.release_legal_hold(
             body.registration_name,
             reason=body.reason,
+            requester_id=requester_id,
         )
         return {
             "status": "released",
@@ -114,6 +135,7 @@ def resolve_retention_service_from_registry(
     inner service as ``scheduled.retention_service``.
     """
 
+    def _resolve() -> Optional[RetentionService]:
         try:
             from zephyrex.logic.AbstractService import ServiceRegistry
         except ImportError:

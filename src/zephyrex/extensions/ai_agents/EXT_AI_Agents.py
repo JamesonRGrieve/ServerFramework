@@ -56,6 +56,7 @@ def _when(text: Optional[str]) -> Optional[datetime]:
         ) from None
 
 
+class EXT_AI_Agents(AbstractStaticExtension):
     name: ClassVar[str] = "ai_agents"
     friendly_name: ClassVar[str] = "AI Agent Management"
     version: ClassVar[str] = "2.1.0"
