@@ -117,7 +117,7 @@ async def test_a_call_past_its_deadline_holds_the_model_until_its_work_ends(
     monkeypatch.setattr(HeldModel, "timeout", 0.05)
     a = preload(models, "a")
     finish = threading.Event()
-    answered = []
+    answered: list[str] = []
 
     def slow(model: StandIn) -> str:
         finish.wait(WAIT_SECONDS)
@@ -142,7 +142,7 @@ async def test_a_new_model_is_loaded_pinned(models, monkeypatch, tmp_path):
     made for another before the call uses it passes it over."""
 
     async def files(instance: Any) -> Path:
-        return tmp_path
+        return Path(tmp_path)
 
     monkeypatch.setattr(HeldModel, "ensure_files", files)
     HeldModel.window = lambda: in_a_thread(

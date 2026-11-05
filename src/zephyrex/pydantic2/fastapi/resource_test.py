@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Dict, List
 
 from pydantic import BaseModel
 from sqlalchemy import column
+from sqlalchemy.sql.expression import ColumnClause
 
 from zephyrex.pydantic2.fastapi.resource import _populate_reverse_includes
 
@@ -14,7 +15,7 @@ class _BookTable:
     """An in-memory stand-in for the book table: answers ``list`` with the
     rows whose ``shelf_id`` is in the filter, and records each query."""
 
-    shelf_id = column("shelf_id")
+    shelf_id: ClassVar[ColumnClause[Any]] = column("shelf_id")
     rows: ClassVar[List[Dict[str, Any]]] = [
         {"id": "b1", "shelf_id": "s1"},
         {"id": "b2", "shelf_id": "s1"},

@@ -33,6 +33,7 @@ from zephyrex.extensions.local_ai_gguf.PRV_GGUF_Chat import PRV_GGUF_Chat
 from zephyrex.extensions.local_ai_gguf.PRV_GGUF_Embedding import PRV_GGUF_Embedding
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import UserModel
+from zephyrex.extensions.conftest import build_extension_app
 from zephyrex.logic.BLL_Providers import ProviderInstanceUsageManager
 
 STORIES = {
@@ -91,6 +92,13 @@ def cosine(a, b):
     return sum(x * y for x, y in zip(a, b)) / (
         math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
     )
+
+
+@pytest.fixture(scope="module")
+def extension_app(request: pytest.FixtureRequest) -> Any:
+    """This extension's app with the auth companions: tests here look provider
+    instances up as a user, which the permission query needs them for."""
+    return build_extension_app(request, with_companions=True)
 
 
 @pytest.fixture

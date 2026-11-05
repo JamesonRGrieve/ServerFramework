@@ -44,19 +44,39 @@ def set_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[str, str], None]:
     return _set
 
 
-@pytest.fixture(scope="module")
-def extension_app(request: pytest.FixtureRequest) -> Any:
-    """The app of the extension whose folder holds the test module, built
-    once per module."""
+def build_extension_app(
+    request: pytest.FixtureRequest, *, with_companions: bool = False
+) -> Any:
+    """The app of the extension whose folder holds the test module.
+
+    ``with_companions`` also loads the core auth companions the endpoint tests
+    load (``CORE_COMPANION_EXTENSIONS``). A test that looks rows up as a user,
+    not ROOT, needs them: the permission query joins the teams, invitations and
+    ACL tables, and their hooks are process-wide, so another test in the same
+    worker may have registered them for an app that has those tables.
+    """
+    from conftest import CORE_COMPANION_EXTENSIONS
     from zephyrex.app import instance
     from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
     extension = Path(str(request.node.path)).parent.name
     prepare_test_registry()
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    if not with_companions:
+        return instance(
+            db_prefix=f"test.{extension}_providers.{worker_id}", extensions=extension
+        )
+    names = [extension] + [c for c in CORE_COMPANION_EXTENSIONS if c != extension]
     return instance(
-        db_prefix=f"test.{extension}_providers.{worker_id}", extensions=extension
+        db_prefix=f"test.{extension}_users.{worker_id}", extensions=",".join(names)
     )
+
+
+@pytest.fixture(scope="module")
+def extension_app(request: pytest.FixtureRequest) -> Any:
+    """The app of the extension whose folder holds the test module, built
+    once per module."""
+    return build_extension_app(request)
 
 
 @pytest.fixture

@@ -11,7 +11,7 @@ from typing import Callable, Iterator, List
 import pytest
 
 import zephyrex.extensions
-from zephyrex.lib.Environment import settings
+from zephyrex.lib import Environment
 from zephyrex.lib.Paths import set_extensions_root
 from zephyrex.pydantic2.scoped_importer import ScopedModuleImporter
 
@@ -46,6 +46,14 @@ def extension_tree(tmp_path: Path) -> Iterator[Callable[[], str]]:
                 delattr(zephyrex.extensions, name)
 
 
+def _enable(monkeypatch: pytest.MonkeyPatch, extensions: str) -> None:
+    """Set ``APP_EXTENSIONS`` as ``env()`` reads it. Patch the settings object
+    through its module at call time: building an app replaces
+    ``Environment.settings``, so a reference imported earlier goes stale."""
+    monkeypatch.setenv("APP_EXTENSIONS", extensions)
+    monkeypatch.setattr(Environment.settings, "APP_EXTENSIONS", extensions)
+
+
 def _module(extension: str) -> str:
     return f"zephyrex.extensions.{extension}.{MODULE_STEM}"
 
@@ -56,7 +64,7 @@ def test_a_repeated_import_is_served_from_the_cache(
     """The guard checked an attribute the importer never had, so every call
     rescanned and re-imported."""
     extension = extension_tree()
-    monkeypatch.setattr(settings, "APP_EXTENSIONS", extension)
+    _enable(monkeypatch, extension)
     importer = ScopedModuleImporter({})
 
     first = importer._scoped_import(file_type=FILE_TYPE, scopes=["extensions"])
@@ -72,9 +80,9 @@ def test_a_changed_extension_set_is_not_answered_from_the_cache(
     before, after = extension_tree(), extension_tree()
     importer = ScopedModuleImporter({})
 
-    monkeypatch.setattr(settings, "APP_EXTENSIONS", before)
+    _enable(monkeypatch, before)
     first = importer._scoped_import(file_type=FILE_TYPE, scopes=["extensions"])
-    monkeypatch.setattr(settings, "APP_EXTENSIONS", after)
+    _enable(monkeypatch, after)
     second = importer._scoped_import(file_type=FILE_TYPE, scopes=["extensions"])
 
     assert first == ([_module(before)], [])
@@ -85,7 +93,7 @@ def test_clean_bypasses_the_cache(
     extension_tree: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     extension = extension_tree()
-    monkeypatch.setattr(settings, "APP_EXTENSIONS", extension)
+    _enable(monkeypatch, extension)
     importer = ScopedModuleImporter({})
 
     first = importer._scoped_import(file_type=FILE_TYPE, scopes=["extensions"])

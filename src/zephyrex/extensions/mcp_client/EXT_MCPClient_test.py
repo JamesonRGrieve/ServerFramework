@@ -42,6 +42,15 @@ from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.BLL_Providers import ProviderInstanceManager
 from zephyrex.testing.factories import provider_instance_as
+from zephyrex.extensions.conftest import build_extension_app
+
+
+@pytest.fixture(scope="module")
+def extension_app(request: pytest.FixtureRequest) -> Any:
+    """This extension's app with the auth companions: tests here look provider
+    instances up as a user, which the permission query needs them for."""
+    return build_extension_app(request, with_companions=True)
+
 
 TOKEN = "test-bearer-token"
 SERVER_SOURCE = '''

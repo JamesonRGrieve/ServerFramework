@@ -481,7 +481,8 @@ class TestErrorHandling:
         with pytest.raises(HTTPException) as exc_info:
             handle_resource_operation_error(RuntimeError("delete failed"))
         assert exc_info.value.status_code == 500
-        assert exc_info.value.detail["code"] == "internal_error"
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict) and detail["code"] == "internal_error"
 
 
 class TestRouteRegistration:
@@ -978,9 +979,10 @@ class TestQueryParameterInjection:
         items = body["tests"]
 
         # Both seeded rows are present, in order, with their real values -- a
-        # stubbed/empty list would fail here.
+        # stubbed/empty list would fail here -- projected to the requested
+        # fields: ``value`` was not asked for, so it is not returned.
         assert [item["name"] for item in items] == ["First", "Second"]
-        assert [item["value"] for item in items] == [1, 2]
+        assert all("value" not in item for item in items)
         assert body["pagination"]["total"] == 2
         # The normalized fields param reached the manager.
         assert manager_cls.last_list_params["fields"] == ["name"]

@@ -1,5 +1,6 @@
 import inspect
 import json
+import statistics
 import sys
 import uuid
 from dataclasses import dataclass
@@ -5910,9 +5911,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # The two reads alternate, so load on a shared runner (the create's
         # own hooks, other workers) falls on both alike; timed one batch
         # after the other, only the forbidden reads ran in its wake.
+        # Compared by median: one scheduler stall on a loaded runner
+        # (seconds long) swamps a mean of a few samples, while a real
+        # oracle slows every read of one kind and still moves the median.
         times_404: list[float] = []
         times_403: list[float] = []
-        for _ in range(5):
+        for _ in range(7):
             t0 = time.perf_counter()
             server.get(nonexistent, headers=headers_a)
             times_404.append(time.perf_counter() - t0)
@@ -5920,13 +5924,15 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             server.get(detail, headers=headers_b)
             times_403.append(time.perf_counter() - t0)
 
-        avg_404 = sum(times_404) / len(times_404)
-        avg_403 = sum(times_403) / len(times_403)
-        if avg_404 > 0 and avg_403 > 0:
-            ratio = max(avg_404, avg_403) / min(avg_404, avg_403)
+        med_404 = statistics.median(times_404)
+        med_403 = statistics.median(times_403)
+        if med_404 > 0 and med_403 > 0:
+            ratio = max(med_404, med_403) / min(med_404, med_403)
             assert ratio < 20, (
-                f"Timing oracle: 404 avg={avg_404*1000:.1f}ms vs "
-                f"403 avg={avg_403*1000:.1f}ms (ratio={ratio:.1f}x)"
+                f"Timing oracle: 404 median={med_404*1000:.1f}ms vs "
+                f"403 median={med_403*1000:.1f}ms (ratio={ratio:.1f}x); "
+                f"404 samples={[round(t * 1000) for t in times_404]}ms, "
+                f"403 samples={[round(t * 1000) for t in times_403]}ms"
             )
 
     # ------------------------------------------------------------------ #

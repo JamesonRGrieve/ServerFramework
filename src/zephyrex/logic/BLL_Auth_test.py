@@ -4250,14 +4250,18 @@ class TestOverlongPasswords:
             assert refused.value.detail == "Invalid credentials"
 
     def test_overlong_attempts_count_toward_the_lockout(self, server, model_registry):
-        user = create_user(server)
+        # A fresh identifier each attempt, so only the address's counter is
+        # exercised: repeating one user's email trips the per-user lock first.
         address = f"overlong-probe-{uuid.uuid4().hex}"
         tracker = UserManager._lockout_tracker
         try:
             for _ in range(tracker.policy.failures_per_window):
                 with pytest.raises(HTTPException) as refused:
                     UserManager.login(
-                        {"email": user.email, "password": self.OVERLONG},
+                        {
+                            "email": generate_test_email("overlong"),
+                            "password": self.OVERLONG,
+                        },
                         ip_address=address,
                         model_registry=model_registry,
                         response=Response(),
@@ -4328,6 +4332,21 @@ class TestOnlyLiveMembershipsCount:
         return rows
 
     @staticmethod
+    def deleted_ats(model_registry: Any, user_id: str, team_id: str) -> List[Any]:
+        """Each membership row's ``deleted_at``, read from the table: the
+        UserTeam DTO does not carry it."""
+        from zephyrex.logic.BLL_Auth import UserTeamModel
+
+        rows: List[Any] = UserTeamModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            user_id=user_id,
+            team_id=team_id,
+            return_type="dict",
+        )
+        return [row["deleted_at"] for row in rows]
+
+    @staticmethod
     def set_membership(model_registry: Any, membership_id: str, **values: Any) -> None:
         from zephyrex.logic.BLL_Auth import UserTeamModel
 
@@ -4370,9 +4389,9 @@ class TestOnlyLiveMembershipsCount:
             requester_id=env("ROOT_ID"), model_registry=model_registry
         ).remove_member(team_id=team_a.id, user_id=member.id)
 
-        rows = self.memberships(model_registry, member.id, team_a.id)
-        assert len(rows) == 2
-        assert all(row.deleted_at is not None for row in rows)
+        deleted_ats = self.deleted_ats(model_registry, member.id, team_a.id)
+        assert len(deleted_ats) == 2
+        assert all(deleted_at is not None for deleted_at in deleted_ats)
 
     def test_remove_member_of_a_user_who_left_is_not_found(
         self, server, team_a, model_registry

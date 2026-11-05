@@ -131,7 +131,7 @@ def _matches(row, filters):
 class WidgetManager(AbstractBLLManager, RouterMixin):
     """Widgets in a dict shared by every instance (reset per test)."""
 
-    _model = WidgetModel
+    _model: ClassVar[Optional[Type[BaseModel]]] = WidgetModel
     prefix = "/v1/widget"
     auth_type = AuthType.NONE
     routes_to_register = ALL_ROUTES
