@@ -214,6 +214,44 @@ class TestAPIKeyEndpoints(ExtensionServerMixin):
             self._issue(model_registry, admin_a.id, team_id=team_b.id)
         assert excinfo.value.status_code == 403
 
+    @pytest.mark.parametrize("lapse", ["expired", "team_deleted"])
+    def test_team_key_requires_a_live_membership(
+        self, server, model_registry, admin_a, lapse
+    ):
+        """#279: the membership gate passed an expired membership, and a
+        membership of a deleted team, so a former member could mint a key
+        scoped to a tenant they no longer belong to."""
+        import uuid
+
+        from zephyrex.logic.BLL_Auth import TeamModel, UserTeamModel
+        from zephyrex.testing.factories import (
+            add_user_to_team,
+            create_team,
+            create_user,
+        )
+
+        member = create_user(server)
+        team = create_team(server, admin_a.id, name=f"lapse {uuid.uuid4().hex[:8]}")
+        add_user_to_team(server, member.id, team.id, env("USER_ROLE_ID"))
+        issued = self._issue(model_registry, member.id, name="ok", team_id=team.id)
+        assert issued.key
+        past = datetime.now(timezone.utc) - timedelta(minutes=1)
+        base = model_registry.DB.manager.Base
+        with model_registry.DB.manager._get_db_session() as session:
+            if lapse == "expired":
+                db = UserTeamModel.DB(base)
+                session.query(db).filter(
+                    db.user_id == member.id, db.team_id == team.id
+                ).update({db.expires_at: past}, synchronize_session=False)
+            else:
+                db = TeamModel.DB(base)
+                session.query(db).filter(db.id == team.id).update(
+                    {db.deleted_at: past}, synchronize_session=False
+                )
+        with pytest.raises(HTTPException) as excinfo:
+            self._issue(model_registry, member.id, name="lapsed", team_id=team.id)
+        assert excinfo.value.status_code == 403
+
     # -- direct CRUD creation ----------------------------------------------
 
     def test_direct_crud_post_has_no_route(self, server, admin_a):

@@ -4499,3 +4499,43 @@ class TestOnlyLiveMembershipsCount:
         with pytest.raises(HTTPException) as refused:
             require_team_membership(member.id, team_a.id, model_registry)
         assert refused.value.status_code == 403
+
+    def test_an_expired_membership_is_not_team_membership(
+        self, server, team_a, model_registry
+    ):
+        """#279: the gate checked enabled and deleted, not expiry."""
+        from zephyrex.logic.BLL_Auth._shared import require_team_membership
+
+        member = create_user(server)
+        membership = self.join(
+            model_registry, member.id, team_a.id, env("USER_ROLE_ID")
+        )
+        require_team_membership(member.id, team_a.id, model_registry)
+        self.set_membership(
+            model_registry,
+            membership,
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+        with pytest.raises(HTTPException) as refused:
+            require_team_membership(member.id, team_a.id, model_registry)
+        assert refused.value.status_code == 403
+
+    def test_a_deleted_teams_membership_is_not_team_membership(
+        self, server, model_registry
+    ):
+        """#279: a live membership of a deleted team passed the gate."""
+        from zephyrex.logic.BLL_Auth import TeamModel
+        from zephyrex.logic.BLL_Auth._shared import require_team_membership
+
+        member = create_user(server)
+        team = create_team(server, member.id, name=f"gone {uuid.uuid4().hex[:8]}")
+        require_team_membership(member.id, team.id, model_registry)
+        TeamDB = TeamModel.DB(model_registry.DB.manager.Base)
+        with model_registry.DB.manager._get_db_session() as session:
+            session.query(TeamDB).filter(TeamDB.id == team.id).update(
+                {TeamDB.deleted_at: datetime.now(timezone.utc)},
+                synchronize_session=False,
+            )
+        with pytest.raises(HTTPException) as refused:
+            require_team_membership(member.id, team.id, model_registry)
+        assert refused.value.status_code == 403

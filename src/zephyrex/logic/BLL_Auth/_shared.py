@@ -371,28 +371,21 @@ def register_session_hooks(
 def require_team_membership(
     requester_id: str, team_id: str, model_registry: Any
 ) -> None:
-    """Raise 403 unless ``requester_id`` is ROOT_ID or an enabled member of
-    ``team_id`` (a disabled or deleted membership grants nothing, as in
-    StaticPermissions).
+    """Raise 403 unless ``requester_id`` is ROOT_ID or holds a live
+    membership of ``team_id``: enabled, not deleted, not expired, in a team
+    that is not deleted. A membership that fails any of these grants
+    nothing, as in StaticPermissions (#279).
 
     The shared gate for managers that let a caller scope a record to a team:
     naming a team the caller does not belong to would plant data in (or mint
     credentials for) a tenant they have no standing in.
     """
     from zephyrex.database.StaticPermissions import is_root_id
-    from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
+    from zephyrex.logic.BLL_Auth.team_authority import live_membership_role
 
     if is_root_id(requester_id):
         return
-    UserTeamDB = UserTeamModel.DB(model_registry.DB.manager.Base)
-    if not UserTeamDB.exists(
-        requester_id=env("ROOT_ID"),
-        model_registry=model_registry,
-        user_id=requester_id,
-        team_id=team_id,
-        enabled=True,
-        filters=[UserTeamDB.deleted_at.is_(None)],
-    ):
+    if live_membership_role(requester_id, team_id, model_registry) is None:
         raise HTTPException(
             status_code=403, detail="Caller is not a member of the target team"
         )
