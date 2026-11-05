@@ -1786,25 +1786,9 @@ def generate_permission_filter(
     # is filtered out via a final AND restriction below; these rules must NOT be
     # appended to ``conditions`` (which is OR'd) since doing so would grant access
     # to every non-ROOT record.
-    if hasattr(resource_db_cls, "user_id") and resource_db_cls.__tablename__ not in [
-        "invitations",
-        "Invitees",
-    ]:
-        # SYSTEM_ID records viewable by all, but only modifiable by ROOT_ID and SYSTEM_ID
-        if resource_db_cls.user_id == SYSTEM_ID:
-            if not (is_root_id(user_id) or is_system_id(user_id)):
-                if required_permission_level != PermissionType.VIEW:
-                    return false()
-
-        # TEMPLATE_ID records viewable, copyable, executable, shareable by all
-        # but only modifiable (EDIT/DELETE) by ROOT_ID and SYSTEM_ID
-        if resource_db_cls.user_id == TEMPLATE_ID:
-            if not (is_root_id(user_id) or is_system_id(user_id)):
-                if required_permission_level in [
-                    PermissionType.EDIT,
-                    PermissionType.DELETE,
-                ]:
-                    return false()
+    # SYSTEM_ID- and TEMPLATE_ID-owned records (user_id) are only modifiable
+    # by ROOT_ID and SYSTEM_ID: an AND restriction at the end of this function,
+    # since a Python ``if`` on a column comparison is never true (#275).
 
     # The users table has its own complete VIEW rule (section 5); the system
     # accounts are SYSTEM-created, so this grant would expose them.
@@ -1984,6 +1968,22 @@ def generate_permission_filter(
                 or_(
                     resource_db_cls.user_id.is_(None),
                     resource_db_cls.user_id != ROOT_ID,
+                ),
+            )
+        # SYSTEM/TEMPLATE-owned records (user_id) are viewable, copyable,
+        # executable and shareable by all, but only ROOT and SYSTEM edit or
+        # delete them (#275).
+        if (
+            hasattr(resource_db_cls, "user_id")
+            and resource_db_cls.__tablename__ not in ["invitations", "Invitees"]
+            and not is_system_id(user_id)
+            and required_permission_level in SERVER_ROW_MODIFYING_LEVELS
+        ):
+            final_filter = and_(
+                final_filter,
+                or_(
+                    resource_db_cls.user_id.is_(None),
+                    resource_db_cls.user_id.notin_([SYSTEM_ID, TEMPLATE_ID]),
                 ),
             )
         if hasattr(resource_db_cls, "created_by_user_id") and (

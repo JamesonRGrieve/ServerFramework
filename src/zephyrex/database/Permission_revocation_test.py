@@ -52,3 +52,37 @@ def test_a_revoked_grant_grants_nothing(server, model_registry):
     assert rotation.id not in {r.id for r in other.list()}
     with pytest.raises(HTTPException):
         other.update(rotation.id, description="still mine?")
+
+
+@pytest.mark.parametrize("owner_id", ["SYSTEM_ID", "TEMPLATE_ID"])
+def test_a_grant_cannot_edit_a_server_owned_row(server, model_registry, owner_id):
+    """#275: the EDIT/DELETE deny for SYSTEM- and TEMPLATE-owned rows was a
+    Python ``if`` on a column comparison, which is never true, so another
+    grant let a regular user change them. A grant still lets them view."""
+    from zephyrex.database.StaticPermissions import SYSTEM_ID, TEMPLATE_ID
+    from zephyrex.logic.BLL_Providers import RotationModel
+
+    owner, grantee = create_user(server), create_user(server)
+    team = create_team(server, owner.id, name=f"server-owned {uuid.uuid4().hex[:8]}")
+    add_user_to_team(server, grantee.id, team.id, env("USER_ROLE_ID"))
+    owned = RotationManager(requester_id=owner.id, model_registry=model_registry)
+    rotation = owned.create(name=f"server-owned {uuid.uuid4().hex}")
+    PermissionManager(requester_id=owner.id, model_registry=model_registry).create(
+        resource_type="rotations",
+        resource_id=rotation.id,
+        user_id=grantee.id,
+        can_view=True,
+        can_edit=True,
+    )
+    other = RotationManager(requester_id=grantee.id, model_registry=model_registry)
+    other.update(rotation.id, description="editable while the user owns it")
+
+    db_cls = RotationModel.DB(model_registry.DB.manager.Base)
+    server_id = {"SYSTEM_ID": SYSTEM_ID, "TEMPLATE_ID": TEMPLATE_ID}[owner_id]
+    with model_registry.DB.manager._get_db_session() as session:
+        session.query(db_cls).filter(db_cls.id == rotation.id).update(
+            {db_cls.user_id: server_id}, synchronize_session=False
+        )
+    assert other.get(id=rotation.id).id == rotation.id
+    with pytest.raises(HTTPException):
+        other.update(rotation.id, description="not the user's to change")
