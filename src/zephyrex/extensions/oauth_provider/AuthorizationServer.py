@@ -170,10 +170,13 @@ class _Rows:
         )
 
     def find(self, *filters: Any) -> List[Any]:
+        # A ROOT read also returns soft-deleted rows: without this, a revoked
+        # grant, a deleted client or a deleted user would still count as live.
+        live = [self.db.deleted_at.is_(None)] if hasattr(self.db, "deleted_at") else []
         rows: Optional[List[Any]] = self.db.list(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
-            filters=list(filters),
+            filters=[*filters, *live],
             return_type="dto",
             override_dto=self.model,
         )

@@ -932,6 +932,13 @@ class TestClientsAndGrants(OAuthFlows):
             server.get(USERINFO, headers=bearer(issued["access_token"])).status_code
             == 401
         )
+        # The soft-deleted client no longer resolves (#274): its secret is
+        # refused and no new token can be minted for it.
+        assert (
+            engine.clients.first(engine.clients.db.client_id == client.client_id)
+            is None
+        )
+        assert client.post(INTROSPECT, token="x").status_code == 401
 
     def test_user_lists_and_revokes_consent(self, server, admin_a, user, user_b):
         """Hole: neither replaced server stored a consent the user could see
@@ -964,6 +971,10 @@ class TestClientsAndGrants(OAuthFlows):
         assert (
             client.refresh(issued["refresh_token"]).json()["error"] == "invalid_grant"
         )
+        # The revoked grant no longer counts as consent (#274), so a
+        # prompt=none authorization can't mint a code from it.
+        engine = AuthorizationServer(self.registry(server))
+        assert engine.grants.first(engine.grants.db.id == grant_id) is None
 
 
 class TestSigningKeys(OAuthFlows):
