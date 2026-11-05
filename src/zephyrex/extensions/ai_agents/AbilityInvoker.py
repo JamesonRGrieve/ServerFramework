@@ -30,7 +30,7 @@ from typing import (
 
 from fastapi import HTTPException
 
-from zephyrex.extensions.ai_agents.BLL_AI_Agents import AbilityGrant
+from zephyrex.extensions.ai_agents.BLL_AI_Agents import IN_AGENT_ABILITY, AbilityGrant
 from zephyrex.extensions.ExternalErrors import BaseExternalError
 
 # Parameters of an ability's calling convention, never the model's to fill.
@@ -204,6 +204,9 @@ class AbilityInvoker:
             signature.bind(**call)
         except TypeError as error:
             raise ToolInvocationError(f"{tool!r} was called wrongly: {error}") from None
+        # Marks what the tool does as the agent's own (#277): a message it
+        # posts must not wake agents again.
+        marked = IN_AGENT_ABILITY.set(True)
         try:
             result = method(**call)
             if inspect.isawaitable(result):
@@ -212,4 +215,6 @@ class AbilityInvoker:
             raise ToolInvocationError(f"{tool!r} refused: {refused.detail}") from None
         except BaseExternalError as failed:
             raise ToolInvocationError(f"{tool!r} failed: {failed}") from None
+        finally:
+            IN_AGENT_ABILITY.reset(marked)
         return result

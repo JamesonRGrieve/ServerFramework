@@ -22,6 +22,7 @@ from zephyrex.extensions.ai_agents.AbilityInvoker import (
     coerce_arguments,
 )
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    IN_AGENT_ABILITY,
     AbilityGrant,
     AgentManager,
     tool_names,
@@ -153,3 +154,23 @@ class TestInvoking(ExtensionServerMixin):
             await invoker.invoke(
                 "turn_activity", {"invocation_instance_id": "missing"}, tools
             )
+
+
+class TestAgentAbilityMark:
+    @pytest.mark.asyncio
+    async def test_a_tool_call_runs_marked_as_the_agents(self, monkeypatch):
+        """#277: what a tool does is marked as the agent's, so a message it
+        posts doesn't wake agents again; the mark ends with the call."""
+        seen = []
+
+        async def ability(cls, requester_id: str) -> None:
+            seen.append(IN_AGENT_ABILITY.get())
+
+        invoker = AbilityInvoker(model_registry=None, requester_id="u")
+        monkeypatch.setattr(
+            invoker, "resolve", lambda _grant: ability.__get__(object)
+        )
+        allowed = {"probe": grant("probe")}
+        await invoker.invoke("probe", None, allowed)
+        assert seen == [True]
+        assert IN_AGENT_ABILITY.get() is False

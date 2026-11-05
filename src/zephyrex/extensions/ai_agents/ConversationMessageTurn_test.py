@@ -13,6 +13,7 @@ import uuid
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    IN_AGENT_ABILITY,
     AgentManager,
     ConversationAgentManager,
     InvocationInstanceManager,
@@ -136,6 +137,23 @@ class TestConversationMessageTurn(ExtensionServerMixin):
         MessageManager(
             requester_id=admin_a.id, model_registry=model_registry
         ).create_agent_message(conversation_id=conversation.id, content="agent reply")
+        assert self._turns(agent.id, admin_a, model_registry) == []
+
+    def test_a_message_from_an_agents_tool_does_not_loop(
+        self, admin_a, model_registry
+    ):
+        """#277: post_message and start_direct_message post through
+        MessageManager.create as the owner, so the message has an author;
+        posted from an agent's tool call, it still wakes no agent, or an
+        agent replying with the tool would wake itself without end."""
+        agent, conversation = self._seated_agent(
+            admin_a, model_registry, auto_respond=True
+        )
+        marked = IN_AGENT_ABILITY.set(True)
+        try:
+            self._post(conversation.id, admin_a, model_registry, "via a tool")
+        finally:
+            IN_AGENT_ABILITY.reset(marked)
         assert self._turns(agent.id, admin_a, model_registry) == []
 
     def test_a_listening_agent_outside_the_conversation_does_not_fire(

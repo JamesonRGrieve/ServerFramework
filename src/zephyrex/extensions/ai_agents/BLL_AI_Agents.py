@@ -28,6 +28,7 @@ are read as SYSTEM.
 import json
 import re
 import secrets
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
@@ -1595,21 +1596,40 @@ def _user_exists(model_registry: Any, user_id: str) -> None:
         raise _not_found("User not found") from None
 
 
+# Set while an agent's tool call runs. A message an agent posts through an
+# ability (post_message, start_direct_message) goes through
+# MessageManager.create as the agent's owner, so it carries a user_id; this
+# flag is how the wake hook tells it from a person's message (#277).
+IN_AGENT_ABILITY: ContextVar[bool] = ContextVar("in_agent_ability", default=False)
+
+
 @hook_bll(MessageManager.create, timing=HookTiming.AFTER)
-async def fire_conversation_message_turns(context: HookContext) -> None:
+def fire_conversation_message_turns(context: HookContext) -> None:
     """A user's message wakes the agents in its conversation that react to
     messages: each active participant with ``auto_respond`` or an enabled
     ``conversation_message`` trigger takes a turn, as its owner, handed the
     message.
 
     Agents post through ``MessageManager.create_agent_message``, which is not
-    ``create``; a message without an author is skipped too, so an agent's
-    reply never wakes an agent."""
-    if not _ai_agents_loaded(context.manager):
+    ``create``; a message posted through one of an agent's tools, or without
+    an author, is skipped too, so an agent's reply never wakes an agent.
+
+    Synchronous so the agent-tool check reads the caller's context; the
+    turns themselves run in the background."""
+    if IN_AGENT_ABILITY.get() or not _ai_agents_loaded(context.manager):
         return
-    for message in created_records(context.result):
-        if message.user_id:
-            await _wake_agents_for(context.manager.model_registry, message)
+    messages = [m for m in created_records(context.result) if m.user_id]
+    if not messages:
+        return
+    from zephyrex.logic.AbstractLogicManager.manager import _fire_and_forget
+
+    registry = context.manager.model_registry
+
+    async def wake() -> None:
+        for message in messages:
+            await _wake_agents_for(registry, message)
+
+    _fire_and_forget(wake())
 
 
 async def _wake_agents_for(registry: Any, message: Any) -> None:
