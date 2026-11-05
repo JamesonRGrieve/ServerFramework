@@ -943,19 +943,38 @@ class _InMemoryCounter:
     distributed implementation.
     """
 
+    # Every this many increments, keys idle for longer than the longest
+    # window seen are dropped, so keys from one-off actors or paths don't
+    # accumulate for the life of the process (#276).
+    SWEEP_EVERY = 1024
+
     def __init__(self) -> None:
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
         self._lock = RLock()
+        self._max_window = 0
+        self._since_sweep = 0
 
     def incr(self, key: str, window_seconds: int) -> int:
         now = time.monotonic()
         cutoff = now - window_seconds
         with self._lock:
+            self._max_window = max(self._max_window, window_seconds)
+            self._since_sweep += 1
+            if self._since_sweep >= self.SWEEP_EVERY:
+                self._sweep(now)
             bucket = self._buckets[key]
             while bucket and bucket[0] < cutoff:
                 bucket.popleft()
             bucket.append(now)
             return len(bucket)
+
+    def _sweep(self, now: float) -> None:
+        """Drop every key whose newest count is older than any window."""
+        self._since_sweep = 0
+        idle = now - self._max_window
+        stale = [k for k, b in self._buckets.items() if not b or b[-1] < idle]
+        for k in stale:
+            del self._buckets[k]
 
     def reset(self, key: str | None = None) -> None:
         with self._lock:
@@ -1180,8 +1199,10 @@ class NoOpAnomalyDetector(AnomalyDetector):
 _RATE_LIMIT_REGISTRY: dict[tuple[str, str], tuple[int, int, str]] = {}
 # Templated paths, compiled: the middleware runs before routing resolves the
 # route, so a request path is matched against these patterns.
+# Each entry keeps its template, which keys the counter: keyed on the raw
+# path, every distinct parameter value would get a fresh budget (#276).
 _TEMPLATED_RATE_LIMITS: dict[
-    str, list[tuple[re.Pattern[str], tuple[int, int, str]]]
+    str, list[tuple[re.Pattern[str], str, tuple[int, int, str]]]
 ] = {}
 
 # Attributes `@rate_limit` stamps on a callable.
@@ -1201,14 +1222,17 @@ def carry_rate_limit(source: Any, target: Any) -> None:
             setattr(target, marker, getattr(source, marker))
 
 
-def _rate_limit_policy(method: str, path: str) -> tuple[int, int, str] | None:
-    """The policy for a request, by exact path or templated pattern."""
+def _rate_limit_policy(
+    method: str, path: str
+) -> tuple[tuple[int, int, str], str] | None:
+    """The policy for a request, by exact path or templated pattern, with
+    the route it counts against: the path itself, or the matched template."""
     policy = _RATE_LIMIT_REGISTRY.get((method, path))
     if policy is not None:
-        return policy
-    for pattern, templated_policy in _TEMPLATED_RATE_LIMITS.get(method, []):
+        return policy, path
+    for pattern, template, templated_policy in _TEMPLATED_RATE_LIMITS.get(method, []):
         if pattern.match(path):
-            return templated_policy
+            return templated_policy, template
     return None
 
 
@@ -1236,9 +1260,9 @@ def register_rate_limited_route(
         pattern = compile_path(path)[0]
         templated = _TEMPLATED_RATE_LIMITS.setdefault(method.upper(), [])
         templated[:] = [
-            (p, pol) for p, pol in templated if p.pattern != pattern.pattern
+            (p, t, pol) for p, t, pol in templated if p.pattern != pattern.pattern
         ]
-        templated.append((pattern, policy))
+        templated.append((pattern, path, policy))
 
 
 def reset_rate_limit_counts() -> None:
@@ -1355,13 +1379,13 @@ class RateLimitMiddleware:
         path = scope_dict.get("path", "")
         # Middleware runs before routing, so templated routes are matched by
         # pattern rather than through a resolved route.
-        policy = _rate_limit_policy(method, path)
+        matched = _rate_limit_policy(method, path)
 
-        if policy is None:
+        if matched is None:
             await self.app(scope_dict, receive, send)
             return
 
-        count_limit, window_seconds, rl_scope = policy
+        (count_limit, window_seconds, rl_scope), route = matched
 
         # Build a tiny request facade for `_resolve_actor_key`. Avoids
         # importing FastAPI's Request here so the module stays lightweight.
@@ -1413,7 +1437,7 @@ class RateLimitMiddleware:
 
         counter = _get_counter()
         # Both implementations expose `incr(key, window_seconds)`.
-        key = f"rl:{method}:{path}:{rl_scope}:{actor}"
+        key = f"rl:{method}:{route}:{rl_scope}:{actor}"
         try:
             current = counter.incr(key, window_seconds)
         except Exception:

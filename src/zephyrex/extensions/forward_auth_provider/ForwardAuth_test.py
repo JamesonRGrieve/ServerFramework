@@ -393,7 +393,7 @@ class TestTrustedProxy:
 
     def test_rate_limited_per_address(self) -> None:
         count, window = parse_rate_spec(FORWARD_AUTH_RATE_LIMIT)
-        assert _rate_limit_policy("GET", VERIFY) == (count, window, "ip")
+        assert _rate_limit_policy("GET", VERIFY) == ((count, window, "ip"), VERIFY)
 
 
 class TestRules:
