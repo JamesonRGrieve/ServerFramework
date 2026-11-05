@@ -578,6 +578,41 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
 
     @pytest.mark.security
     @pytest.mark.mfa
+    def test_concurrent_submissions_of_one_code_pass_once(
+        self, admin_a, model_registry
+    ):
+        """#280: the replay guard checked, then marked, in two steps, so
+        concurrent submissions of one captured code could all pass."""
+        import threading
+
+        pyotp = pytest.importorskip("pyotp")
+        from zephyrex.lib.SecretEncryption import decrypt_secret
+
+        manager = MultifactorMethodManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method = manager.create(
+            user_id=admin_a.id, method_type=MultifactorMethodType.TOTP
+        )
+        secret = decrypt_secret(method.totp_secret)
+        code = pyotp.TOTP(secret).now()
+        racers = 16
+        start = threading.Barrier(racers)
+        results: list = []
+
+        def submit() -> None:
+            start.wait()
+            results.append(manager.verify_totp_code(secret, code))
+
+        threads = [threading.Thread(target=submit) for _ in range(racers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert results.count(True) == 1
+
+    @pytest.mark.security
+    @pytest.mark.mfa
     def test_totp_rejects_far_future_code(self, admin_a, model_registry):
         """A TOTP code from far outside the valid window must be rejected."""
         import time

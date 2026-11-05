@@ -627,27 +627,21 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
         return f"mfa-totp:{secret_fingerprint}:{code}"
 
     @classmethod
-    def _record_used_totp(cls, secret_fingerprint: str, code: str) -> None:
-        """Remember that a (secret, code) pair has been accepted.
+    def _claim_totp(cls, secret_fingerprint: str, code: str) -> bool:
+        """Record a (secret, code) pair as used; False when it already was.
 
-        Goes through the shared :class:`ReplayCache` so multi-worker
-        deployments that install a Valkey/Postgres-backed cache see a
-        consistent view. The default in-memory cache is fine for
-        single-process testing.
+        One atomic compare-and-set on the shared :class:`ReplayCache`, so of
+        concurrent submissions of one code exactly one wins (#280): a check
+        followed by a separate mark let every racer through. Multi-worker
+        deployments install a Valkey/Postgres-backed cache for a consistent
+        view; the in-memory default is atomic within one process.
         """
         from zephyrex.lib.ReplayCache import get_replay_cache
 
-        get_replay_cache().mark_used(
+        return get_replay_cache().mark_if_unused(
             cls._replay_key(secret_fingerprint, code),
             ttl_seconds=cls._TOTP_REPLAY_TTL_SECONDS,
         )
-
-    @classmethod
-    def _is_totp_replayed(cls, secret_fingerprint: str, code: str) -> bool:
-        """Return True if this (secret, code) pair has already been used."""
-        from zephyrex.lib.ReplayCache import get_replay_cache
-
-        return get_replay_cache().is_used(cls._replay_key(secret_fingerprint, code))
 
     def verify_totp_code(
         self,
@@ -678,10 +672,7 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
             import hashlib
 
             fingerprint = hashlib.sha256(secret.encode()).hexdigest()
-            if self._is_totp_replayed(fingerprint, code):
-                return False
-            self._record_used_totp(fingerprint, code)
-            return True
+            return self._claim_totp(fingerprint, code)
         except Exception as e:
             logger.error(f"Error verifying TOTP code: {e}")
             return False
