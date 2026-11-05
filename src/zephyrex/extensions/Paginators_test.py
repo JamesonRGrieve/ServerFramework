@@ -50,6 +50,20 @@ class TestTokenEnvelope:
         with pytest.raises(InvalidPaginationError):
             decode_token("!!!not-base64!!!")
 
+    def test_unsigned_token_raises(self):
+        """#278: a token without a signature skipped verification, so a
+        client could forge the cursor and page size."""
+        import base64
+        import json
+
+        h = query_hash({"a": 1})
+        raw = json.dumps(
+            {"provider_cursor": "forged", "page_size": 100000, "query_hash": h}
+        ).encode()
+        forged = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        with pytest.raises(InvalidPaginationError):
+            decode_token(forged, expected_query_hash=h)
+
     def test_empty_token_raises(self):
         with pytest.raises(InvalidPaginationError):
             decode_token("")

@@ -114,17 +114,17 @@ def decode_token(
     if not token:
         raise InvalidPaginationError("Empty pagination token")
     try:
-        if "." in token:
-            encoded_part, sig = token.rsplit(".", 1)
-        else:
-            encoded_part = token
-            sig = None
+        # Every token encode_token makes is signed. One without a signature
+        # is forged: verifying only when a signature is present would let a
+        # client choose the cursor and page size (#278).
+        if "." not in token:
+            raise InvalidPaginationError("Pagination token is not signed")
+        encoded_part, sig = token.rsplit(".", 1)
         padded = encoded_part + "=" * (-len(encoded_part) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
-        if sig is not None:
-            expected_sig = hmac.new(_token_hmac_key(), raw, "sha256").hexdigest()[:16]
-            if not hmac.compare_digest(sig, expected_sig):
-                raise InvalidPaginationError("Pagination token signature invalid")
+        expected_sig = hmac.new(_token_hmac_key(), raw, "sha256").hexdigest()[:16]
+        if not hmac.compare_digest(sig, expected_sig):
+            raise InvalidPaginationError("Pagination token signature invalid")
         payload = json.loads(raw)
     except InvalidPaginationError:
         raise
