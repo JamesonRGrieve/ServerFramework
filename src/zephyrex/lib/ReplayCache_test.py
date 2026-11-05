@@ -112,3 +112,50 @@ class TestBaseDefaultMarkIfUnused:
         assert cache.is_used("alpha") is True
         # Second caller refused.
         assert cache.mark_if_unused("alpha", ttl_seconds=60) is False
+
+
+class TestBound:
+    """#282: ``max_entries`` was not a cap. Past it, a sweep removed only
+    expired keys, so live keys grew without bound and every later write
+    scanned the whole cache under the lock."""
+
+    def test_live_entries_never_exceed_the_bound(self):
+        cache = InMemoryReplayCache(max_entries=50)
+        for n in range(500):
+            assert cache.mark_if_unused(f"k{n}", ttl_seconds=3600)
+        assert len(cache._impl) == 50
+        assert len(cache._deadlines) <= 2 * max(len(cache._impl), 1024)
+
+    def test_the_entries_closest_to_expiry_are_evicted_first(self):
+        cache = InMemoryReplayCache(max_entries=3)
+        cache.mark_used("soon", ttl_seconds=10)
+        cache.mark_used("later", ttl_seconds=1000)
+        cache.mark_used("latest", ttl_seconds=2000)
+        cache.mark_used("new", ttl_seconds=500)
+        assert not cache.is_used("soon")
+        assert all(cache.is_used(k) for k in ("later", "latest", "new"))
+
+    def test_expired_entries_go_before_any_live_one(self):
+        cache = InMemoryReplayCache(max_entries=3)
+        cache.mark_used("expired", ttl_seconds=-1)
+        cache.mark_used("a", ttl_seconds=1000)
+        cache.mark_used("b", ttl_seconds=1000)
+        cache.mark_used("c", ttl_seconds=1000)
+        assert "expired" not in cache._impl
+        assert all(cache.is_used(k) for k in ("a", "b", "c"))
+
+    def test_re_marking_a_key_keeps_its_new_deadline(self):
+        cache = InMemoryReplayCache(max_entries=2)
+        cache.mark_used("k", ttl_seconds=10)
+        cache.mark_used("k", ttl_seconds=1000)
+        cache.mark_used("other", ttl_seconds=500)
+        cache.mark_used("third", ttl_seconds=2000)
+        # The stale 10 s entry for "k" must not evict its live 1000 s one.
+        assert cache.is_used("k") and cache.is_used("third")
+        assert not cache.is_used("other")
+
+    def test_stale_heap_entries_are_compacted(self):
+        cache = InMemoryReplayCache(max_entries=10)
+        for _ in range(5000):
+            cache.mark_used("same", ttl_seconds=1000)
+        assert len(cache._deadlines) <= 2 * 1024

@@ -26,6 +26,7 @@ replay rejection.
 
 from __future__ import annotations
 
+import heapq
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -67,24 +68,55 @@ class InMemoryReplayCache(ReplayCache):
 
     Honours the per-call ``ttl_seconds`` argument: each entry stores a
     deadline and ``is_used`` returns False once the deadline has passed.
-    A best-effort sweep collects expired entries when the dict grows
-    past ``max_entries`` so memory stays bounded under high churn.
+
+    ``max_entries`` is a real bound (#282). Deadlines sit in a min-heap, so
+    each write drops what has expired in amortised O(log n), never a scan
+    of the whole cache under the lock. When the cache is full of live
+    entries, the one closest to expiry is evicted, with a warning: memory
+    stays bounded, and a deployment whose live keys outgrow the bound
+    installs a shared (Valkey) cache instead.
     """
 
     def __init__(self, max_entries: int = 100_000):
         self._lock = threading.Lock()
         self._max_entries = max_entries
         self._impl: dict = {}
+        # (deadline, key); an entry is stale once its key was re-marked
+        # with another deadline or removed.
+        self._deadlines: list[tuple[float, str]] = []
+        self._warned_full = False
+
+    def _store(self, key: str, deadline: float, now: float) -> None:
+        """Record ``key`` until ``deadline``, then restore the bound.
+        Caller holds the lock."""
+        self._impl[key] = deadline
+        heapq.heappush(self._deadlines, (deadline, key))
+        while self._deadlines and self._deadlines[0][0] < now:
+            old_deadline, old_key = heapq.heappop(self._deadlines)
+            if self._impl.get(old_key) == old_deadline:
+                del self._impl[old_key]
+        while len(self._impl) > self._max_entries:
+            old_deadline, old_key = heapq.heappop(self._deadlines)
+            if self._impl.get(old_key) == old_deadline:
+                del self._impl[old_key]
+                if not self._warned_full:
+                    self._warned_full = True
+                    logger.warning(
+                        "InMemoryReplayCache is full (%d live entries): evicting "
+                        "the entries closest to expiry. Install a shared replay "
+                        "cache (Valkey) for this load.",
+                        self._max_entries,
+                    )
+        # Re-marked keys leave stale heap entries; rebuild before they
+        # outnumber the live ones.
+        if len(self._deadlines) > 2 * max(len(self._impl), 1024):
+            self._deadlines = [(d, k) for k, d in self._impl.items()]
+            heapq.heapify(self._deadlines)
 
     def mark_used(self, key: str, ttl_seconds: int) -> None:
-        deadline = time.time() + ttl_seconds
+        now = time.time()
         with self._lock:
-            self._impl[key] = deadline
-            if len(self._impl) > self._max_entries:
-                now = time.time()
-                expired = [k for k, d in self._impl.items() if d < now]
-                for k in expired:
-                    self._impl.pop(k, None)
+            self._store(key, now + ttl_seconds, now)
 
     def is_used(self, key: str) -> bool:
         with self._lock:
@@ -99,16 +131,11 @@ class InMemoryReplayCache(ReplayCache):
     def mark_if_unused(self, key: str, ttl_seconds: int) -> bool:
         """Atomic CAS within a single process via the cache lock."""
         now = time.time()
-        deadline = now + ttl_seconds
         with self._lock:
             existing = self._impl.get(key)
             if existing is not None and existing >= now:
                 return False
-            self._impl[key] = deadline
-            if len(self._impl) > self._max_entries:
-                expired = [k for k, d in self._impl.items() if d < now]
-                for k in expired:
-                    self._impl.pop(k, None)
+            self._store(key, now + ttl_seconds, now)
             return True
 
 
