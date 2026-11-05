@@ -186,7 +186,6 @@ class StaleRecord(Exception):
         self.current: Dict[str, Any] = dict(current)
 
 
-class FederatedSession(ABC):
     """One requester's access to a source, for one request. A source
     implements the operations its types declare; the others are never
     called. Refusals are ``HTTPException`` carrying the upstream's reason
@@ -229,7 +228,6 @@ class FederatedSession(ABC):
         self._unsupported(Operation.DELETE)
 
 
-class AbstractFederatedSource(ABC):
     """One upstream, as one account sees it, whose record types are served
     as typed models."""
 
@@ -281,7 +279,6 @@ def _pascal(text: str) -> str:
     return "".join(word[:1].upper() + word[1:] for word in _words(text)) or "Type"
 
 
-def type_slugs(names: Sequence[str]) -> List[str]:
     """Each type name's slug: snake case, distinct (``_2``... for a slug
     two names share, in the order given)."""
     slugs: List[str] = []
@@ -309,11 +306,9 @@ def model_stem(namespace: str, slug: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class _SchemaComponents:
     """A type's JSON Schema as two sets of OpenAPI component schemas, the
     record's and the write payload's, one component per object."""
 
-    def __init__(self, stem: str, schema: Mapping[str, Any]) -> None:
         self.stem = stem
         definitions = schema.get("$defs") or schema.get("definitions") or {}
         self.definitions: Mapping[str, Any] = (
@@ -386,7 +381,6 @@ class _SchemaComponents:
             return {"$ref": f"#/components/schemas/{self._component(name, schema)}"}
         return self._shape(schema, lambda item: self._value(name, item))
 
-    def _write_component(self, name: str, schema: Mapping[str, Any]) -> Optional[str]:
         """The write payload's component, or None when nothing in it is
         writable."""
         written = f"{name}{_WRITE_SUFFIX}"
@@ -430,10 +424,6 @@ class _SchemaComponents:
             return None
         return {"$ref": f"#/components/schemas/{component}"}
 
-    @staticmethod
-    def _shape(
-        schema: Mapping[str, Any], item_value: Callable[[Mapping[str, Any]], Any]
-    ) -> Dict[str, Any]:
         """A value that is not an object: its type (``["x", "null"]`` is
         an optional x; several types any of them), an array's items, an
         enumeration of strings, a choice of schemas."""
@@ -577,7 +567,6 @@ def record_etag(lifted: LiftedType, record: BaseModel) -> Dict[str, str]:
     return {"ETag": f'"{version}"'} if version not in (None, "") else {}
 
 
-class FederatedTypeEndpoints(AbstractBLLManager, RouterMixin):
     """What every federated type's synthesized manager shares: typed routes,
     authenticated, each a live call through the source's session for the
     requester."""
@@ -704,7 +693,6 @@ def _typed(
     }
 
 
-def _routes(source: AbstractFederatedSource, lifted: LiftedType) -> Dict[str, Any]:
     stem = lifted.record.__name__
     name = lifted.federated.name
     key = lifted.federated.key_field
@@ -896,7 +884,6 @@ class FederatedCatalogue(BaseModel):
     types: List[FederatedTypeInfo]
 
 
-def type_info(manager: Any) -> FederatedTypeInfo:
     """What a typed manager serves, as a client needs to call it."""
     from strawberry.utils.str_converters import to_camel_case
 

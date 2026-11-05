@@ -84,8 +84,6 @@ def is_shutting_down() -> bool:
 _CRITICAL_PROVIDER_DOWN_SINCE: Dict[str, float] = {}
 
 
-def _hysteresis_seconds() -> float:
-    raw = os.environ.get("READYZ_HYSTERESIS_SECONDS")
     if raw is None:
         return 60.0
     try:
@@ -94,7 +92,6 @@ def _hysteresis_seconds() -> float:
         return 60.0
 
 
-def _record_critical_health(provider_id: str, ok: bool) -> bool:
     """Track a Critical-tier provider's health and return True if it should
     fail readiness (DOWN for > the hysteresis window)."""
     now = time.monotonic()
@@ -122,8 +119,6 @@ HealthChecker = Callable[[], bool]
 CriticalProvidersFn = Callable[[], List[Any]]
 
 
-@dataclass
-class _OperationsConfig:
     """Mutable config injected into the router at construction.
 
     Tests pass overrides; production wires actual DB / credential / provider
@@ -145,8 +140,6 @@ class _OperationsConfig:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class Alert:
     """Declarative alert tying a metric to a runbook entry."""
 
     metric: str
@@ -156,7 +149,6 @@ class Alert:
     severity: str = "warning"
     description: str = ""
 
-    def to_alertmanager_dict(self) -> Dict[str, Any]:
         """Render to Prometheus AlertManager rule shape."""
         expr = f"{self.metric} > {self.threshold}"
         annotations = {
@@ -188,7 +180,6 @@ def clear_alerts() -> None:
     ALERT_REGISTRY.clear()
 
 
-def generate_alertmanager_yaml() -> str:
     """Emit a Prometheus AlertManager rules YAML for every registered alert.
 
     YAML is rendered by hand (no extra dependency on PyYAML) since the
@@ -226,7 +217,6 @@ def _yaml_quote(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def add_runbook_url_to_error(exc: BaseException, url: str) -> None:
     """Set ``runbook_url`` on a typed framework error.
 
     The error hierarchy from :mod:`extensions.ExternalErrors` carries
@@ -235,7 +225,6 @@ def add_runbook_url_to_error(exc: BaseException, url: str) -> None:
     specific runbook than the class default. The URL is set on the
     instance, leaving the class-level default untouched.
     """
-    setattr(exc, "runbook_url", url)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +232,6 @@ def add_runbook_url_to_error(exc: BaseException, url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-class DLQFilter(BaseModel):
     """Filter envelope used to query DLQ entries."""
 
     model_config = ConfigDict(extra="ignore")
@@ -255,7 +243,6 @@ class DLQFilter(BaseModel):
     until: Optional[datetime] = None
 
 
-def _apply_dlq_filter(entries: List[Any], flt: DLQFilter) -> List[Any]:
     out: List[Any] = []
     for e in entries:
         # Tolerant attribute / dict access so the filter works against the
@@ -289,7 +276,6 @@ def _get_attr(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
-def _as_dt(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
@@ -300,7 +286,6 @@ def _as_dt(value: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _serialize_dlq_entry(entry: Any) -> Dict[str, Any]:
     """Render a DLQ entry into a JSON-safe dict regardless of source shape."""
     if hasattr(entry, "model_dump"):
         return entry.model_dump(mode="json")  # type: ignore[no-any-return]
@@ -334,7 +319,6 @@ def _default_dlq_lister(**_kwargs: Any) -> List[Any]:
     return []
 
 
-def _default_failed_services() -> List[Any]:
     """Lazy lookup for ``failed``-state services from the registry."""
     try:
         from zephyrex.logic.AbstractService import ServiceRegistry
@@ -350,7 +334,6 @@ def _default_failed_services() -> List[Any]:
     return failed
 
 
-def _default_service_reset(name: str) -> bool:
     try:
         from zephyrex.logic.AbstractService import ServiceRegistry
     except ImportError:
@@ -385,10 +368,6 @@ def _default_service_reset(name: str) -> bool:
 # but they are no longer the auth gate.
 
 
-def _require_admin_principal(
-    request: Request,
-    authorization: Optional[str] = Header(default=None),
-) -> str:
     """Return the resolved admin principal id, or raise 401/403.
 
     Resolution order: ``X-API-Key`` → ``Authorization: Bearer <key>`` →
@@ -450,17 +429,6 @@ def _require_admin_principal(
 # ---------------------------------------------------------------------------
 
 
-def create_operations_router(
-    *,
-    db_check: Optional[HealthChecker] = None,
-    credential_check: Optional[HealthChecker] = None,
-    critical_providers: Optional[CriticalProvidersFn] = None,
-    dlq_lister: Optional[Callable[..., List[Any]]] = None,
-    dlq_replay: Optional[Callable[[str], bool]] = None,
-    dlq_discard: Optional[Callable[[str], bool]] = None,
-    failed_services_lister: Optional[Callable[[], List[Any]]] = None,
-    service_reset: Optional[Callable[[str], bool]] = None,
-) -> APIRouter:
     """Construct the operations ``APIRouter``.
 
     Every external dependency is injected so the router is testable in
@@ -494,8 +462,6 @@ def create_operations_router(
             )
         return {"status": "ok"}
 
-    @router.get("/readyz")
-    def readyz() -> Dict[str, Any]:
         problems: List[str] = []
 
         # DB reachability.
@@ -503,7 +469,6 @@ def create_operations_router(
             try:
                 if not cfg.db_check():
                     problems.append("db_unreachable")
-            except Exception as e:  # noqa: BLE001
                 problems.append(f"db_unreachable:{type(e).__name__}")
 
         # Credential store reachability.
@@ -511,14 +476,12 @@ def create_operations_router(
             try:
                 if not cfg.credential_check():
                     problems.append("credentials_unreachable")
-            except Exception as e:  # noqa: BLE001
                 problems.append(f"credentials_unreachable:{type(e).__name__}")
 
         # Critical-tier providers, with hysteresis.
         if cfg.critical_providers is not None:
             try:
                 providers = cfg.critical_providers()
-            except Exception as e:  # noqa: BLE001
                 providers = []
                 problems.append(f"critical_providers_lookup_failed:{type(e).__name__}")
             for prv in providers:
@@ -529,7 +492,6 @@ def create_operations_router(
                 )
                 try:
                     report = prv.health_check()
-                except Exception as e:  # noqa: BLE001
                     if _record_critical_health(pid, ok=False):
                         problems.append(f"provider_down:{pid}")
                     continue

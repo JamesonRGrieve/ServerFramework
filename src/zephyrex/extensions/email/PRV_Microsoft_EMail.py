@@ -40,7 +40,6 @@ except ImportError:  # pragma: no cover - optional driver
     _requests_available = False
 
 
-class MicrosoftProvider(AbstractEmailProvider):
     """Microsoft Outlook email provider over the Microsoft Graph API."""
 
     name: ClassVar[str] = "microsoft"
@@ -124,8 +123,6 @@ class MicrosoftProvider(AbstractEmailProvider):
             return False
         return True
 
-    @classmethod
-    def health_check(cls) -> HealthReport:
         token = cls._access_token()
         if not token:
             return HealthReport(HealthStatus.DOWN, detail="access token not configured")
@@ -145,13 +142,8 @@ class MicrosoftProvider(AbstractEmailProvider):
                     HealthStatus.DEGRADED, detail=f"/me status {status}"
                 )
             return HealthReport(HealthStatus.DOWN, detail=f"/me status {status}")
-        except Exception as exc:  # noqa: BLE001 — defensive
             return HealthReport(HealthStatus.DOWN, detail=f"network error: {exc}")
 
-    @classmethod
-    def bond_instance(
-        cls, instance: Optional[ProviderInstanceModel]
-    ) -> Optional[AbstractProviderInstance_SDK]:
         if not _requests_available:
             logger.error("requests package not available")
             return None

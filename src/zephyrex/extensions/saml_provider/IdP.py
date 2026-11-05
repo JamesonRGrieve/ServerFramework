@@ -75,15 +75,12 @@ RELEASABLE_ATTRIBUTES: Dict[str, str] = {
 _PEM_CERTIFICATE = "CERTIFICATE"
 
 
-class RefusedMessage(ValueError):
     """A message from an SP that is not answered. The text is safe to show."""
 
 
-class SignatureRefused(RefusedMessage):
     """A signature that is missing where required, or does not verify."""
 
 
-def normalized_pem(value: str) -> str:
     """PEM text with escaped newlines (as an environment value may carry
     them) restored and surrounding space removed."""
     text = value.strip()
@@ -92,7 +89,6 @@ def normalized_pem(value: str) -> str:
     return text + "\n"
 
 
-def load_certificate(pem: str) -> x509.Certificate:
     """The X.509 certificate in ``pem``; ValueError when it is not one."""
     try:
         return x509.load_pem_x509_certificate(normalized_pem(pem).encode("ascii"))
@@ -106,22 +102,17 @@ def certificate_body(pem: str) -> str:
     return base64.b64encode(der).decode("ascii")
 
 
-def rsa_public_key(pem: str) -> rsa.RSAPublicKey:
     key = load_certificate(pem).public_key()
     if not isinstance(key, rsa.RSAPublicKey):
         raise ValueError("the certificate's key is not RSA")
     return key
 
 
-@dataclass(frozen=True)
-class SigningIdentity:
     """The IdP's RSA private key and the certificate it publishes for it."""
 
     certificate_pem: str
     private_key_pem: str
 
-    @classmethod
-    def checked(cls, certificate_pem: str, private_key_pem: str) -> "SigningIdentity":
         """The pair, refused (ValueError) unless the key is RSA and is the
         certificate's."""
         certificate = rsa_public_key(certificate_pem)
@@ -142,8 +133,6 @@ class SigningIdentity:
         return cls(normalized_pem(certificate_pem), normalized_pem(private_key_pem))
 
 
-@dataclass(frozen=True)
-class IdPSite:
     """Where the IdP is: its entity id and SSO endpoint (both bindings),
     and how long an assertion it issues stays valid."""
 
@@ -152,8 +141,6 @@ class IdPSite:
     assertion_lifetime: timedelta
 
 
-@dataclass(frozen=True)
-class ServiceProvider:
     """A registered SP, as the protocol needs it."""
 
     entity_id: str
@@ -162,7 +149,6 @@ class ServiceProvider:
     encrypt_assertions: bool
     name_id_format: str
 
-    def metadata_xml(self) -> str:
         """This SP's SAML metadata, built from its registration."""
         descriptor = md.SPSSODescriptor(
             protocol_support_enumeration=samlp.NAMESPACE,
@@ -188,7 +174,6 @@ class ServiceProvider:
         return xml.decode("utf-8")
 
 
-def _decoded(encoded: str) -> bytes:
     if len(encoded) > MAX_ENCODED_MESSAGE_BYTES:
         raise RefusedMessage("the SAML message is too large")
     try:
@@ -197,7 +182,6 @@ def _decoded(encoded: str) -> bytes:
         raise RefusedMessage("the SAML message is not base64") from exc
 
 
-def _inflated(raw: bytes) -> bytes:
     inflater = zlib.decompressobj(-zlib.MAX_WBITS)
     try:
         xml = inflater.decompress(raw, MAX_INFLATED_MESSAGE_BYTES)
@@ -208,7 +192,6 @@ def _inflated(raw: bytes) -> bytes:
     return xml
 
 
-def message_xml(encoded: str, binding: str) -> str:
     """A received AuthnRequest's XML: inflated for HTTP-Redirect; for
     HTTP-POST plain base64 (or, as pysaml2 also accepts, deflated)."""
     raw = _decoded(encoded)
@@ -227,11 +210,9 @@ def message_xml(encoded: str, binding: str) -> str:
         raise RefusedMessage("the SAML message is not UTF-8") from exc
 
 
-def request_issuer(xml: str) -> str:
     """The entity id an AuthnRequest says it is from (unverified)."""
     try:
         request = samlp.authn_request_from_string(xml)
-    except Exception as exc:  # pysaml2 raises bare parse errors of several kinds
         raise RefusedMessage("not a SAML AuthnRequest") from exc
     if (
         request is None
@@ -243,7 +224,6 @@ def request_issuer(xml: str) -> str:
     return issuer
 
 
-def _query_pairs(raw_query: str) -> Dict[str, str]:
     """The raw (still percent-encoded) value of each parameter; a repeated
     signed parameter is refused, since which copy was signed is unknown."""
     pairs: Dict[str, str] = {}
@@ -255,7 +235,6 @@ def _query_pairs(raw_query: str) -> Dict[str, str]:
     return pairs
 
 
-def verify_redirect_signature(raw_query: str, certificate_pem: str) -> None:
     """Check an HTTP-Redirect AuthnRequest's signature against the SP's
     certificate, over the signed parameters exactly as they arrived."""
     pairs = _query_pairs(raw_query)
@@ -280,7 +259,6 @@ def verify_redirect_signature(raw_query: str, certificate_pem: str) -> None:
         raise SignatureRefused("the AuthnRequest's signature does not verify") from exc
 
 
-def check_issue_instant(request: samlp.AuthnRequest, now: datetime) -> None:
     """Refuse an AuthnRequest issued too long ago, or in the future."""
     try:
         issued = datetime.fromtimestamp(
@@ -292,14 +270,6 @@ def check_issue_instant(request: samlp.AuthnRequest, now: datetime) -> None:
         raise RefusedMessage("the AuthnRequest is stale or from the future")
 
 
-@contextmanager
-def idp_server(
-    site: IdPSite,
-    identity: SigningIdentity,
-    sp: Optional[ServiceProvider] = None,
-    *,
-    want_signed_post_requests: bool = False,
-) -> Iterator[Server]:
     """A pysaml2 IdP for one exchange with ``sp`` (or none, for metadata).
 
     xmlsec1 reads the signing key from a file, so it is written into a
@@ -366,9 +336,6 @@ def metadata_xml(site: IdPSite, identity: SigningIdentity) -> str:
     return xml.decode("utf-8")
 
 
-def parse_authn_request(
-    server: Server, encoded: str, binding: str
-) -> samlp.AuthnRequest:
     """The AuthnRequest, schema-valid and addressed to this IdP (when it
     names a Destination), with an enveloped signature verified against the
     SP's certificate when it carries one (and required when the server was
@@ -401,16 +368,6 @@ def name_id(sp: ServiceProvider, site: IdPSite, value: str) -> saml.NameID:
     )
 
 
-def authn_response(
-    server: Server,
-    sp: ServiceProvider,
-    *,
-    in_response_to: Optional[str],
-    acs_url: str,
-    subject: saml.NameID,
-    attributes: Dict[str, List[str]],
-    authn_instant: datetime,
-) -> str:
     """A signed Response carrying a signed (and, for an SP that asks,
     encrypted) Assertion: audience the SP, recipient and destination the
     ACS URL, InResponseTo the request answered."""
@@ -459,13 +416,10 @@ def error_response(
 _AUTO_SUBMIT = "document.forms[0].submit();"
 
 
-@dataclass(frozen=True)
-class PostPage:
     html: str
     content_security_policy: str
 
 
-def post_page(acs_url: str, response_xml: str, relay_state: Optional[str]) -> PostPage:
     """The HTTP-POST binding page delivering ``response_xml`` to the ACS.
     Every value is escaped; the Content-Security-Policy lets the page run
     only its own submit script and post only to the ACS's origin."""

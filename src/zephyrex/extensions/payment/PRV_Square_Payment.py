@@ -47,12 +47,10 @@ NOTE_CHARACTERS = 500
 REFERENCE_CHARACTERS = 40
 
 
-def _minor(money: Any) -> Tuple[int, str]:
     money = money if isinstance(money, Mapping) else {}
     return int(money.get("amount") or 0), str(money.get("currency") or "USD")
 
 
-def _day_end(day: Any) -> Optional[datetime]:
     """Square's ``YYYY-MM-DD`` billing date as that day's start in UTC."""
     if not isinstance(day, str):
         return None
@@ -62,14 +60,12 @@ def _day_end(day: Any) -> Optional[datetime]:
         return None
 
 
-def split_name(name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     if not name:
         return None, None
     given, _, family = name.strip().partition(" ")
     return given or None, family.strip() or None
 
 
-class PRV_Square_Payment(AbstractPaymentProvider):
     name: ClassVar[str] = "square"
     friendly_name: ClassVar[str] = "Square"
     description: ClassVar[str] = "A Square seller account"
@@ -163,10 +159,6 @@ class PRV_Square_Payment(AbstractPaymentProvider):
             amount_refunded=cls.from_minor_units(refunded, currency),
         )
 
-    @classmethod
-    async def create_payment(
-        cls, instance: ProviderInstanceModel, request: PaymentRequest
-    ) -> Dict[str, Any]:
         if not request.payment_method_id:
             raise InvalidInputExternalError(
                 "A Square payment needs payment_method_id: a card nonce or a card on file",
@@ -200,10 +192,6 @@ class PRV_Square_Payment(AbstractPaymentProvider):
         )
         return cls.payment(instance, answer.get("payment") or {})
 
-    @classmethod
-    async def capture_payment(
-        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
-    ) -> Dict[str, Any]:
         if action.amount is not None:
             current = await cls.get_payment(instance, payment_id)
             if Decimal(current["amount"]) != action.amount:
@@ -217,10 +205,6 @@ class PRV_Square_Payment(AbstractPaymentProvider):
         )
         return cls.payment(instance, answer.get("payment") or {})
 
-    @classmethod
-    async def refund_payment(
-        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
-    ) -> Dict[str, Any]:
         """Square takes the amount on every refund: with none, what is left."""
         if action.amount is None:
             current = await cls.get_payment(instance, payment_id)
@@ -312,10 +296,6 @@ class PRV_Square_Payment(AbstractPaymentProvider):
             and bool(subscription.get("canceled_date")),
         )
 
-    @classmethod
-    async def create_subscription(
-        cls, instance: ProviderInstanceModel, request: SubscriptionRequest
-    ) -> Dict[str, Any]:
         if not request.customer_id:
             raise InvalidInputExternalError(
                 "A Square subscription is a customer's: make one first",
@@ -362,10 +342,6 @@ class PRV_Square_Payment(AbstractPaymentProvider):
         )
         return cls.subscription(instance, answer.get("subscription") or {})
 
-    @classmethod
-    async def verify_webhook(
-        cls, instance: ProviderInstanceModel, payload: bytes, headers: Dict[str, str]
-    ) -> Dict[str, Any]:
         key = cls.required(instance, "webhook_signature_key")
         url = cls.required(instance, "webhook_notification_url")
         signature = headers.get("x-square-hmacsha256-signature", "")

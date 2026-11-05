@@ -38,7 +38,6 @@ import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
-class CounterExhaustedError(Exception):
     """Raised when an attempt to consume from a counter would exceed the limit."""
 
 
@@ -48,7 +47,6 @@ class CounterExhaustedError(Exception):
 _QUOTA_LOCK = threading.Lock()
 
 
-def _consume_quota_rows(rows: List[Any], amount: int = 1) -> bool:
     """Atomically decrement every row in ``rows`` by ``amount``.
 
     Returns True iff every row had headroom; otherwise leaves all rows
@@ -72,7 +70,6 @@ def _consume_quota_rows(rows: List[Any], amount: int = 1) -> bool:
         return True
 
 
-class DistributedCounter:
     """Distributed counter primitive (Item 69).
 
     Concrete by design: ``DistributedCounter()`` must be instantiable with no
@@ -91,7 +88,6 @@ class DistributedCounter:
     returned from Quota.py works without falling back through ``except``.
     """
 
-    def __new__(cls, *args, **kwargs):
         # When the abstract base is instantiated with no args, return the
         # default in-memory backend so downstream callers (Quota.try_consume,
         # default_counter()) get a usable, non-abstract instance.
@@ -110,7 +106,6 @@ class DistributedCounter:
         self.limit = limit if limit is not None else 1 << 62  # effectively unbounded
         self.period_key = period_key
 
-    def try_consume(self, *args: Any, amount: int = 1) -> Any:
         """Atomically attempt to consume ``amount`` units.
 
         Polymorphic call shape (note: the return type depends on shape):
@@ -168,7 +163,6 @@ class DistributedCounter:
 # ---------------------------------------------------------------------------
 
 
-class InMemoryDistributedCounter(DistributedCounter):
     """A process-local distributed counter, intended for tests and single-process use.
 
     State is shared across all instances with the same ``(key, period_key)`` tuple
@@ -200,7 +194,6 @@ class InMemoryDistributedCounter(DistributedCounter):
     def _composite_key(self) -> Tuple[str, Optional[str]]:
         return (self.key, self.period_key)
 
-    async def _try_consume_one(self, amount: int) -> bool:
         if amount <= 0:
             return True
         async with self._lock_for(self._composite_key):
@@ -210,14 +203,12 @@ class InMemoryDistributedCounter(DistributedCounter):
             self._state[self._composite_key] = current + amount
             return True
 
-    async def release(self, amount: int) -> None:
         if amount <= 0:
             return
         async with self._lock_for(self._composite_key):
             current = self._state.get(self._composite_key, 0)
             self._state[self._composite_key] = max(0, current - amount)
 
-    async def reset(self, period_key: str) -> None:
         old_key = self._composite_key
         async with self._lock_for(old_key):
             self._state.pop(old_key, None)
@@ -225,7 +216,6 @@ class InMemoryDistributedCounter(DistributedCounter):
         # Pre-create lock for the new period for symmetry.
         self._lock_for(self._composite_key)
 
-    async def consumed(self) -> int:
         async with self._lock_for(self._composite_key):
             return self._state.get(self._composite_key, 0)
 
@@ -244,7 +234,6 @@ class InMemoryDistributedCounter(DistributedCounter):
 SessionProvider = Callable[[], object]
 
 
-class PostgresDistributedCounter(DistributedCounter):
     """Postgres-backed distributed counter.
 
     Executes::
@@ -270,7 +259,6 @@ class PostgresDistributedCounter(DistributedCounter):
         super().__init__(key, limit, period_key)
         self._session_provider = session_provider
 
-    def _session(self):
         if self._session_provider is None:
             raise RuntimeError(
                 "PostgresDistributedCounter requires a session_provider injection "
@@ -278,69 +266,52 @@ class PostgresDistributedCounter(DistributedCounter):
             )
         return self._session_provider()
 
-    async def _try_consume_one(self, amount: int) -> bool:
         from sqlalchemy import text  # local import: keep module import light
 
         if amount <= 0:
             return True
         session = self._session()
         # Ensure row exists.
-        session.execute(
-            text(
                 'INSERT INTO distributed_counter (key, period_key, consumed, "limit")'
                 " VALUES (:key, :period_key, 0, :limit)"
                 " ON CONFLICT (key) DO NOTHING"
             ),
             {"key": self.key, "period_key": self.period_key, "limit": self.limit},
         )
-        result = session.execute(
-            text(
                 "UPDATE distributed_counter SET consumed = consumed + :amount,"
                 " updated_at = now() WHERE key = :key"
                 ' AND consumed + :amount <= "limit" RETURNING consumed'
             ),
             {"amount": amount, "key": self.key},
         ).fetchone()
-        session.commit()
         return result is not None
 
-    async def release(self, amount: int) -> None:
         from sqlalchemy import text
 
         if amount <= 0:
             return
         session = self._session()
-        session.execute(
-            text(
                 "UPDATE distributed_counter"
                 " SET consumed = GREATEST(0, consumed - :amount), updated_at = now()"
                 " WHERE key = :key"
             ),
             {"amount": amount, "key": self.key},
         )
-        session.commit()
 
-    async def reset(self, period_key: str) -> None:
         from sqlalchemy import text
 
         session = self._session()
-        session.execute(
-            text(
                 "UPDATE distributed_counter"
                 " SET consumed = 0, period_key = :period_key, updated_at = now()"
                 " WHERE key = :key"
             ),
             {"period_key": period_key, "key": self.key},
         )
-        session.commit()
         self.period_key = period_key
 
-    async def consumed(self) -> int:
         from sqlalchemy import text
 
         session = self._session()
-        row = session.execute(
-            text("SELECT consumed FROM distributed_counter WHERE key = :key"),
             {"key": self.key},
         ).fetchone()
         return int(row[0]) if row else 0

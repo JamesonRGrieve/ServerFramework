@@ -48,7 +48,6 @@ class ERPConfigurationError(PermanentExternalError):
     cannot work with."""
 
 
-class AbstractERPProvider(AbstractStaticProvider):
     """An ERP; each instance is one account in it. The operations take the
     instance and speak the ERP's wire protocol; access, versions and the
     schema lift are the extension's (``BLL_ERP``), the same for every ERP."""
@@ -171,7 +170,6 @@ class AbstractERPProvider(AbstractStaticProvider):
         return None
 
 
-class EXT_ERP(AbstractStaticExtension):
     name: ClassVar[str] = "erp"
     friendly_name: ClassVar[str] = "ERP"
     version: ClassVar[str] = "1.0.0"

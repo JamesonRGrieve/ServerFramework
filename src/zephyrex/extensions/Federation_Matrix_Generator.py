@@ -47,7 +47,6 @@ TEST_ONLY_FIXTURES_MODULE = "federation_fixtures_test"
 # ---------------------------------------------------------------------------
 
 
-def bundled_fixture_modules() -> List[FederationFixture]:
     """Every bundled extension's ``federation_fixtures_test`` module's
     ``federation_matrix_fixtures()``, in extension-name order.
 
@@ -65,7 +64,6 @@ def bundled_fixture_modules() -> List[FederationFixture]:
         for path in Path(root).glob(f"*/{TEST_ONLY_FIXTURES_MODULE}.py")
     )
     for path in module_files:
-        module = importlib.import_module(
             f"{bundled.__name__}.{path.parent.name}.{TEST_ONLY_FIXTURES_MODULE}"
         )
         fixtures.extend(module.federation_matrix_fixtures())

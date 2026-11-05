@@ -116,7 +116,6 @@ def _root() -> str:
     return env("ROOT_ID")
 
 
-def _bounded(name: str, default: int, bounds: Tuple[int, int]) -> int:
     """The integer environment value ``name`` within ``bounds``
     (``default`` when unset or not a number)."""
     try:
@@ -153,7 +152,6 @@ def crl_lifetime() -> timedelta:
     )
 
 
-def publication(authority: Authority) -> Publication:
     """The CRL and CA URLs issued certificates carry: none without a base
     URL, since a relative one is useless to a relying party."""
     base = (env("X509_PROVIDER_BASE_URL") or env("SERVER_URI")).rstrip("/")
@@ -196,7 +194,6 @@ class X509IssuedCertificateModel(
 
     table_comment: ClassVar[str] = "Client certificates issued by this server's CA"
 
-    class Create(BaseModel):
         user_id: Optional[str] = None
         subject_dn: str
         serial_number: str
@@ -206,7 +203,6 @@ class X509IssuedCertificateModel(
         not_after: datetime
         certificate_pem: str
 
-    class Update(BaseModel):
         is_revoked: Optional[bool] = None
         revoked_at: Optional[datetime] = None
         revocation_reason: Optional[str] = None
@@ -223,7 +219,6 @@ class X509IssuedCertificateModel(
         not_after: Optional[DateSearchModel] = None
 
 
-class IssueRequest(RouteModel):
     csr_pem: str = Field(
         ..., max_length=MAX_PEM_CHARS, description="A PKCS#10 CSR (PEM)"
     )
@@ -235,16 +230,13 @@ class IssueRequest(RouteModel):
     )
 
 
-class IssuedCertificate(RouteModel):
     certificate: X509IssuedCertificateModel
     chain_pem: str = Field(..., description="The issuing CA's certificate (PEM)")
 
 
-class RevokeRequest(RouteModel):
     reason: RevocationReason = Field("unspecified", description="The CRL reason")
 
 
-class AuthorityView(RouteModel):
     """A CA as anyone may see it: never its key."""
 
     id: Optional[str] = Field(
@@ -260,18 +252,15 @@ class AuthorityView(RouteModel):
     active: bool = Field(..., description="Whether it is the one issuing")
 
 
-class AuthorityList(RouteModel):
     authorities: List[AuthorityView]
 
 
-class GenerateAuthorityRequest(RouteModel):
     name: str = Field(..., min_length=1, max_length=MAX_NAME_LENGTH)
     common_name: str = Field(..., min_length=1, description="The CA's subject CN")
     key_type: KeyType = Field(DEFAULT_CA_KEY_TYPE)
     lifetime_days: int = Field(DEFAULT_CA_LIFETIME_DAYS, ge=1, le=MAX_CA_LIFETIME_DAYS)
 
 
-class ImportAuthorityRequest(RouteModel):
     name: str = Field(..., min_length=1, max_length=MAX_NAME_LENGTH)
     certificate_pem: str = Field(..., max_length=MAX_PEM_CHARS)
     key_pem: str = Field(..., max_length=MAX_PEM_CHARS)
@@ -285,15 +274,12 @@ class ImportAuthorityRequest(RouteModel):
 # ---------------------------------------------------------------------------
 
 
-class Authorities:
     """The CA provider instances, read and written as root."""
 
     def __init__(self, model_registry: Any) -> None:
         self.model_registry = model_registry
 
-    def _provider_id(self) -> str:
         provider = ProviderManager(
-            model_registry=self.model_registry, requester_id=_root()
         ).get(name=PRV_X509CertificateAuthority.name)
         return str(provider.id)
 
@@ -303,13 +289,11 @@ class Authorities:
         ).list(provider_id=self._provider_id())
         return found
 
-    def _active_instance(self) -> Optional[ProviderInstanceModel]:
         enabled = [i for i in self.instances() if i.enabled]
         if not enabled:
             return None
         return max(enabled, key=lambda i: ensure_utc(i.created_at))
 
-    def active(self) -> Authority:
         """The CA that issues: the newest enabled instance's, else the
         environment's. 503 when there is none or it is unusable."""
         try:
@@ -317,7 +301,6 @@ class Authorities:
         except AuthorityMissing as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from None
 
-    def _holders(self) -> List[Tuple[Optional[ProviderInstanceModel], Any]]:
         """Each instance (and the environment, as None) with the CA
         certificate it holds, keys untouched."""
         holders: List[Tuple[Optional[ProviderInstanceModel], Any]] = []
@@ -327,7 +310,6 @@ class Authorities:
                 holders.append((instance, certificate))
         return holders
 
-    def by_fingerprint(self, ca_fingerprint: str) -> Authority:
         """The CA whose certificate has this fingerprint, enabled or not.
         404 when none does."""
         for instance, certificate in self._holders():
@@ -338,7 +320,6 @@ class Authorities:
                     raise HTTPException(status_code=503, detail=str(exc)) from None
         raise HTTPException(status_code=404, detail="No such certificate authority")
 
-    def published(self) -> List[AuthorityView]:
         active = self._active_instance()
         views = []
         for instance, certificate in self._holders():
@@ -361,7 +342,6 @@ class Authorities:
             )
         return views
 
-    def store(self, name: str, authority: Authority) -> AuthorityView:
         """``authority`` as a new instance (the newest, so the one issuing).
         409 when that CA is already held."""
         if any(
@@ -372,13 +352,11 @@ class Authorities:
                 status_code=409, detail="That certificate authority is already held"
             )
         instances = ProviderInstanceManager(
-            model_registry=self.model_registry, requester_id=_root()
         )
         instance = instances.create(
             name=name, provider_id=self._provider_id(), scope="root"
         )
         settings = ProviderInstanceSettingManager(
-            model_registry=self.model_registry, requester_id=_root()
         )
         try:
             settings.create(
@@ -391,7 +369,6 @@ class Authorities:
                 key=KEY_SETTING,
                 value=authority.key_pem(),
             )
-        except Exception:
             # An instance holding a certificate but no key would publish a
             # CA that cannot sign; leave nothing behind.
             instances.delete(id=instance.id)
@@ -407,7 +384,6 @@ class Authorities:
 # ---------------------------------------------------------------------------
 
 
-class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
     """Issuance records: each is its owner's. They are made only by
     :meth:`issue` and changed only by :meth:`revoke`; nothing deletes one
     (a deleted record would drop its serial from the CRL)."""
@@ -433,10 +409,8 @@ class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
             status_code=405, detail="Issued certificates are kept; revoke instead"
         )
 
-    def _owner(self, user_id: Optional[str]) -> Any:
         """The account to issue for: the requester, or for root or system
         the user named, looked up as the requester."""
-        requester_id = self.requester.id
         owner_id = user_id if user_id and server_side(requester_id) else requester_id
         if is_any_internal_id(owner_id):
             raise HTTPException(
@@ -444,22 +418,18 @@ class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
                 detail="Client certificates are issued to user accounts",
             )
         user = UserManager(
-            model_registry=self.model_registry, requester_id=requester_id
         ).get(id=owner_id)
         if user.active is False:
             raise HTTPException(status_code=403, detail="The account is not active")
         return user
 
-    def _lifetime(self, lifetime_days: Optional[int]) -> timedelta:
         policy = lifetime_policy_days()
         days = policy if lifetime_days is None else lifetime_days
         if not 1 <= days <= policy:
             raise HTTPException(status_code=400, detail=f"lifetime_days is 1-{policy}")
         return timedelta(days=days)
 
-    def _within_rate(self, owner_id: str, now: datetime) -> None:
         issued = X509IssuedCertificateManager(
-            model_registry=self.model_registry, requester_id=_root()
         ).count(user_id=owner_id, created_at={"after": now - ISSUANCE_WINDOW})
         limit = max_issuances_per_day()
         if issued >= limit:
@@ -469,12 +439,6 @@ class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
                 headers={"Retry-After": str(int(ISSUANCE_WINDOW.total_seconds()))},
             )
 
-    def issue(
-        self,
-        csr_pem: str,
-        lifetime_days: Optional[int] = None,
-        user_id: Optional[str] = None,
-    ) -> IssuedCertificate:
         """A certificate for the CSR's key, naming the account (never the
         CSR's claims), and its record."""
         user = self._owner(user_id)
@@ -509,7 +473,6 @@ class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
             certificate=record, chain_pem=authority.certificate_pem
         )
 
-    def revoke(self, id: str, reason: str = "unspecified") -> Any:
         """Revoke a certificate the requester owns (root and system: any).
         404 for one they cannot see; 409 when it is already revoked."""
         record = self.get(id=id)
@@ -551,12 +514,10 @@ class X509IssuedCertificateManager(AbstractBLLManager, RouterMixin):
         return revoked
 
 
-def revocation_list_der(model_registry: Any, ca_fingerprint: str) -> bytes:
     """The CRL of the CA with this fingerprint, signed now (DER)."""
     authority = Authorities(model_registry).by_fingerprint(ca_fingerprint)
     now = _now()
     records = X509IssuedCertificateManager(
-        model_registry=model_registry, requester_id=_root()
     ).list(ca_fingerprint_sha256=ca_fingerprint, is_revoked=True)
     revoked = [
         Revocation(
@@ -571,7 +532,6 @@ def revocation_list_der(model_registry: Any, ca_fingerprint: str) -> bytes:
     return crl.public_bytes(serialization.Encoding.DER)
 
 
-class X509AuthorityManager(AbstractBLLManager, RouterMixin):
     """The CAs: published to anyone, administered by root and system."""
 
     prefix: ClassVar[Optional[str]] = PREFIX
@@ -579,7 +539,6 @@ class X509AuthorityManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.NONE
     routes_to_register: ClassVar[Optional[List[Any]]] = []
 
-    def _administrator(self) -> None:
         if not server_side(self.requester.id):
             raise HTTPException(
                 status_code=403,

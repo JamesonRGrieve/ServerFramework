@@ -38,7 +38,6 @@ _TRANSIENT_ERRORS = {
 }
 
 
-class PRV_Slack_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "slack"
     friendly_name: ClassVar[str] = "Slack"
     description: ClassVar[str] = "Slack, as a bot"

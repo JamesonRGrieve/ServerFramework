@@ -98,7 +98,6 @@ def call_result(result: Any) -> Dict[str, Any]:
     }
 
 
-class AbstractMCPServerProvider(AbstractStaticProvider):
     """A way to reach an MCP server; each instance is one server."""
 
     name: ClassVar[str] = ""
@@ -128,8 +127,6 @@ class AbstractMCPServerProvider(AbstractStaticProvider):
         each error status it is answered with to ``statuses``, which the
         protocol's own error does not carry."""
 
-    @classmethod
-    def failure(cls, error: BaseException, statuses: List[int]) -> BaseExternalError:
         """``error`` from a session as a typed error. Auth refusals fail
         over; an unreachable or failing server is transient; a request the
         server refuses is the caller's."""
@@ -247,7 +244,6 @@ class AbstractMCPServerProvider(AbstractStaticProvider):
         return ["mcp_client"]
 
 
-class EXT_MCPClient(AbstractStaticExtension):
     name: ClassVar[str] = "mcp_client"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

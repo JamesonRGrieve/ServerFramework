@@ -11,7 +11,6 @@ own paths. Middleware that matches paths before routing compares
 from typing import Any, Mapping
 
 
-def route_path(scope: Mapping[str, Any]) -> str:
     """The request's path less the root path it was served under."""
     path = str(scope.get("path", ""))
     root = str(scope.get("root_path", "")).rstrip("/")

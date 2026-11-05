@@ -48,21 +48,17 @@ _CSRF_TOKEN_BYTES = 32
 _CROSS_SITE_WRITE_PATHS: List[re.Pattern[str]] = []
 
 
-def accept_cross_site_writes(path_pattern: str) -> None:
     """Let other sites post to paths matching ``path_pattern`` (a regular
     expression matched against the whole path), without the session."""
     _CROSS_SITE_WRITE_PATHS.append(re.compile(path_pattern))
 
 
-def _cross_site_write_path(path: str) -> bool:
     return any(pattern.fullmatch(path) for pattern in _CROSS_SITE_WRITE_PATHS)
 
 
-def set_session_cookies(response: Response, token: str, max_age: int) -> None:
     """Hand the browser a session: the JWT, and a fresh CSRF token to echo."""
     for name, value, http_only in (
         (SESSION_COOKIE, token, True),
-        (CSRF_COOKIE, secrets.token_urlsafe(_CSRF_TOKEN_BYTES), False),
     ):
         response.set_cookie(
             name,
@@ -76,7 +72,6 @@ def set_session_cookies(response: Response, token: str, max_age: int) -> None:
         )
 
 
-def clear_session_cookies(response: Response) -> None:
     for name, http_only in ((SESSION_COOKIE, True), (CSRF_COOKIE, False)):
         response.delete_cookie(
             name,
@@ -91,9 +86,6 @@ def clear_session_cookies(response: Response) -> None:
 _UNAUTHORIZED = 401
 
 
-def _clearing_cookies_on_401(
-    send: Callable[[Any], Awaitable[None]],
-) -> Callable[[Any], Awaitable[None]]:
     """A ``send`` that clears the session cookies when the response is a 401:
     the cookie authenticated nothing (expired, revoked, invalid), so the
     browser should stop presenting it."""
@@ -103,7 +95,6 @@ def _clearing_cookies_on_401(
         (name, value) for name, value in clearing.raw_headers if name == b"set-cookie"
     ]
 
-    async def _send(message: Any) -> None:
         if (
             message["type"] == "http.response.start"
             and message["status"] == _UNAUTHORIZED
@@ -117,7 +108,6 @@ def _clearing_cookies_on_401(
     return _send
 
 
-def _same_app_origin(present: Dict[bytes, bytes]) -> bool:
     """The upgrade comes from the app itself: its Origin is this host, or an
     exact origin in APP_CORS_ALLOWED_ORIGINS (never ``*``, which grants no
     credentials). No Origin, which a browser always sends, means no cookie."""
@@ -134,7 +124,6 @@ def _same_app_origin(present: Dict[bytes, bytes]) -> bool:
     return origin != "*" and origin in allowed
 
 
-def _forged_cross_site(method: str, present: Dict[bytes, bytes]) -> bool:
     """A write another site's page could have sent: no explicit credential
     (those force a CORS preflight), and an Origin that is not the app's.
     Browsers always send Origin on such a write; clients that are not
@@ -148,7 +137,6 @@ def _forged_cross_site(method: str, present: Dict[bytes, bytes]) -> bool:
     )
 
 
-def _cookies(raw: Optional[bytes]) -> Dict[str, str]:
     if not raw:
         return {}
     jar: SimpleCookie = SimpleCookie()
@@ -159,18 +147,11 @@ def _cookies(raw: Optional[bytes]) -> Dict[str, str]:
     return {name: morsel.value for name, morsel in jar.items()}
 
 
-class SessionCookieMiddleware:
     """ASGI middleware: session cookie to bearer header, with CSRF check."""
 
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(
-        self,
-        scope: Dict[str, Any],
-        receive: Callable[[], Awaitable[Any]],
-        send: Callable[[Any], Awaitable[None]],
-    ) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
@@ -205,11 +186,8 @@ class SessionCookieMiddleware:
             _clearing_cookies_on_401(send),
         )
 
-    @staticmethod
-    def _csrf_matches(present: Dict[bytes, bytes]) -> bool:
         expected = _cookies(present.get(b"cookie")).get(CSRF_COOKIE, "")
         offered = present.get(CSRF_HEADER.encode(), b"").decode("latin-1")
-        return bool(expected) and hmac.compare_digest(expected, offered)
 
     @staticmethod
     async def _refuse(send: Callable[[Any], Awaitable[None]], detail: str) -> None:

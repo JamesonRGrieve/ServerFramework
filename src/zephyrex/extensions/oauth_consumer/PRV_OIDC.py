@@ -16,7 +16,6 @@ from zephyrex.extensions.oauth_consumer.IdentityProvider import (
 DEFAULT_SCOPES = "openid email profile"
 
 
-class PRV_OIDC(AbstractOIDCProvider):
     name: ClassVar[str] = "oidc"
     public_name: ClassVar[str] = "oidc"
     friendly_name: ClassVar[str] = "OpenID Connect"

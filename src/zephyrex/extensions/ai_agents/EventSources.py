@@ -146,7 +146,6 @@ async def receive_webhook(
     return WebhookFired(invocation_instance_id=turn.id, status=turn.status)
 
 
-def matches(trigger: Any, message: InboundEmail) -> bool:
     """Whether ``message`` is for the email trigger: addressed to it, and
     matching its filter."""
     address = (trigger.email_address or "").lower()
@@ -175,11 +174,9 @@ def email_event(message: InboundEmail) -> str:
     )
 
 
-async def receive_email(model_registry: Any, message: InboundEmail) -> List[str]:
     """Fire every enabled email trigger the message is for; the turns'
     ids. A trigger whose agent cannot take the turn is skipped."""
     triggers = InvocationTriggerManager(
-        requester_id=env("ROOT_ID"), model_registry=model_registry
     )
     candidates = {
         trigger.id: trigger
@@ -189,7 +186,6 @@ async def receive_email(model_registry: Any, message: InboundEmail) -> List[str]
             event_source=EMAIL,
             enabled=True,
             email_address=recipient,
-            deleted_at=None,
         )
     }
     turns: List[str] = []

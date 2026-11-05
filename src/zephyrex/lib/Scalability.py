@@ -43,29 +43,22 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 
-class ScalingMetric(str, Enum):
     TIME = "time"
     QUERY_COUNT = "query_count"
     MEMORY = "memory"
 
 
-@dataclass(frozen=True)
-class MeasurementSample:
     n: int
     metric: ScalingMetric
     value: float
 
 
-@dataclass(frozen=True)
-class PowerLawFit:
     coefficient: float
     exponent: float
     r_squared: float
     point_count: int
 
 
-@dataclass(frozen=True)
-class ScalabilityThreshold:
     metric: ScalingMetric
     expected_exponent: float
     max_exponent: float
@@ -73,8 +66,6 @@ class ScalabilityThreshold:
     floor_value: float = 0.0
 
 
-@dataclass(frozen=True)
-class ScalingResult:
     metric: ScalingMetric
     samples: List[MeasurementSample]
     fit: PowerLawFit
@@ -82,7 +73,6 @@ class ScalingResult:
     passed: bool
     threshold: ScalabilityThreshold
 
-    def assertion_message(self) -> str:
         sample_str = ", ".join(f"n={s.n} -> {s.value:.6g}" for s in self.samples)
         return (
             f"{self.metric.value} scaling regressed: observed Big-O exponent "
@@ -117,7 +107,6 @@ DEFAULT_THRESHOLDS: Dict[ScalingMetric, ScalabilityThreshold] = {
 }
 
 
-def fit_power_law(samples: List[MeasurementSample]) -> PowerLawFit:
     usable = [s for s in samples if s.n > 0 and s.value > 0]
     if len(usable) < 2:
         return PowerLawFit(0.0, 0.0, 0.0, len(usable))
@@ -138,9 +127,6 @@ def fit_power_law(samples: List[MeasurementSample]) -> PowerLawFit:
     return PowerLawFit(math.exp(log_a), k, r_squared, count)
 
 
-def evaluate_scaling(
-    samples: List[MeasurementSample], threshold: ScalabilityThreshold
-) -> ScalingResult:
     if not samples:
         raise ValueError("evaluate_scaling requires at least one sample")
     if any(s.metric != threshold.metric for s in samples):
@@ -177,8 +163,6 @@ def measure_time() -> Iterator[Callable[[], float]]:
         elapsed[0] = time.perf_counter() - start
 
 
-@contextmanager
-def measure_memory() -> Iterator[Callable[[], int]]:
     started_here = not tracemalloc.is_tracing()
     if started_here:
         tracemalloc.start()
@@ -193,7 +177,6 @@ def measure_memory() -> Iterator[Callable[[], int]]:
             tracemalloc.stop()
 
 
-class QueryCounter:
     """Counts SQLAlchemy cursor executions on an engine for the lifetime of
     the context. Listener is removed on exit so concurrent counters never
     cross-contaminate."""
@@ -224,15 +207,6 @@ class QueryCounter:
         return self._count
 
 
-def collect_samples(
-    operation: Callable[[int], None],
-    n_values: List[int],
-    metric: ScalingMetric,
-    repetitions: int,
-    engine: Optional[Engine] = None,
-    setup: Optional[Callable[[int], None]] = None,
-    teardown: Optional[Callable[[int], None]] = None,
-) -> List[MeasurementSample]:
     if repetitions < 1:
         raise ValueError("repetitions must be >= 1")
     if len(n_values) < 2:
@@ -267,8 +241,6 @@ def collect_samples(
     return samples
 
 
-@dataclass(frozen=True)
-class ScalabilityProfile:
     """Parameter bundle for a scalability assertion: the n values to probe,
     the metrics to measure, repetitions per n for noise smoothing, and
     optional per-metric threshold overrides."""
@@ -280,7 +252,6 @@ class ScalabilityProfile:
         default_factory=dict
     )
 
-    def threshold_for(self, metric: ScalingMetric) -> ScalabilityThreshold:
         return self.threshold_overrides.get(metric) or DEFAULT_THRESHOLDS[metric]
 
     @classmethod

@@ -13,7 +13,6 @@ from types import FunctionType
 from typing import Any, List, Tuple
 
 
-def static_or_plain_functions(cls: type) -> List[Tuple[str, FunctionType]]:
     """``(name, function)`` for each plain function or staticmethod on
     ``cls``, inherited ones included; classmethods and descriptors are not
     functions and are skipped."""
@@ -25,7 +24,6 @@ def static_or_plain_functions(cls: type) -> List[Tuple[str, FunctionType]]:
     return found
 
 
-def decorated_functions(cls: type, marker: str) -> List[Tuple[str, FunctionType, Any]]:
     """``(name, function, marker value)`` for the functions of
     :func:`static_or_plain_functions` carrying ``marker`` (e.g.
     ``_ability_info``, ``_hook_info``, ``_static_route_config``)."""
@@ -36,7 +34,6 @@ def decorated_functions(cls: type, marker: str) -> List[Tuple[str, FunctionType,
     ]
 
 
-def instance_methods(cls: type) -> List[Tuple[str, FunctionType]]:
     """``(name, function)`` for each plain function on ``cls`` (instance
     methods), inherited ones included; static and class methods excluded."""
     return [

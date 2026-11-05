@@ -19,7 +19,6 @@ from zephyrex.extensions.math.Symbolic import (
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
-class PRV_SymPy_Math(AbstractMathProvider):
     name: ClassVar[str] = "sympy"
     friendly_name: ClassVar[str] = "SymPy"
     description: ClassVar[str] = "Symbolic mathematics computed on this server"

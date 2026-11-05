@@ -38,13 +38,6 @@ def _maybe_run(result: Any) -> Any:
     return result
 
 
-def make_object_storage_archive_callback(
-    object_storage: Any,
-    *,
-    bucket_or_prefix: str,
-    compression: Literal["gzip", "none"] = "gzip",
-    format: Literal["jsonl"] = "jsonl",
-) -> Callable[[Sequence[Dict[str, Any]], str], bool]:
     """Build a `(rows, archive_to) -> bool` archive callback that uploads
     compressed JSONL to the supplied object-storage provider.
     """
@@ -53,7 +46,6 @@ def make_object_storage_archive_callback(
     if compression not in ("gzip", "none"):
         raise ValueError(f"unsupported compression: {compression!r}")
 
-    def _archive(rows: Sequence[Dict[str, Any]], archive_to: str) -> bool:
         try:
             body = _serialize_jsonl(rows)
             if compression == "gzip":
@@ -73,7 +65,6 @@ def make_object_storage_archive_callback(
             result = object_storage.upload(key, body)
             _maybe_run(result)
             return True
-        except Exception:  # noqa: BLE001
             _logger.exception(
                 "object-storage archive failed (archive_to=%s, rows=%d)",
                 archive_to,

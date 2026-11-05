@@ -65,7 +65,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 FederationStyle = Literal["apollo_v2", "stitching", "namespaced"]
 
 
-class AbstractGraphQLProvider(AbstractStaticProvider):
     """Base class for GraphQL upstream providers.
 
     Concrete subclasses MUST declare:
@@ -188,10 +187,6 @@ class AbstractGraphQLProvider(AbstractStaticProvider):
 
     # ----- Introspection -------------------------------------------------------
 
-    @classmethod
-    async def introspect(
-        cls, *, instance: Optional[ProviderInstanceModel] = None
-    ) -> IngestedSchema:
         """Introspect the upstream and return an :class:`IngestedSchema`.
 
         For ``apollo_v2`` style, send the ``_service { sdl }`` probe; on
@@ -219,7 +214,6 @@ class AbstractGraphQLProvider(AbstractStaticProvider):
                         f"but upstream {cls.upstream_url!r} did not return "
                         f"a `_service.sdl`."
                     )
-            except Exception as exc:
                 if cls.require_apollo_v2_when_advertised:
                     raise
                 logger.warning(
@@ -269,10 +263,6 @@ class AbstractGraphQLProvider(AbstractStaticProvider):
         ingested = await cls.introspect(instance=instance)
         return cls._post_introspection_register(ingested, instance, registry)
 
-    @classmethod
-    def introspect_sync(
-        cls, *, instance: Optional[ProviderInstanceModel] = None
-    ) -> IngestedSchema:
         """Synchronous twin of :meth:`introspect`.
 
         Used by :func:`Federation_Bootstrap.install_external_federation_sync`
@@ -301,7 +291,6 @@ class AbstractGraphQLProvider(AbstractStaticProvider):
                         f"but upstream {cls.upstream_url!r} did not return "
                         f"a `_service.sdl`."
                     )
-            except Exception as exc:
                 if cls.require_apollo_v2_when_advertised:
                     raise
                 logger.warning(

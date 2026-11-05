@@ -86,7 +86,6 @@ def _build_auth_strategy(strategy_name: str, **kwargs: Any) -> Any:
         return None
 
 
-class ProxmoxMailGatewayProvider(AbstractEmailProvider):
     """Send via the PMG SMTP relay; manage via the PMG REST API."""
 
     name: ClassVar[str] = "proxmox_mail_gateway"
@@ -283,10 +282,6 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
         return cls._api_data(response)
 
     # --------------------------------------------------------------- lifecycle
-    @classmethod
-    def bond_instance(
-        cls, instance: Optional[ProviderInstanceModel]
-    ) -> Optional[AbstractProviderInstance_SDK]:
         if not _aiosmtplib_available:
             logger.error("aiosmtplib package not available")
             return None
@@ -310,7 +305,6 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
                 ),
             }
             return AbstractProviderInstance_SDK(config)
-        except Exception as e:
             logger.error(f"Failed to bond Proxmox Mail Gateway instance: {e}")
             return None
 
@@ -343,17 +337,6 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
             return HealthReport(HealthStatus.DOWN, detail=f"PMG API error: {exc}")
 
     # -------------------------------------------------------------------- send
-    @classmethod
-    @ability(name="email_send")
-    async def send_email(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        recipient: str,
-        subject: str,
-        body: str,
-        attachments: Optional[List[str]] = None,
-        importance: str = "normal",
-    ) -> str:
         """Send an email through the PMG SMTP relay."""
         validation_error = cls._validate_send_inputs(
             recipient, subject, body, attachments
@@ -413,7 +396,6 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
                 start_tls=config["start_tls"],
             )
             return f"Email sent successfully to {recipient}"
-        except Exception as e:
             logger.error(f"Error sending PMG email: {e}")
             return f"Failed to send email: {e}"
 
@@ -502,8 +484,6 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
         )
 
     # ---------------------------------------------------------------- webhooks
-    @classmethod
-    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
         """Verify a PMG notification callback via HMAC-SHA256 over the raw body
         keyed by ``PMG_WEBHOOK_SECRET`` (``X-PMG-Signature``; a ``sha256=``
         prefix is tolerated). Constant-time compare; never raises."""
@@ -521,13 +501,10 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
             return False
         if provided.lower().startswith("sha256="):
             provided = provided[7:]
-        expected = hmac.new(
             secret.encode("utf-8"), body or b"", hashlib.sha256
         ).hexdigest()
-        return hmac.compare_digest(expected, provided)
 
 
-def _coerce_pmg_event(raw: Dict[str, Any], event_type: str) -> EmailDeliveryEvent:
     """Translate one PMG notification row into an ``EmailDeliveryEvent``."""
 
     def _ts(value: Any) -> Optional[float]:
@@ -546,7 +523,6 @@ def _coerce_pmg_event(raw: Dict[str, Any], event_type: str) -> EmailDeliveryEven
     )
 
 
-async def _dispatch_pmg_events(payload: Any, fallback_event: str) -> None:
     """Fan a PMG notification payload through the canonical hook bus."""
     rows: List[Dict[str, Any]]
     if isinstance(payload, list):

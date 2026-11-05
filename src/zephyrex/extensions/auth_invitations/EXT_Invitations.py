@@ -13,7 +13,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 
 
-class AuthInvitationsExtension(AbstractStaticExtension):
     name: ClassVar[str] = "auth_invitations"
     description: ClassVar[str] = (
         "Team invitation workflow with role assignment (Scope #4)"

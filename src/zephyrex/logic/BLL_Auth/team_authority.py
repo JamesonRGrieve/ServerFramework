@@ -20,9 +20,6 @@ from zephyrex.logic.AbstractLogicManager.ownership import server_side
 _MAX_ROLE_DEPTH = 32
 
 
-def _role_chain(
-    role_id: str, model_registry: Any, cache: Dict[str, List[str]]
-) -> List[str]:
     """``role_id`` and its ancestors, nearest first; 404 for an unknown role."""
     from zephyrex.logic.BLL_Auth.role import RoleModel
 
@@ -33,7 +30,6 @@ def _role_chain(
         while current and current not in chain and len(chain) < _MAX_ROLE_DEPTH:
             chain.append(current)
             role = RoleDB.get(
-                requester_id=env("ROOT_ID"),
                 model_registry=model_registry,
                 id=current,
                 allow_nonexistent=True,
@@ -45,10 +41,8 @@ def _role_chain(
     return cache[role_id]
 
 
-class TeamAuthority:
     """The requester's authority over one team's membership."""
 
-    def __init__(self, requester_id: str, team_id: str, model_registry: Any) -> None:
         self._model_registry = model_registry
         self._chains: Dict[str, List[str]] = {}
         self._admin_roles: Dict[str, bool] = {}
@@ -59,10 +53,8 @@ class TeamAuthority:
             else live_membership_role(requester_id, team_id, model_registry)
         )
 
-    def rank(self, role_id: str) -> int:
         return len(_role_chain(role_id, self._model_registry, self._chains))
 
-    def is_admin_role(self, role_id: str) -> bool:
         """``role_id`` is the admin role or extends it: the rule the
         team-record filter applies (``admin_role_ids``). 404 for an unknown
         role."""
@@ -80,12 +72,10 @@ class TeamAuthority:
                 session.close()
         return self._admin_roles[role_id]
 
-    def administers(self) -> bool:
         return self.unlimited or (
             self.role_id is not None and self.is_admin_role(self.role_id)
         )
 
-    def _own_rank(self) -> Optional[int]:
         """The requester's rank, or None for root/system (no ceiling);
         403 unless they administer the team."""
         if self.unlimited:
@@ -96,7 +86,6 @@ class TeamAuthority:
             )
         return self.rank(self.role_id)
 
-    def assert_may_grant(self, role_id: str) -> None:
         """May hand out ``role_id`` (by invitation or role change)."""
         ceiling = self._own_rank()
         if ceiling is not None and self.rank(role_id) > ceiling:
@@ -104,9 +93,6 @@ class TeamAuthority:
                 status_code=403, detail="Cannot grant a role above your own"
             )
 
-    def assert_may_place(
-        self, role_id: Optional[str], parent_id: Optional[str]
-    ) -> None:
         """May make ``role_id`` (None: a role not yet created) extend
         ``parent_id`` (None: no parent). A role's parent sets what everyone
         holding it may do, so placing it is a grant of the role's rank to all
@@ -131,7 +117,6 @@ class TeamAuthority:
         (an admin creates under ``user``, a superadmin under ``admin``)."""
         self.assert_may_place(None, parent_id)
 
-    def assert_may_act_on(self, member_role_id: str) -> None:
         """May change or remove a member who holds ``member_role_id``."""
         ceiling = self._own_rank()
         if ceiling is not None and self.rank(member_role_id) > ceiling:
@@ -140,9 +125,6 @@ class TeamAuthority:
             )
 
 
-def live_membership_role(
-    user_id: str, team_id: str, model_registry: Any
-) -> Optional[str]:
     """The role the user holds in the team through an enabled, unrevoked,
     unexpired membership of a team that is not deleted; None when there is
     no such membership."""
@@ -152,21 +134,17 @@ def live_membership_role(
     from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
 
     team = TeamModel.DB(model_registry.DB.manager.Base).get(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         id=team_id,
         allow_nonexistent=True,
     )
-    if team is None or team["deleted_at"] is not None:
         return None
     UserTeamDB = UserTeamModel.DB(model_registry.DB.manager.Base)
     for membership in UserTeamDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         user_id=user_id,
         team_id=team_id,
         enabled=True,
-        filters=[UserTeamDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=UserTeamModel,
     ):

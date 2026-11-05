@@ -22,7 +22,6 @@ _psycopg2_available = importable("psycopg2")
 POSTGRES_DEFAULT_PORT = 5432
 
 
-class PRV_Postgres(AbstractDatabaseProvider):
     """PostgreSQL database provider (static, rotation-compatible)."""
 
     name: ClassVar[str] = "PostgreSQL"
@@ -82,8 +81,6 @@ class PRV_Postgres(AbstractDatabaseProvider):
 
         return cls.run_sql(connection, query, cursor_factory=psycopg2.extras.DictCursor)
 
-    @classmethod
-    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Introspect table definitions and foreign-key relations."""
         connection = cls._get_connection(cls.bond_instance(instance).config)
         import psycopg2.extras
@@ -93,14 +90,12 @@ class PRV_Postgres(AbstractDatabaseProvider):
         try:
             cursor = connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
             try:
-                cursor.execute(
                     "SELECT schema_name FROM information_schema.schemata "
                     "WHERE schema_name NOT IN ('pg_catalog', 'information_schema');"
                 )
                 schemas = [r["schema_name"] for r in cursor.fetchall()]
 
                 for schema_name in schemas:
-                    cursor.execute(
                         """
                         SELECT tc.table_name AS foreign_table,
                                kcu.column_name AS foreign_column,
@@ -125,7 +120,6 @@ class PRV_Postgres(AbstractDatabaseProvider):
                             f"{rel['primary_column']}"
                         )
 
-                    cursor.execute(
                         """
                         SELECT table_name, column_name, data_type,
                                column_default, is_nullable
@@ -151,7 +145,6 @@ class PRV_Postgres(AbstractDatabaseProvider):
                         )
             finally:
                 cursor.close()
-        except Exception as exc:
             raise cls.query_failed(exc, "schema query") from exc
         finally:
             connection.close()

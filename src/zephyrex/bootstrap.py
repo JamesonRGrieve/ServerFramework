@@ -35,7 +35,6 @@ _SRC_DIR = _PACKAGE_DIR.parent
 _ROOT_DIR = _SRC_DIR.parent
 
 
-def setup_python_path() -> None:
     """Put the directory holding the ``zephyrex`` package (``src/`` in a
     checkout) on ``sys.path``.
 
@@ -44,11 +43,8 @@ def setup_python_path() -> None:
     top-level ``extensions``, ``lib``, ``logic`` or ``database`` would shadow
     a consumer's own packages of those names.
     """
-    if str(_SRC_DIR) not in sys.path:
-        sys.path.insert(0, str(_SRC_DIR))
 
 
-def run_venv_bootstrap() -> bool:
     """Create a ``.venv`` if needed, install deps, and re-exec under it.
 
     Returns ``True`` on success, ``False`` on failure. May not return at
@@ -58,7 +54,6 @@ def run_venv_bootstrap() -> bool:
     # ``loguru`` may not be installed yet. Fall back to ``print`` if so.
     try:
         from zephyrex.lib.Logging import logger
-    except Exception:  # pragma: no cover - bootstrap path
         from logging import getLogger
 
         logger = getLogger(__name__)
@@ -77,16 +72,13 @@ def run_venv_bootstrap() -> bool:
             try:
                 if use_uv:
                     logger.debug("Using uv for faster virtual environment creation...")
-                    subprocess.run(["uv", "venv", str(venv_dir)], check=True)
                 elif use_conda:
                     logger.debug("Using conda for virtual environment creation...")
-                    subprocess.run(
                         ["conda", "create", "-p", str(venv_dir), "python", "-y"],
                         check=True,
                     )
                 else:
                     venv.create(venv_dir, with_pip=True)
-            except Exception as e:
                 logger.debug(f"Failed to create virtual environment: {e}")
                 return False
 
@@ -94,7 +86,6 @@ def run_venv_bootstrap() -> bool:
         logger.debug(f"Restarting with virtual environment at {python_path}...")
         try:
             os.execl(str(python_path), str(python_path), *sys.argv)
-        except Exception as e:
             logger.debug(f"Failed to restart with virtual environment: {e}")
             return False
 
@@ -105,24 +96,20 @@ def run_venv_bootstrap() -> bool:
         try:
             if use_uv:
                 logger.debug("Using uv for faster package installation...")
-                subprocess.run(
                     ["uv", "pip", "install", "-e", str(_ROOT_DIR)],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
             else:
-                subprocess.run(
                     [sys.executable, "-m", "pip", "install", "-e", str(_ROOT_DIR)],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
             logger.info("Dependencies from pyproject.toml installed successfully!")
-        except subprocess.CalledProcessError as e:
             logger.debug(f"Failed to install from pyproject.toml: {e.stderr}")
             return False
-        except Exception as e:
             logger.debug(f"Error installing from pyproject.toml: {e}")
             return False
     elif requirements_file.exists():
@@ -130,14 +117,12 @@ def run_venv_bootstrap() -> bool:
         try:
             if use_uv:
                 logger.debug("Using uv for faster package installation...")
-                subprocess.run(
                     ["uv", "pip", "install", "-r", str(requirements_file)],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
             else:
-                subprocess.run(
                     [
                         sys.executable,
                         "-m",
@@ -151,7 +136,6 @@ def run_venv_bootstrap() -> bool:
                     check=True,
                 )
             logger.info("Requirements.txt installed successfully!")
-        except subprocess.CalledProcessError as e:
             logger.debug(f"Failed to install requirements.txt: {e.stderr}")
             return False
         except Exception as e:

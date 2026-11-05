@@ -20,7 +20,6 @@ from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtensio
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
 
 
-class EXT_RADIUSConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "radius_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -49,8 +48,6 @@ class EXT_RADIUSConsumer(AbstractStaticExtension):
 
     _abilities: ClassVar[Set[str]] = set()
 
-    @classmethod
-    def validate_config(cls) -> List[str]:
         from zephyrex.extensions.radius_consumer.BLL_RADIUSConsumer import (
             ALLOW_UDP_ENV,
             udp_allowed,

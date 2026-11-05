@@ -38,8 +38,6 @@ class ExtensionModel(
     is_system_entity: ClassVar[bool] = True
     seed_creator_id: ClassVar[str] = env("SYSTEM_ID")
 
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Dynamically discover and return extension seed data."""
         try:
             logger.debug("Discovering extensions for seeding...")
@@ -90,11 +88,9 @@ class ExtensionModel(
             logger.debug(f"Total extensions in seed data: {len(seed_data)}")
             return seed_data
 
-        except Exception as e:
             logger.error(f"Error discovering extensions for seeding: {e}")
             return []
 
-    class Create(BaseModel, NameMixinModel):
         description: Optional[str] = Field(
             None, description="Description of the extension"
         )
@@ -102,7 +98,6 @@ class ExtensionModel(
             None, description="Human-readable name for the extension"
         )
 
-    class Update(BaseModel, NameMixinModel.Optional):
         description: Optional[str] = Field(
             None, description="Description of the extension"
         )
@@ -110,12 +105,10 @@ class ExtensionModel(
             None, description="Human-readable name for the extension"
         )
 
-    class Search(ApplicationModel.Search, NameMixinModel.Search):
         description: Optional[StringSearchModel] = None
         friendly_name: Optional[StringSearchModel] = None
 
 
-class ExtensionManager(AbstractBLLManager, RouterMixin):
     _model = ExtensionModel
 
     # RouterMixin configuration
@@ -161,8 +154,6 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
         )
         self._abilities: Optional["AbilityManager"] = None
 
-    @property
-    def abilities(self) -> "AbilityManager":
         """
         Get the ability manager for this extension manager.
 
@@ -171,15 +162,12 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
         """
         if self._abilities is None:
             self._abilities = AbilityManager(
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._abilities
 
-    @staticmethod
-    def list_runtime_extensions() -> List[str]:
         """
         Get list of available runtime extensions.
 
@@ -223,7 +211,6 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
                 extensions.append(ext_name)
 
             return extensions
-        except Exception as e:
             logger.error(f"Error finding extensions: {str(e)}")
             return []
 
@@ -249,8 +236,6 @@ class AbilityModel(
     )
     is_system_entity: ClassVar[bool] = True
 
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Dynamically discover and return ability seed data from extensions."""
         try:
             logger.debug("Discovering abilities for seeding...")
@@ -325,17 +310,12 @@ class AbilityModel(
             logger.debug(f"Generated {len(abilities_data)} ability seed records")
             return abilities_data
 
-        except Exception as e:
             logger.error(f"Error generating ability seed data: {e}")
             return []
 
-    class Create(BaseModel, NameMixinModel, ExtensionModel.Reference.ID):
         meta: Optional[bool] = False
         friendly_name: Optional[str] = None
 
-    class Update(
-        BaseModel, NameMixinModel.Optional, ExtensionModel.Reference.ID.Optional
-    ):
         meta: Optional[bool] = None
         friendly_name: Optional[str] = None
 
@@ -348,7 +328,6 @@ class AbilityModel(
         friendly_name: Optional[StringSearchModel] = None
 
 
-class AbilityManager(AbstractBLLManager, RouterMixin):
     _model = AbilityModel
 
     # RouterMixin configuration
@@ -393,12 +372,10 @@ class AbilityManager(AbstractBLLManager, RouterMixin):
             model_registry=model_registry,
         )
 
-    def create_validation(self, entity):
         """Validate ability creation - check that extension exists."""
         # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.extension_id:
             extension = ExtensionModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.extension_id,
             )

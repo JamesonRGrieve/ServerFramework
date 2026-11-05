@@ -41,7 +41,6 @@ _STATUSES = {
 }
 
 
-def woo_order(found: Mapping[str, Any]) -> Dict[str, Any]:
     billing = found.get("billing") or {}
     name = " ".join(
         part for part in (billing.get("first_name"), billing.get("last_name")) if part
@@ -73,7 +72,6 @@ def woo_order(found: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
 
-class PRV_WooCommerce_ECommerce(AbstractEcommerceProvider):
     name: ClassVar[str] = "woocommerce"
     friendly_name: ClassVar[str] = "WooCommerce"
     description: ClassVar[str] = "A WooCommerce store"

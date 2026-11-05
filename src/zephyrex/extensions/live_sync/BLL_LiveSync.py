@@ -173,8 +173,6 @@ class _Subscriber:
     loop: asyncio.AbstractEventLoop
 
 
-@dataclass
-class LiveHub:
     """The streams open in this process, keyed by (user, channel).
 
     Every message reaches the hub through the event bus, which hands it to
@@ -272,7 +270,6 @@ class LiveHub:
 HUB = LiveHub()
 
 
-class LiveSyncManager(AbstractBLLManager, RouterMixin):
     _model = LiveDeviceModel
     prefix: ClassVar[str | None] = LIVE_PREFIX
     tags: ClassVar[list[str] | None] = ["Live Sync"]
@@ -317,7 +314,6 @@ class LiveSyncManager(AbstractBLLManager, RouterMixin):
             ]
         )
 
-    def _register(self, channel: str, client_id: str, label: str | None) -> None:
         """Record the device as seen now; it becomes main when no connected device is."""
         devices = self._devices(channel)
         connected = HUB.connected(self._user_id, channel) - {client_id}
@@ -341,7 +337,6 @@ class LiveSyncManager(AbstractBLLManager, RouterMixin):
             changes["label"] = label
         self._as_root().update(id=mine.id, **changes)
 
-    def _set_main(self, channel: str, client_id: str | None) -> None:
         """Make ``client_id`` the channel's only main device (``None``: the
         longest-connected device left, if any)."""
         devices = self._devices(channel)

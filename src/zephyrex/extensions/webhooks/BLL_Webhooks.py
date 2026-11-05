@@ -46,7 +46,6 @@ WEBHOOK_REGISTRY: Dict[Tuple[str, str, Optional[str]], Callable] = {}
 _PROVIDER_CLASSES: Dict[Tuple[str, str], Any] = {}
 
 
-class WebhookContext(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     payload: dict
@@ -65,7 +64,6 @@ class WebhookContext(BaseModel):
 _DEFAULT_REPLAY_WINDOW_SECONDS = 300
 
 
-class ReplayCache:
     """In-memory dedup cache keyed by ``(extension, provider, nonce)``.
 
     Bounded by ``max_entries`` to prevent unbounded growth from junk

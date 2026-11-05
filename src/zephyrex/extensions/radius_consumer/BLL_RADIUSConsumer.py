@@ -92,7 +92,6 @@ def udp_allowed() -> bool:
     return (env(ALLOW_UDP_ENV) or "").strip().lower() == "true"
 
 
-def _secret(stored: Optional[str]) -> Optional[str]:
     return decrypt_secret(stored) if stored else None
 
 
@@ -107,7 +106,6 @@ def _unprocessable(detail: str) -> HTTPException:
     )
 
 
-def service_settings(fields: Dict[str, Any]) -> ServiceSettings:
     """The client settings ``fields`` (a server's columns, its secrets in
     plain text) describe; 422 naming the first thing wrong with them."""
     named = fields.get("transport") or "radsec"
@@ -175,7 +173,6 @@ def service_settings(fields: Dict[str, Any]) -> ServiceSettings:
     )
 
 
-def checked_service_settings(fields: Dict[str, Any]) -> ServiceSettings:
     """:func:`service_settings`, with the TLS material loaded once to prove
     it is usable."""
     settings = service_settings(fields)
@@ -187,7 +184,6 @@ def checked_service_settings(fields: Dict[str, Any]) -> ServiceSettings:
     return settings
 
 
-class RadiusServerModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """A RADIUS service users sign in through."""
 
     name: str = Field(..., description="Shown on the sign-in page")
@@ -234,7 +230,6 @@ class RadiusServerModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta)
 
     table_comment: ClassVar[str] = "RADIUS services users sign in through"
 
-    class Create(BaseModel):
         name: str
         hosts: List[str]
         transport: str = "radsec"
@@ -249,7 +244,6 @@ class RadiusServerModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta)
         is_enabled: bool = True
         jit_create_users: bool = True
 
-    class Update(BaseModel):
         name: Optional[str] = None
         hosts: Optional[List[str]] = None
         transport: Optional[str] = None
@@ -264,7 +258,6 @@ class RadiusServerModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta)
         is_enabled: Optional[bool] = None
         jit_create_users: Optional[bool] = None
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         name: Optional[StringSearchModel] = None
         transport: Optional[StringSearchModel] = None
         is_enabled: Optional[bool] = None
@@ -273,7 +266,6 @@ class RadiusServerModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta)
 SECRET_FIELDS: Tuple[str, ...] = ("shared_secret", "tls_client_key_pem")
 
 
-def plain_fields(server: RadiusServerModel) -> Dict[str, Any]:
     """``server``'s columns, its secrets decrypted."""
     fields = {name: getattr(server, name) for name in RadiusServerModel.model_fields}
     for name in SECRET_FIELDS:
@@ -298,10 +290,8 @@ class RadiusIdentityModel(
     table_comment: ClassVar[str] = "Accounts RADIUS usernames sign in to"
     permission_references: ClassVar[List[str]] = ["radius_server"]
 
-    class Create(BaseModel, UserModel.Reference.ID, RadiusServerModel.Reference.ID):
         username: str
 
-    class Update(BaseModel):
         username: Optional[str] = None
 
     class Search(
@@ -332,14 +322,12 @@ class RadiusChallengeModel(
     table_comment: ClassVar[str] = "Access-Challenges awaiting an answer"
     permission_references: ClassVar[List[str]] = ["radius_server"]
 
-    class Create(BaseModel, RadiusServerModel.Reference.ID):
         token_hash: str
         host_index: int
         username: str
         state_hex: str
         expires_at: datetime
 
-    class Update(BaseModel):
         pass
 
     class Search(
@@ -350,11 +338,9 @@ class RadiusChallengeModel(
         expires_at: Optional[DateSearchModel] = None
 
 
-class RootManagedManager(AbstractBLLManager):
     """Writes by root only. Reads follow from that: a record root created
     is visible to root alone."""
 
-    def _require_root(self) -> None:
         if not is_root_id(self.requester.id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=ROOT_ONLY)
 
@@ -377,15 +363,12 @@ class RootManagedManager(AbstractBLLManager):
         return fields
 
 
-class RadiusServerManager(RootManagedManager, RouterMixin):
     _model = RadiusServerModel
 
     prefix: ClassVar[Optional[str]] = "/v1/radius-consumer/servers"
     tags: ClassVar[Optional[List[str]]] = ["RADIUS Sign-in"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    @staticmethod
-    def _sealed(fields: Dict[str, Any]) -> Dict[str, Any]:
         for name in SECRET_FIELDS:
             if fields.get(name):
                 fields[name] = encrypt_secret(fields[name])
@@ -395,14 +378,12 @@ class RadiusServerManager(RootManagedManager, RouterMixin):
         checked_service_settings(fields)
         return self._sealed(fields)
 
-    def prepare_update(self, id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
         current = plain_fields(self.get(id=id))
         changed = {k: v for k, v in fields.items() if v is not None}
         checked_service_settings({**current, **changed})
         return self._sealed(fields)
 
 
-class RadiusIdentityManager(RootManagedManager, RouterMixin):
     _model = RadiusIdentityModel
 
     prefix: ClassVar[Optional[str]] = "/v1/radius-consumer/identities"
@@ -415,16 +396,13 @@ class RadiusIdentityManager(RootManagedManager, RouterMixin):
         )
         return found
 
-    def prepare_create(self, fields: Dict[str, Any]) -> Dict[str, Any]:
         server_id, username = fields.get("radius_server_id"), fields.get("username")
         if not username:
             raise _unprocessable("username is required")
         RadiusServerManager(
-            requester_id=self.requester.id, model_registry=self.model_registry
         ).get(id=server_id)
         refuse_internal_account(fields.get("user_id"))
         UserManager(
-            requester_id=self.requester.id, model_registry=self.model_registry
         ).get(id=fields.get("user_id"))
         if self._linked(server_id, username):
             raise HTTPException(
@@ -432,7 +410,6 @@ class RadiusIdentityManager(RootManagedManager, RouterMixin):
             )
         return fields
 
-    def prepare_update(self, id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
         if fields.get("user_id") is not None:
             refuse_internal_account(fields["user_id"])
         username = fields.get("username")
@@ -446,29 +423,24 @@ class RadiusIdentityManager(RootManagedManager, RouterMixin):
         return fields
 
 
-class RadiusServerChoice(RouteModel):
     id: str
     name: str
 
 
-class RadiusServerList(RouteModel):
     servers: List[RadiusServerChoice]
 
 
-class RadiusLogin(RouteModel):
     server_id: str = Field(..., description="The RADIUS server's id")
     username: str = Field(..., min_length=1, max_length=253)
     password: str = Field(..., min_length=1, max_length=128)
 
 
-class RadiusChallengeAnswer(RouteModel):
     radius_challenge_token: str = Field(..., min_length=1, max_length=256)
     response: str = Field(
         ..., min_length=1, max_length=128, description="The code, or other answer"
     )
 
 
-class RadiusLoginResult(RouteModel):
     """What password sign-in answers (``token``, ``user``, ``teams``,
     ``preferences``, ``session_key``), or its MFA challenge
     (``mfa_required``, ``challenge_token``, ``methods``), or a RADIUS
@@ -488,7 +460,6 @@ class RadiusLoginResult(RouteModel):
     reply_message: Optional[str] = None
 
 
-def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -496,13 +467,11 @@ def _aware(moment: datetime) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def _client_ip(request: Optional[Request]) -> str:
     if request is not None and request.client is not None:
         return str(request.client.host)
     return "unknown"
 
 
-class RadiusLoginManager(AbstractBLLManager, RouterMixin):
     """The sign-in routes, and the challenges they hold."""
 
     _model = RadiusChallengeModel
@@ -512,8 +481,6 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.NONE
     routes_to_register: ClassVar[Optional[List[Any]]] = []
 
-    def _root(self, manager: Any) -> Any:
-        return manager(requester_id=env("ROOT_ID"), model_registry=self.model_registry)
 
     def _servers(self, **criteria: Any) -> List[RadiusServerModel]:
         """Enabled servers that are not deleted, matching ``criteria``."""
@@ -531,7 +498,6 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
             )
         return found[0]
 
-    def enabled_servers(self) -> RadiusServerList:
         servers = self._servers()
         return RadiusServerList(
             servers=[RadiusServerChoice(id=s.id, name=s.name) for s in servers]
@@ -570,8 +536,6 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=SERVICE_FAILED
             ) from exc
 
-    @staticmethod
-    def _guard(ip: str) -> None:
         tracker = UserManager._lockout_tracker
         if tracker.is_locked(ip, LOCKOUT_SCOPE):
             remaining = tracker.remaining_lockout_seconds(ip, LOCKOUT_SCOPE)
@@ -604,14 +568,6 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
         )
         return self._conclude(server, challenge.username, reply, response, ip)
 
-    def _conclude(
-        self,
-        server: RadiusServerModel,
-        username: str,
-        reply: Reply,
-        response: Response,
-        ip: str,
-    ) -> RadiusLoginResult:
         tracker = UserManager._lockout_tracker
         if reply.outcome == "reject":
             tracker.record_failure(ip, LOCKOUT_SCOPE)
@@ -640,13 +596,8 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
             **UserManager._complete_login(user, self.model_registry, response)
         )
 
-    def _hold(
-        self, server: RadiusServerModel, username: str, host_index: int, state: bytes
-    ) -> str:
         """Keep a challenge's State; the token that redeems it."""
-        token = secrets.token_urlsafe(CHALLENGE_TOKEN_BYTES)
         RadiusChallengeModel.DB(self.model_registry.DB.manager.Base).create(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             radius_server_id=server.id,
             token_hash=_token_hash(token),
@@ -658,12 +609,10 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
         )
         return token
 
-    def _redeem(self, token: str) -> RadiusChallengeModel:
         """The challenge ``token`` stands for, spent; 401 when there is
         none, it expired, or it was answered already."""
         ChallengeDB = RadiusChallengeModel.DB(self.model_registry.DB.manager.Base)
         found = ChallengeDB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[ChallengeDB.token_hash == _token_hash(token), *_live(ChallengeDB)],
             return_type="dto",
@@ -676,7 +625,6 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
             )
         challenge: RadiusChallengeModel = found[0]
         ChallengeDB.delete(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=challenge.id,
         )
@@ -687,17 +635,14 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
             )
         return challenge
 
-    def _account(self, server: RadiusServerModel, username: str) -> Dict[str, Any]:
         """The active account ``username`` on ``server`` signs in to,
         created on a first sign-in when registration allows."""
         from zephyrex.lib.Environment import settings
 
-        root_id = env("ROOT_ID")
         base = self.model_registry.DB.manager.Base
         IdentityDB = RadiusIdentityModel.DB(base)
         UserDB = UserModel.DB(base)
         identities = IdentityDB.list(
-            requester_id=root_id,
             model_registry=self.model_registry,
             filters=[
                 IdentityDB.radius_server_id == server.id,
@@ -712,19 +657,16 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
             identity: RadiusIdentityModel = identities[0]
             refuse_internal_account(identity.user_id)
             users = UserDB.list(
-                requester_id=root_id,
                 model_registry=self.model_registry,
                 id=identity.user_id,
             )
             # The account may be disabled or deleted; the identity then
             # signs no one in.
-            if len(users) != 1 or not users[0]["active"] or users[0]["deleted_at"]:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail=INVALID_CREDENTIALS,
                 )
             IdentityDB.update(
-                requester_id=root_id,
                 model_registry=self.model_registry,
                 id=identity.id,
                 new_properties={"last_login_at": now},
@@ -738,14 +680,12 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
                 detail="No account is linked to this RADIUS identity",
             )
         created = UserDB.create(
-            requester_id=root_id,
             model_registry=self.model_registry,
             override_dto=self.model_registry.apply(UserModel),
             return_type="dto",
             display_name=username,
         )
         IdentityDB.create(
-            requester_id=root_id,
             model_registry=self.model_registry,
             user_id=created.id,
             radius_server_id=server.id,
@@ -754,7 +694,6 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
         )
         logger.info("RADIUS sign-in created account %s via %s", created.id, server.id)
         fresh: List[Dict[str, Any]] = UserDB.list(
-            requester_id=root_id, model_registry=self.model_registry, id=created.id
         )
         return fresh[0]
 

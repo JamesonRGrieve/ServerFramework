@@ -92,7 +92,6 @@ DEFAULT_RELEASED_ATTRIBUTES = (
 STRUCTURAL_ATTRIBUTES = ("objectClass", "ou", "uid", "cn")
 
 
-class ResultCode(IntEnum):
     """RFC 4511 4.1.9 result codes this directory answers with."""
 
     SUCCESS = 0
@@ -115,7 +114,6 @@ class ResultCode(IntEnum):
     UNWILLING_TO_PERFORM = 53
 
 
-class Refused(Exception):
     """An operation answered with ``code`` and ``message``."""
 
     def __init__(self, code: ResultCode, message: str, matched_dn: str = "") -> None:
@@ -129,7 +127,6 @@ RDN = Tuple[str, str]
 DN = Tuple[RDN, ...]
 
 
-def _unescape(value: str) -> str:
     """An RFC 4514 attribute value with its escapes resolved."""
     out = bytearray()
     index = 0
@@ -149,7 +146,6 @@ def _unescape(value: str) -> str:
     return out.decode("utf-8")
 
 
-def parse(dn: str) -> DN:
     """``dn`` as (attribute, value) pairs, attributes lower-cased and values
     unescaped. Raises :class:`Refused` (invalidDNSyntax) when it is not a
     DN; multi-valued RDNs are not part of this tree and are refused too."""
@@ -172,8 +168,6 @@ def render(dn: DN) -> str:
     return ",".join(f"{kind}={escape_rdn(value)}" for kind, value in dn)
 
 
-@dataclass(frozen=True)
-class DirectoryConfig:
     """What the directory serves: under ``base_dn``, the attributes in
     ``released`` (lower-case names), at most ``size_limit`` entries and
     ``time_limit_seconds`` per search."""
@@ -196,8 +190,6 @@ class DirectoryConfig:
         return parse(self.base_dn)
 
 
-@dataclass(frozen=True)
-class Principal:
     """Who a connection is bound as: a user (``user_id``) or a service
     account (``user_id`` None)."""
 
@@ -205,16 +197,12 @@ class Principal:
     user_id: Optional[str] = None
 
 
-@dataclass
-class SearchOutcome:
     entries: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]]
     code: ResultCode = ResultCode.SUCCESS
     message: str = ""
     matched_dn: str = ""
 
 
-@dataclass(frozen=True)
-class SearchRequest:
     base: str
     scope: int
     filter: Node
@@ -227,18 +215,13 @@ class SearchRequest:
 BASE_OBJECT, SINGLE_LEVEL, WHOLE_SUBTREE = 0, 1, 2
 
 
-class LDAPDirectory:
     """The directory served from ``model_registry``'s users and teams."""
 
-    def __init__(self, model_registry: Any, config: DirectoryConfig) -> None:
         self.registry = model_registry
         self.config = config
         self.base = config.base
         self.base_key = _key(self.base)
-        self.root_id = str(env("ROOT_ID"))
         self.hidden_ids = {
-            str(env("ROOT_ID")),
-            str(env("SYSTEM_ID")),
             str(env("TEMPLATE_ID")),
         }
 
@@ -253,14 +236,12 @@ class LDAPDirectory:
     def group_dn(self, team_id: str) -> str:
         return render((("cn", team_id),) + self.container(GROUPS))
 
-    def _relative(self, dn: DN) -> Optional[DN]:
         """The RDNs of ``dn`` above the base, or None outside it."""
         depth = len(self.base)
         if len(dn) < depth or _key(dn[len(dn) - depth :]) != self.base_key:
             return None
         return dn[: len(dn) - depth]
 
-    def _leaf(self, dn: DN) -> Tuple[Optional[str], Optional[RDN]]:
         """For ``ou=<container>,<base>`` or ``<leaf>,ou=<container>,<base>``:
         the container's name (lower case) and the leaf RDN, if any.
         (None, None) for any other name."""
@@ -277,9 +258,7 @@ class LDAPDirectory:
     def _db(self, model: Any) -> Any:
         return model.DB(self.registry.DB.manager.Base)
 
-    def _rows(self, model: Any, filters: List[Any], **kwargs: Any) -> List[Any]:
         rows: List[Any] = self._db(model).list(
-            requester_id=self.root_id,
             model_registry=self.registry,
             return_type="dto",
             override_dto=model,
@@ -288,10 +267,8 @@ class LDAPDirectory:
         )
         return rows
 
-    def _user_filters(self) -> List[Any]:
         User = self._db(UserModel)
         return [
-            User.deleted_at.is_(None),
             User.id.notin_(sorted(self.hidden_ids)),
             (User.active.is_(None)) | (User.active.is_(True)),
         ]
@@ -300,16 +277,9 @@ class LDAPDirectory:
     def _uid(user: Any) -> str:
         return str(user.username or user.email or user.id)
 
-    def _memberships(
-        self,
-        *,
-        user_ids: Optional[Set[str]] = None,
-        team_ids: Optional[Set[str]] = None,
-    ) -> List[Any]:
         """Enabled, unexpired memberships of ``user_ids`` or in ``team_ids``."""
         Membership = self._db(UserTeamModel)
         filters: List[Any] = [
-            Membership.deleted_at.is_(None),
             Membership.enabled.is_(True),
         ]
         if user_ids is not None:
@@ -323,9 +293,7 @@ class LDAPDirectory:
             if row.expires_at is None or ensure_utc(row.expires_at) > now
         ]
 
-    def _teams(self, team_ids: Optional[Set[str]]) -> List[Any]:
         Team = self._db(TeamModel)
-        filters: List[Any] = [Team.deleted_at.is_(None)]
         if team_ids is not None:
             filters.append(Team.id.in_(sorted(team_ids)))
         return self._rows(TeamModel, filters, order_by=[Team.id])
@@ -338,9 +306,6 @@ class LDAPDirectory:
             UserModel, [*self._user_filters(), User.id.in_(sorted(user_ids))]
         )
 
-    def _scope(
-        self, principal: Principal
-    ) -> Tuple[Optional[Set[str]], Optional[Set[str]]]:
         """The (user ids, team ids) ``principal`` may see; None is all."""
         if principal.user_id is None:
             return None, None
@@ -379,7 +344,6 @@ class LDAPDirectory:
             {"objectClass": CONTAINER_CLASSES, "ou": (name,)},
         )
 
-    def _person(self, user: Any, team_ids: Sequence[str]) -> DirectoryEntry:
         uid = self._uid(user)
         names = " ".join(n for n in (user.first_name, user.last_name) if n)
         attributes: Dict[str, Tuple[str, ...]] = {
@@ -399,7 +363,6 @@ class LDAPDirectory:
                 attributes[name] = (str(value),)
         return DirectoryEntry(self.person_dn(user), attributes)
 
-    def _group(self, team: Any, members: Sequence[Any]) -> DirectoryEntry:
         names = (str(team.id),) + ((str(team.name),) if team.name else ())
         attributes: Dict[str, Tuple[str, ...]] = {
             "objectClass": GROUP_CLASSES,
@@ -411,17 +374,11 @@ class LDAPDirectory:
             attributes["description"] = (str(team.description),)
         return DirectoryEntry(self.group_dn(str(team.id)), attributes)
 
-    def _people_entries(
-        self, users: List[Any], teams: Optional[Set[str]]
-    ) -> List[DirectoryEntry]:
         joined: Dict[str, List[str]] = {str(user.id): [] for user in users}
         for row in self._memberships(user_ids=set(joined), team_ids=teams):
             joined[str(row.user_id)].append(str(row.team_id))
         return [self._person(user, joined[str(user.id)]) for user in users]
 
-    def _group_entries(
-        self, found: List[Any], users: Optional[Set[str]]
-    ) -> List[DirectoryEntry]:
         members: Dict[str, Set[str]] = {str(team.id): set() for team in found}
         for row in self._memberships(team_ids=set(members), user_ids=users):
             members[str(row.team_id)].add(str(row.user_id))
@@ -439,7 +396,6 @@ class LDAPDirectory:
             for team in found
         ]
 
-    def _people(self, principal: Principal) -> Iterator[DirectoryEntry]:
         """Every person ``principal`` may see, a page at a time."""
         users, teams = self._scope(principal)
         User = self._db(UserModel)
@@ -456,7 +412,6 @@ class LDAPDirectory:
                 return
             offset += PAGE_SIZE
 
-    def _groups(self, principal: Principal) -> Iterator[DirectoryEntry]:
         users, teams = self._scope(principal)
         if teams is not None and not teams:
             return
@@ -464,7 +419,6 @@ class LDAPDirectory:
         for start in range(0, len(found), PAGE_SIZE):
             yield from self._group_entries(found[start : start + PAGE_SIZE], users)
 
-    def _find_person(self, principal: Principal, uid: str) -> Optional[DirectoryEntry]:
         user = self._user_named(uid)
         if user is None:
             return None
@@ -473,16 +427,12 @@ class LDAPDirectory:
             return None
         return self._people_entries([user], teams)[0]
 
-    def _find_group(
-        self, principal: Principal, team_id: str
-    ) -> Optional[DirectoryEntry]:
         users, teams = self._scope(principal)
         if teams is not None and team_id not in teams:
             return None
         found = self._teams({team_id})
         return self._group_entries(found, users)[0] if found else None
 
-    def _user_named(self, uid: str) -> Optional[Any]:
         """The one user whose username or email is ``uid``, as login finds
         them."""
         identifier = UserManager._normalize_identifier(uid)
@@ -498,7 +448,6 @@ class LDAPDirectory:
 
     # -- binds -----------------------------------------------------------------
 
-    def bind(self, dn: str, password: str, address: str) -> Principal:
         """The principal ``dn`` binds as with ``password``, from ``address``.
         Raises :class:`Refused` for anything else."""
         if not password:
@@ -527,14 +476,11 @@ class LDAPDirectory:
         tracker.clear(address, LOGIN_FLOW)
         return principal
 
-    def _bind_service(self, name: str, secret: str) -> Optional[Principal]:
         Account = self._db(LdapServiceAccountModel)
         found = Account.list(
-            requester_id=self.root_id,
             model_registry=self.registry,
             filters=[
                 Account.name == name,
-                Account.deleted_at.is_(None),
                 Account.enabled.is_(True),
             ],
         )
@@ -543,7 +489,6 @@ class LDAPDirectory:
             return None
         return Principal(render((("cn", name),) + self.container(SERVICES)))
 
-    def _bind_user(self, uid: str, password: str, address: str) -> Optional[Principal]:
         user = self._user_named(uid)
         if user is None:
             secret_matches(password, None)
@@ -558,7 +503,6 @@ class LDAPDirectory:
                 secret_matches(password, None)
                 return None
         verified = UserManager(
-            model_registry=self.registry, requester_id=user_id
         ).verify_password(user_id, password)
         if not verified:
             if record_failure is not None:
@@ -573,7 +517,6 @@ class LDAPDirectory:
 
     # -- reads -----------------------------------------------------------------
 
-    def _locate(self, principal: Principal, dn: DN) -> Tuple[str, DirectoryEntry]:
         """What ``dn`` names: (kind, entry). Raises noSuchObject when it is
         nothing ``principal`` can see."""
         relative = self._relative(dn)
@@ -598,9 +541,6 @@ class LDAPDirectory:
             raise Refused(ResultCode.NO_SUCH_OBJECT, "no such object", matched)
         return "leaf", entry
 
-    def _candidates(
-        self, principal: Principal, kind: str, entry: DirectoryEntry, scope: int
-    ) -> Iterator[DirectoryEntry]:
         if scope != SINGLE_LEVEL:
             yield entry
         if scope == BASE_OBJECT or kind == "leaf":
@@ -615,9 +555,6 @@ class LDAPDirectory:
         if kind in ("base", GROUPS):
             yield from self._groups(principal)
 
-    def search(
-        self, principal: Optional[Principal], request: SearchRequest
-    ) -> SearchOutcome:
         dn = parse(request.base)
         if not dn and request.scope == BASE_OBJECT:
             return self._root_dse_search(request)
@@ -656,7 +593,6 @@ class LDAPDirectory:
             )
         return outcome
 
-    def _root_dse_search(self, request: SearchRequest) -> SearchOutcome:
         entry = self.root_dse()
         everything = frozenset(name.lower() for name in entry.attributes)
         if evaluate(request.filter, entry, everything) is not True:
@@ -668,9 +604,6 @@ class LDAPDirectory:
             entries=[("", entry.released(everything, selection, request.types_only))]
         )
 
-    def compare(
-        self, principal: Optional[Principal], dn: str, attribute: str, value: str
-    ) -> ResultCode:
         if principal is None:
             raise Refused(
                 ResultCode.INSUFFICIENT_ACCESS_RIGHTS, "bind before comparing"

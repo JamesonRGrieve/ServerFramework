@@ -38,7 +38,6 @@ from zephyrex.lib.SecretEncryption import (
 from zephyrex.logic.AbstractLogicManager.ownership import server_side
 
 
-class EXT_OAuthProvider(AbstractStaticExtension):
     name: ClassVar[str] = "oauth_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -64,8 +63,6 @@ class EXT_OAuthProvider(AbstractStaticExtension):
         "oauth_provider_rotate_signing_keys",
     }
 
-    @classmethod
-    def validate_config(cls) -> List[str]:
         issues: List[str] = []
         for setting, getter in (
             (Config.ISSUER, Config.issuer),
@@ -81,18 +78,6 @@ class EXT_OAuthProvider(AbstractStaticExtension):
             issues.append(f"signing keys cannot be stored: {error}")
         return issues
 
-    @classmethod
-    @ability("oauth_provider_register_client")
-    async def register_client(
-        cls,
-        requester_id: str,
-        name: str,
-        redirect_uris: List[str],
-        is_confidential: bool = True,
-        application_type: str = APPLICATION_WEB,
-        allowed_scopes: Optional[List[str]] = None,
-        token_endpoint_auth_method: Optional[str] = None,
-    ) -> Dict[str, Any]:
         """Register a client the user owns. Its secret is in the answer, and
         nowhere else, ever."""
         manager: OauthClientManager = cls.as_requester(OauthClientManager, requester_id)
@@ -108,24 +93,15 @@ class EXT_OAuthProvider(AbstractStaticExtension):
         )
         return registered.model_dump(mode="json")
 
-    @classmethod
-    @ability("oauth_provider_list_grants")
-    async def list_grants(cls, requester_id: str) -> List[Dict[str, Any]]:
         """The clients the user consented to, and to which scopes."""
         manager: OauthGrantManager = cls.as_requester(OauthGrantManager, requester_id)
         return [grant.model_dump(mode="json") for grant in manager.list()]
 
-    @classmethod
-    @ability("oauth_provider_revoke_grant")
-    async def revoke_grant(cls, requester_id: str, grant_id: str) -> Dict[str, Any]:
         """Withdraw a consent; the client's tokens for the user stop working."""
         manager: OauthGrantManager = cls.as_requester(OauthGrantManager, requester_id)
         manager.delete(grant_id)
         return {"grant_id": grant_id, "revoked": True}
 
-    @classmethod
-    @ability("oauth_provider_rotate_signing_keys")
-    async def rotate_signing_keys(cls, requester_id: str) -> Dict[str, Any]:
         """New ID-token signing keys (operator only); the old ones stay
         published until tokens they signed have expired."""
         manager: OauthClientManager = cls.as_requester(OauthClientManager, requester_id)

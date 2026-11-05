@@ -46,7 +46,6 @@ def extension_folders() -> List[Path]:
     )
 
 
-def declared_requirements() -> Dict[str, List[str]]:
     """Each extension's pip requirements, from its code."""
     from zephyrex.extensions.AbstractExtensionProvider import (
         AbstractStaticExtension,
@@ -57,7 +56,6 @@ def declared_requirements() -> Dict[str, List[str]]:
         for module_file in sorted(folder.glob("EXT_*.py")):
             if module_file.stem.endswith("_test"):
                 continue
-            module = importlib.import_module(
                 f"zephyrex.extensions.{folder.name}.{module_file.stem}"
             )
             for _, cls in inspect.getmembers(module, inspect.isclass):
@@ -85,7 +83,6 @@ def _toml_list(values: List[str]) -> str:
     return json.dumps(values)
 
 
-def expected_files(requirements: Dict[str, List[str]]) -> Dict[Path, str]:
     """Every file this tool owns, as it should read for ``requirements``."""
     files: Dict[Path, str] = {}
     for folder in extension_folders():
@@ -122,7 +119,6 @@ def expected_files(requirements: Dict[str, List[str]]) -> Dict[Path, str]:
     return files
 
 
-def drift(from_manifests: bool = False) -> List[Tuple[Path, str]]:
     requirements = (
         manifest_requirements() if from_manifests else declared_requirements()
     )
@@ -133,7 +129,6 @@ def drift(from_manifests: bool = False) -> List[Tuple[Path, str]]:
     ]
 
 
-def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true")
     parser.add_argument(

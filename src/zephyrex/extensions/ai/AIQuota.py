@@ -31,7 +31,6 @@ __all__ = [
 ]
 
 
-class TokenQuotaLedger:
     """A nested token ledger: one overall budget plus optional per-model budgets.
 
     Thread-safe. A ``None`` budget means "unlimited" for that scope, so a ledger
@@ -62,7 +61,6 @@ class TokenQuotaLedger:
             return None
         return budget - self._model_spent.get(model, 0)
 
-    def reserve(self, model: str, estimate: int) -> None:
         """Pre-decrement the overall and per-model budgets by ``estimate``.
 
         Refuses the call with :class:`QuotaExhaustedError` when EITHER budget
@@ -118,7 +116,6 @@ def estimate_tokens(
     return input_tokens + max(0, int(ceiling))
 
 
-def true_up_tokens(response: Any, *, fallback: Optional[int] = None) -> int:
     """Actual tokens consumed, for reconciliation.
 
     Reads an upstream ``usage`` block when the response carries one: its

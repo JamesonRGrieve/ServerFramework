@@ -35,7 +35,6 @@ ROLES = ("system", "developer", "user", "assistant", "tool")
 DATASET_KEYS = {"messages", "tools", "parallel_tool_calls"}
 
 
-def _checked_message(line: int, message: Any) -> bool:
     """Check one message of example ``line``; whether it is the assistant's."""
     if not isinstance(message, dict) or message.get("role") not in ROLES:
         raise InvalidInputExternalError(
@@ -68,7 +67,6 @@ def _checked_message(line: int, message: Any) -> bool:
     return bool(role == "assistant")
 
 
-def _checked_example(line: int, text: str) -> None:
     try:
         example = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -100,7 +98,6 @@ def dataset_lines(data: str) -> List[str]:
     return lines
 
 
-def checked_dataset(data: Any, what: str = "training_data") -> bytes:
     """``data`` (chat-format JSONL text) as the bytes to upload, or an
     invalid-input error naming the first bad line."""
     if not isinstance(data, str) or not data.strip():
@@ -185,7 +182,6 @@ def checked_limit(limit: int) -> int:
     return limit
 
 
-class AbstractTuningProvider(AbstractStaticProvider):
     """A fine-tuning API; each instance is one account.
 
     A job comes back as ``{provider_job_id, base_model, status,

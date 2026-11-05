@@ -42,8 +42,6 @@ from typing import (
 )
 
 
-@functools.lru_cache(maxsize=8)
-def _parse_trusted_proxies(raw: str) -> tuple[ipaddress._BaseNetwork, ...]:
     """Parse a raw ``TRUSTED_PROXIES`` value into ip_network objects.
 
     Memoized on the raw string: a stable config is parsed once rather than on
@@ -78,7 +76,6 @@ def _trusted_proxy_networks() -> list[ipaddress._BaseNetwork]:
     return list(_parse_trusted_proxies(raw))
 
 
-def _peer_is_trusted_proxy(peer_host: str | None) -> bool:
     """Return True iff the immediate connection peer is in TRUSTED_PROXIES."""
     if not peer_host:
         return False
@@ -170,9 +167,6 @@ _DEFAULT_SECURITY_HEADERS: dict[str, str] = {
 DEFAULT_MAX_BODY_BYTES: int = 10 * 1024 * 1024
 
 
-def _with_vary(
-    raw: list[tuple[bytes, bytes]], required: str
-) -> list[tuple[bytes, bytes]]:
     """``raw`` with a single ``Vary`` naming every field it already varied on
     plus each of ``required``. ``Vary`` is a list: a layer that varies on
     ``Origin`` must not stop the response varying on ``Authorization``."""
@@ -191,7 +185,6 @@ def _with_vary(
     return rest + [(b"vary", ", ".join(merged.values()).encode("latin-1"))]
 
 
-class SecurityHeadersMiddleware:
     """ASGI middleware that injects strict response headers (H-4).
 
     Mounted unconditionally by ``app.py``. Defaults come from
@@ -208,15 +201,12 @@ class SecurityHeadersMiddleware:
         self._headers = self._resolve_headers()
         self._strip_server = os.environ.get("SECURITY_STRIP_SERVER_HEADER", "1") != "0"
 
-    @staticmethod
-    def _resolve_headers() -> dict[str, str]:
         headers = dict(_DEFAULT_SECURITY_HEADERS)
         from zephyrex.lib.Environment import is_production as _is_prod
 
         if not _is_prod():
             headers.pop("Strict-Transport-Security", None)
         for name in list(headers.keys()):
-            override = os.environ.get(
                 "SECURITY_HEADER_" + name.upper().replace("-", "_")
             )
             if override is not None:
@@ -226,7 +216,6 @@ class SecurityHeadersMiddleware:
                     headers[name] = override
         return headers
 
-    async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -234,7 +223,6 @@ class SecurityHeadersMiddleware:
         headers_to_add = self._headers
         strip_server = self._strip_server
 
-        async def send_wrapper(message):
             if message.get("type") == "http.response.start":
                 raw = list(message.get("headers") or [])
                 existing_lower = {k.decode("latin-1").lower() for k, _ in raw}
@@ -255,7 +243,6 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
-class BodySizeLimitMiddleware:
     """ASGI middleware that enforces a max request body size (M-1).
 
     Two enforcement paths:
@@ -276,10 +263,8 @@ class BodySizeLimitMiddleware:
     that passes the global cap, so every other route keeps it.
     """
 
-    def __init__(self, app: Any, max_bytes: int | None = None) -> None:
         self.app = app
         if max_bytes is None:
-            raw = os.environ.get("MAX_REQUEST_BODY_BYTES")
             if raw is None:
                 max_bytes = DEFAULT_MAX_BODY_BYTES
             else:
@@ -289,7 +274,6 @@ class BodySizeLimitMiddleware:
                     max_bytes = DEFAULT_MAX_BODY_BYTES
         self.max_bytes = max_bytes
 
-    async def __call__(self, scope, receive, send):
         if self.max_bytes is None or self.max_bytes <= 0:
             await self.app(scope, receive, send)
             return
@@ -302,7 +286,6 @@ class BodySizeLimitMiddleware:
         # that declares more, looked up once and only past the global cap.
         allowed: dict[str, int] = {}
 
-        def cap() -> int:
             if "bytes" not in allowed:
                 declared_by_route = route_body_limit(scope) or 0
                 allowed["bytes"] = max(global_cap, declared_by_route)
@@ -321,7 +304,6 @@ class BodySizeLimitMiddleware:
 
         running = {"total": 0, "refused": False}
 
-        async def receive_wrapper():
             message = await receive()
             if message.get("type") == "http.request":
                 body = message.get("body") or b""
@@ -333,7 +315,6 @@ class BodySizeLimitMiddleware:
                     return {"type": "http.disconnect"}
             return message
 
-        async def send_wrapper(message):
             # Once refused mid-stream, the 413 is the response: what the app
             # sends after its read fails (an error page) would be a second.
             if not running["refused"]:
@@ -353,7 +334,6 @@ MAX_JSON_DEPTH: int = 32
 STREAM_CONTENT_TYPE = b"text/event-stream"
 
 
-class ETagMiddleware:
     """ASGI middleware that adds ETag headers to GET 200 responses and
     handles conditional requests (If-None-Match → 304).
 
@@ -367,7 +347,6 @@ class ETagMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -389,7 +368,6 @@ class ETagMiddleware:
         # it goes out as it is written instead of waiting for an end that never comes.
         streaming = False
 
-        async def capture_send(message):
             nonlocal streaming
             if streaming:
                 await send(message)
@@ -465,7 +443,6 @@ class ETagMiddleware:
         await self.app(scope, receive, capture_send)
 
 
-class RequestSmugglingMiddleware:
     """Reject requests that set both Transfer-Encoding and Content-Length.
 
     HTTP request smuggling exploits front-end/back-end disagreement on
@@ -476,7 +453,6 @@ class RequestSmugglingMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -524,7 +500,6 @@ _STRIPPED_HEADERS: frozenset = frozenset(
 )
 
 
-class ProxyHeaderSanitizationMiddleware:
     """Strip headers that reverse proxies may use to override routing.
 
     ``X-Original-URL`` and ``X-Rewrite-URL`` allow an attacker to
@@ -536,7 +511,6 @@ class ProxyHeaderSanitizationMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
         if scope.get("type") == "http":
             raw_headers = scope.get("headers") or []
             cleaned = [
@@ -549,7 +523,6 @@ class ProxyHeaderSanitizationMiddleware:
         await self.app(scope, receive, send)
 
 
-class PathSanitizationMiddleware:
     """ASGI middleware that rejects request paths containing null bytes
     or path-traversal sequences (``..``).
 
@@ -561,7 +534,6 @@ class PathSanitizationMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -578,7 +550,6 @@ class PathSanitizationMiddleware:
         await _send_asgi_error(send, 400, "Invalid characters in request path")
 
 
-class JSONDepthMiddleware:
     """ASGI middleware that rejects JSON request bodies nested beyond
     ``MAX_JSON_DEPTH`` levels.
 
@@ -591,7 +562,6 @@ class JSONDepthMiddleware:
         self.app = app
         self.max_depth = max_depth
 
-    async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -608,7 +578,6 @@ class JSONDepthMiddleware:
 
         chunks: list[bytes] = []
 
-        async def receive_wrapper():
             message = await receive()
             if message.get("type") == "http.request":
                 body = message.get("body") or b""
@@ -622,13 +591,11 @@ class JSONDepthMiddleware:
 
         try:
             await self.app(scope, receive_wrapper, send)
-        except Exception:
             if chunks and self._exceeds_depth(b"".join(chunks)):
                 await self._send_400(send)
             else:
                 raise
 
-    def _exceeds_depth(self, body: bytes) -> bool:
         depth = 0
         for ch in body:
             if ch in (123, 91):  # '{' or '['
@@ -651,7 +618,6 @@ class JSONDepthMiddleware:
 import hmac as _hmac
 
 
-def compare_api_key(submitted: str | None, expected: str | None) -> bool:
     """Constant-time comparison for API keys (H-3).
 
     Returns ``False`` for empty/None inputs — never let a misconfigured
@@ -661,10 +627,8 @@ def compare_api_key(submitted: str | None, expected: str | None) -> bool:
         return False
     submitted_b = submitted.encode("utf-8") if isinstance(submitted, str) else submitted
     expected_b = expected.encode("utf-8") if isinstance(expected, str) else expected
-    return _hmac.compare_digest(submitted_b, expected_b)
 
 
-def resolve_principal_from_api_key(api_key: str | None) -> str | None:
     """Map a submitted API key to one of (ROOT_ID, SYSTEM_ID, TEMPLATE_ID).
 
     Returns ``None`` when no key matches. Single source of truth for
@@ -676,8 +640,6 @@ def resolve_principal_from_api_key(api_key: str | None) -> str | None:
     from zephyrex.lib.Environment import env
 
     candidates = (
-        ("ROOT_API_KEY", "ROOT_ID"),
-        ("SYSTEM_API_KEY", "SYSTEM_ID"),
         ("TEMPLATE_API_KEY", "TEMPLATE_ID"),
     )
     for key_var, id_var in candidates:
@@ -687,7 +649,6 @@ def resolve_principal_from_api_key(api_key: str | None) -> str | None:
     return None
 
 
-def resolve_client_ip(request_or_headers, peer_host: str | None = None) -> str | None:
     """Return the client IP, honouring `X-Forwarded-For` only when the
     immediate peer is a configured trusted proxy (H-7).
 
@@ -732,7 +693,6 @@ DEFAULT_READ_RATE_LIMIT = "600/min"
 # ---------------------------------------------------------------------------
 
 
-class CORSPolicyError(ValueError):
     """Raised when a CORS configuration is rejected by `validate_cors_config`.
 
     Subclass of `ValueError` so existing FastAPI startup-error handlers
@@ -741,7 +701,6 @@ class CORSPolicyError(ValueError):
     """
 
 
-class RateLimitExceeded(Exception):
     """Raised by enforcement code when a `@rate_limit` budget is exhausted.
 
     Carries `retry_after_seconds` so the FastAPI middleware can render a 429
@@ -771,7 +730,6 @@ class RateLimitExceeded(Exception):
 _URL_SHAPE = re.compile(r"^https?://[A-Za-z0-9._\-]+(:[0-9]+)?(/.*)?$")
 
 
-def parse_cors_origins(env_value: str) -> list[str]:
     """Split a comma-separated `APP_CORS_ALLOWED_ORIGINS` env value.
 
     Trims whitespace, drops empty entries, and validates that each non-`*`
@@ -795,11 +753,6 @@ def parse_cors_origins(env_value: str) -> list[str]:
     return parts
 
 
-def validate_cors_config(
-    allow_origins: list[str],
-    allow_credentials: bool,
-    app_env: str,
-) -> None:
     """Reject insecure CORS combinations at app boot.
 
     Two explicit denials, in priority order:
@@ -866,7 +819,6 @@ _UNIT_SECONDS = {
 _RATE_SPEC = re.compile(r"^\s*(\d+)\s*/\s*([A-Za-z]+)\s*$")
 
 
-def parse_rate_spec(spec: str) -> tuple[int, int]:
     """Parse a `"100/min"` style rate spec into `(count, window_seconds)`.
 
     Accepts the units recognized in `_UNIT_SECONDS`. Raises `ValueError` on
@@ -894,7 +846,6 @@ def parse_rate_spec(spec: str) -> tuple[int, int]:
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def rate_limit(spec: str, scope: RateLimitScope = "ip") -> Callable[[F], F]:
     """Annotate a callable with rate-limit metadata.
 
     The decorator itself does not perform enforcement — it stamps the
@@ -916,7 +867,6 @@ def rate_limit(spec: str, scope: RateLimitScope = "ip") -> Callable[[F], F]:
     # Validate the spec at decoration time, not at first request.
     count, window_seconds = parse_rate_spec(spec)
 
-    def _decorator(fn: F) -> F:
         # A function takes any attribute; its declared type knows none of these.
         stamped: Any = fn
         stamped._rate_limit_spec = spec
@@ -933,7 +883,6 @@ def rate_limit(spec: str, scope: RateLimitScope = "ip") -> Callable[[F], F]:
 # ---------------------------------------------------------------------------
 
 
-class _InMemoryCounter:
     """Fallback per-process counter used when Item 69's `DistributedCounter`
     is not yet available.
 
@@ -947,7 +896,6 @@ class _InMemoryCounter:
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
         self._lock = RLock()
 
-    def incr(self, key: str, window_seconds: int) -> int:
         now = time.monotonic()
         cutoff = now - window_seconds
         with self._lock:
@@ -957,7 +905,6 @@ class _InMemoryCounter:
             bucket.append(now)
             return len(bucket)
 
-    def reset(self, key: str | None = None) -> None:
         with self._lock:
             if key is None:
                 self._buckets.clear()
@@ -968,7 +915,6 @@ class _InMemoryCounter:
 _inmemory_counter = _InMemoryCounter()
 
 
-def _get_counter() -> Any:
     """Return the rate-limit counter backend.
 
     The default is `_inmemory_counter` — single-process correctness with the
@@ -987,12 +933,10 @@ def _get_counter() -> Any:
 _rate_limit_counter: Any | None = None
 
 
-def set_rate_limit_counter(counter: Any) -> None:
     """Wire a custom counter backend (e.g. Redis-backed) for multi-process
     consistency. The backend must expose `incr(key: str, window_seconds: int) -> int`
     returning the post-increment count for the sliding window. Pass `None`
     to revert to the in-memory fallback."""
-    global _rate_limit_counter
     _rate_limit_counter = counter
 
 
@@ -1001,8 +945,6 @@ def set_rate_limit_counter(counter: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class LockoutPolicy:
     """Configuration for brute-force lockout on a per-(actor, flow) basis.
 
     Attributes:
@@ -1019,7 +961,6 @@ class LockoutPolicy:
     lockout_seconds: int = 1800
 
 
-class LockoutTracker:
     """Tracks failure counts and lockout state per `(actor_key, flow)`.
 
     In-memory implementation backed by a deque of timestamps per actor.
@@ -1040,8 +981,6 @@ class LockoutTracker:
         self._lock = RLock()
         self._warn_if_multi_worker()
 
-    @staticmethod
-    def _warn_if_multi_worker() -> None:
         """L-5 — multi-worker deployments without a shared backend get N×
         the brute-force budget per actor (each worker keeps its own
         in-memory counter). Mirror the warning that ``ReplayCache``
@@ -1050,7 +989,6 @@ class LockoutTracker:
         """
         try:
             from zephyrex.lib.Environment import env as _env
-        except Exception:
             return
         workers_raw = _env("UVICORN_WORKERS") or ""
         try:
@@ -1065,7 +1003,6 @@ class LockoutTracker:
                 workers,
             )
 
-    def record_failure(self, actor_key: str, flow: str) -> None:
         """Record a single failed attempt.
 
         Trips the lockout when the count of failures within the policy's
@@ -1097,7 +1034,6 @@ class LockoutTracker:
                     },
                 )
 
-    def is_locked(self, actor_key: str, flow: str) -> bool:
         """Return True if `(actor_key, flow)` is currently locked out."""
         key = (actor_key, flow)
         now = time.monotonic()
@@ -1113,7 +1049,6 @@ class LockoutTracker:
                 return False
             return True
 
-    def remaining_lockout_seconds(self, actor_key: str, flow: str) -> float | None:
         """Return seconds remaining on an active lockout, or None."""
         key = (actor_key, flow)
         now = time.monotonic()
@@ -1123,7 +1058,6 @@ class LockoutTracker:
                 return None
             return until - now
 
-    def clear(self, actor_key: str, flow: str) -> None:
         """Reset counters and any active lockout for this actor/flow.
 
         Called on a successful authentication so a user who misremembered
@@ -1141,7 +1075,6 @@ class LockoutTracker:
 # ---------------------------------------------------------------------------
 
 
-class AnomalyDetector(ABC):
     """Pluggable hook called on every recorded auth-flow failure.
 
     Concrete implementations integrate with captcha (hCaptcha, reCAPTCHA),
@@ -1155,14 +1088,12 @@ class AnomalyDetector(ABC):
         """Report a single failure event."""
 
 
-class NoOpAnomalyDetector(AnomalyDetector):
     """Default detector that records the failure and does nothing else.
 
     Used when no captcha / step-up / SIEM is wired. Logs at debug level so
     operators can confirm the integration point fires without flooding logs.
     """
 
-    def report_failure(self, actor_key: str, flow: str) -> None:
         logger.debug(
             "Auth-flow failure recorded (no-op anomaly detector)",
             extra={"actor_key": actor_key, "flow": flow},
@@ -1193,15 +1124,12 @@ RATE_LIMIT_MARKERS: tuple[str, ...] = (
 )
 
 
-def carry_rate_limit(source: Any, target: Any) -> None:
     """Copy `@rate_limit` metadata from a handler onto the endpoint that
     serves it, so route discovery sees the policy on the mounted endpoint."""
     for marker in RATE_LIMIT_MARKERS:
         if hasattr(source, marker):
-            setattr(target, marker, getattr(source, marker))
 
 
-def _rate_limit_policy(method: str, path: str) -> tuple[int, int, str] | None:
     """The policy for a request, by exact path or templated pattern."""
     policy = _RATE_LIMIT_REGISTRY.get((method, path))
     if policy is not None:
@@ -1212,9 +1140,6 @@ def _rate_limit_policy(method: str, path: str) -> tuple[int, int, str] | None:
     return None
 
 
-def register_rate_limited_route(
-    method: str, path: str, count: int, window_seconds: int, scope: str
-) -> None:
     """Register a route's rate-limit policy.
 
     Called at app-startup time after route discovery — the FastAPI app
@@ -1250,7 +1175,6 @@ def reset_rate_limit_counts() -> None:
     _inmemory_counter.reset()
 
 
-def reset_rate_limit_state() -> None:
     """Test helper: clear the registry, the in-memory counter, and any
     installed counter backend override.
 
@@ -1266,14 +1190,12 @@ def reset_rate_limit_state() -> None:
     (an installed backend made ``test_429_after_limit`` under-count and return
     200 instead of 429 under parallel load).
     """
-    global _rate_limit_counter
     _RATE_LIMIT_REGISTRY.clear()
     _TEMPLATED_RATE_LIMITS.clear()
     _inmemory_counter.reset()
     _rate_limit_counter = None
 
 
-def _resolve_actor_key(scope: str, request: Any) -> str | None:
     """Compute the actor identity for a `(scope, request)` pair.
 
     Returns None when the scope cannot be resolved (e.g. `user` scope on an
@@ -1300,7 +1222,6 @@ def _resolve_actor_key(scope: str, request: Any) -> str | None:
 
             user = get_request_user()
             uid = user.get("user_id") if isinstance(user, dict) else None
-        except Exception:
             uid = None
         if not uid:
             return None
@@ -1316,7 +1237,6 @@ def _resolve_actor_key(scope: str, request: Any) -> str | None:
 
             user = get_request_user()
             tid = user.get("team_id") if isinstance(user, dict) else None
-        except Exception:
             tid = None
         if not tid:
             return "tenant:__unresolved__"
@@ -1325,7 +1245,6 @@ def _resolve_actor_key(scope: str, request: Any) -> str | None:
     return None
 
 
-class RateLimitMiddleware:
     """ASGI middleware that enforces `@rate_limit`-stamped policies.
 
     Lookups are O(1) on `(method, path)` from the registry. On a hit, the
@@ -1344,9 +1263,6 @@ class RateLimitMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(
-        self, scope_dict: dict[str, Any], receive: Any, send: Any
-    ) -> None:
         if scope_dict.get("type") != "http":
             await self.app(scope_dict, receive, send)
             return
@@ -1365,7 +1281,6 @@ class RateLimitMiddleware:
 
         # Build a tiny request facade for `_resolve_actor_key`. Avoids
         # importing FastAPI's Request here so the module stays lightweight.
-        class _Req:
             client = type(
                 "_C",
                 (),
@@ -1416,7 +1331,6 @@ class RateLimitMiddleware:
         key = f"rl:{method}:{path}:{rl_scope}:{actor}"
         try:
             current = counter.incr(key, window_seconds)
-        except Exception:
             # Counter outage must not take the request path down. Fail open
             # with a logged warning; deployments that need fail-closed wire
             # a `DistributedCounter` whose `incr` is monitored separately.
@@ -1476,7 +1390,6 @@ class RateLimitMiddleware:
         await self.app(scope_dict, receive, _send_with_rl_headers)
 
 
-def discover_rate_limited_routes(app: Any) -> int:
     """Walk a FastAPI app's router and register every `@rate_limit`-stamped
     endpoint. Returns the number of routes registered. Idempotent — calling
     twice with the same app produces the same registry contents.

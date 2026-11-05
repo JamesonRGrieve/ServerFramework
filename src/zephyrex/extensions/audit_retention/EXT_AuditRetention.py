@@ -6,7 +6,6 @@ from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtensio
 from zephyrex.lib.Logging import logger
 
 
-class EXT_AuditRetention(AbstractStaticExtension):
     """Retention policy management, archival, and legal-hold workflows.
 
     Audit-log retention is a compliance/operational concern. Generic

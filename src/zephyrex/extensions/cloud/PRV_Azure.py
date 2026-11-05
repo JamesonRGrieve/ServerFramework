@@ -20,7 +20,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 CONNECT_TIMEOUT_SECONDS = 10
 
 
-class PRV_Azure_Cloud(AbstractCloudProvider):
     name: ClassVar[str] = "azure_blob"
     friendly_name: ClassVar[str] = "Azure Blob Storage"
     description: ClassVar[str] = "A container in an Azure storage account"

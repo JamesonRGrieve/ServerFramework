@@ -28,11 +28,9 @@ from zephyrex.lib.Logging import logger
 FERNET_PREFIX = "fernet:"
 
 
-class MissingFernetKeyError(RuntimeError):
     """``FRAMEWORK_FERNET_KEY`` is required but not configured."""
 
 
-def _fernet():
     """Return a ``cryptography.fernet.Fernet`` instance or ``None``."""
     key = env("FRAMEWORK_FERNET_KEY") or env("MFA_FERNET_KEY")
     if not key:
@@ -47,12 +45,10 @@ def _fernet():
         return None
     try:
         return Fernet(key.encode("utf-8") if isinstance(key, str) else key)
-    except Exception as exc:
         logger.error(f"FRAMEWORK_FERNET_KEY rejected by Fernet: {exc}")
         return None
 
 
-def _plaintext_fallback_permitted() -> bool:
     """Plaintext secrets are only acceptable in dev-style environments and
     only when the operator opts in explicitly."""
     environment = (env("ENVIRONMENT") or "local").lower()
@@ -61,7 +57,6 @@ def _plaintext_fallback_permitted() -> bool:
     return (env("ALLOW_PLAINTEXT_SECRETS") or "").lower() == "true"
 
 
-def encrypt_secret(plaintext: Optional[str]) -> Optional[str]:
     """Encrypt ``plaintext`` for storage. ``None``/empty is returned unchanged.
 
     Raises ``MissingFernetKeyError`` when no key is configured AND the
@@ -92,7 +87,6 @@ def decrypt_secret(stored: str) -> str: ...
 def decrypt_secret(stored: None) -> None: ...
 @overload
 def decrypt_secret(stored: Optional[str]) -> Optional[str]: ...
-def decrypt_secret(stored: Optional[str]) -> Optional[str]:
     """Reverse of :func:`encrypt_secret`.
 
     Plaintext (untagged) rows pass through unchanged so an in-place rollout
@@ -114,11 +108,9 @@ def decrypt_secret(stored: Optional[str]) -> Optional[str]:
     token = stored[len(FERNET_PREFIX) :].encode("ascii")
     try:
         return f.decrypt(token).decode("utf-8")  # type: ignore[no-any-return]
-    except Exception as exc:
         raise RuntimeError(f"Decrypt failed: {exc}") from exc
 
 
-def assert_encryption_available() -> None:
     """Raise ``MissingFernetKeyError`` if neither a key nor an explicit
     plaintext-fallback opt-in is configured. Call from extension
     ``validate_config()`` so misconfigurations surface at boot."""

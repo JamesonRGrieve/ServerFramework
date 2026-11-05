@@ -45,7 +45,6 @@ class SpeechModel:
     processor: Any
 
 
-def wav_samples(audio: bytes) -> Tuple[Samples, int]:
     """WAV (PCM) audio as mono samples in [-1, 1], and its sample rate."""
     try:
         with wave.open(io.BytesIO(audio)) as reader:
@@ -81,7 +80,6 @@ def checked_language(language: Optional[str]) -> Optional[str]:
     return language.lower() if language else None
 
 
-class PRV_Torch_Speech(AbstractTorchProvider):
     name: ClassVar[str] = "torch_speech_recognition"
     friendly_name: ClassVar[str] = "PyTorch speech recognition model"
     description: ClassVar[str] = "Transcription with a transformers speech model"

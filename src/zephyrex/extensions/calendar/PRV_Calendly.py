@@ -29,7 +29,6 @@ BUSY_WINDOW = timedelta(days=7)
 CANCEL_REASON = "Cancelled by the host"
 
 
-class PRV_Calendly_Calendar(AbstractCalendarProvider):
     name: ClassVar[str] = "calendly"
     friendly_name: ClassVar[str] = "Calendly"
     description: ClassVar[str] = "Calendly scheduled events (list and cancel)"

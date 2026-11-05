@@ -15,7 +15,6 @@ from typing import Any, ClassVar, List, Optional
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticProvider
 
 
-class AbstractObjectStorageProvider(AbstractStaticProvider):
     """Abstract object/blob storage provider.
 
     Concrete implementations declare their settings via the typed

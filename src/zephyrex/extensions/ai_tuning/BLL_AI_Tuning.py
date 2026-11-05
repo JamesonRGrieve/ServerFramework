@@ -252,7 +252,6 @@ def provider_answers() -> Iterator[None]:
         ) from exc
 
 
-class TuningJobManager(AbstractBLLManager, RouterMixin):
     _model = TuningJobModel
     routes_to_register: ClassVar[Optional[List[RouteType]]] = READ_ONLY
 
@@ -264,7 +263,6 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
         """An update never moves a job to another owner or team."""
         return super().update(id, **without(kwargs, OWNERSHIP_FIELDS))
 
-    def _holds(self, record_cls: Any, record_id: str, *levels: PermissionType) -> bool:
         """Whether the requester holds any of ``levels`` on the record."""
         if server_side(self.requester.id):
             return True
@@ -295,15 +293,11 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
             )
         return record
 
-    def account(
-        self, provider_instance_id: str, spend: bool = False
-    ) -> Tuple[Type[AbstractTuningProvider], ProviderInstanceModel]:
         """The fine-tuning provider and instance for an account the
         requester can see (404 for one they cannot). With ``spend``, the
         requester must also hold edit or execute (use) access to it (403
         otherwise): seeing an account is not leave to run jobs on it."""
         ProviderInstanceManager(
-            model_registry=self.model_registry, requester_id=self.requester.id
         ).get(id=provider_instance_id)
         if spend and not self._holds(
             ProviderInstanceModel,
@@ -314,17 +308,14 @@ class TuningJobManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(
                 status_code=403, detail="Not authorized to use this account"
             )
-        root = env("ROOT_ID")
         instance = ProviderInstanceModel.model_validate(
             ProviderInstanceManager(
-                model_registry=self.model_registry, requester_id=root
             ).get(id=provider_instance_id),
             from_attributes=True,
         )
         if instance.enabled is False:
             raise InvalidInputExternalError("This account is disabled")
         provider = ProviderManager(
-            model_registry=self.model_registry, requester_id=root
         ).get(id=instance.provider_id)
         from zephyrex.extensions.ai_tuning.EXT_AI_Tuning import EXT_AI_Tuning
 

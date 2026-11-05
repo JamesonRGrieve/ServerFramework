@@ -86,7 +86,6 @@ except ImportError:
     )
 
 
-class StalwartProvider(AbstractEmailProvider):
     """SMTP submission provider for self-hosted Stalwart mail servers."""
 
     name: ClassVar[str] = "stalwart"
@@ -193,8 +192,6 @@ class StalwartProvider(AbstractEmailProvider):
             return False
         return True
 
-    @classmethod
-    def health_check(cls) -> HealthReport:
         """Probe upstream liveness via SMTP ``NOOP``."""
         host = cls.setting(None, "host")
         port_str = cls.setting(None, "port") or "587"
@@ -235,13 +232,8 @@ class StalwartProvider(AbstractEmailProvider):
                 pass
             detail = asyncio.run(_probe())
             return HealthReport(HealthStatus.OK, detail=detail)
-        except Exception as exc:  # noqa: BLE001 — defensive, never raise
             return HealthReport(HealthStatus.DOWN, detail=f"SMTP error: {exc}")
 
-    @classmethod
-    def bond_instance(
-        cls, instance: Optional[ProviderInstanceModel]
-    ) -> Optional[AbstractProviderInstance_SDK]:
         """Bond an instance by capturing its SMTP connection parameters."""
         if not _aiosmtplib_available:
             logger.error("aiosmtplib package not available")
@@ -275,7 +267,6 @@ class StalwartProvider(AbstractEmailProvider):
                 "auth_strategy": auth_strategy,
             }
             return AbstractProviderInstance_SDK(config)
-        except Exception as e:
             logger.error(f"Failed to bond Stalwart instance: {e}")
             return None
 
@@ -284,8 +275,6 @@ class StalwartProvider(AbstractEmailProvider):
     STALWART_WEBHOOK_SECRET_ENV: ClassVar[str] = "STALWART_WEBHOOK_SECRET"
     STALWART_SIGNATURE_HEADER: ClassVar[str] = "x-stalwart-signature"
 
-    @classmethod
-    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
         """Verify a Stalwart webhook via HMAC-SHA256 over the raw body.
 
         Stalwart signs each callback with HMAC-SHA256 of the raw request body
@@ -308,22 +297,9 @@ class StalwartProvider(AbstractEmailProvider):
             return False
         if provided.lower().startswith("sha256="):
             provided = provided[7:]
-        expected = hmac.new(
             secret.encode("utf-8"), body or b"", hashlib.sha256
         ).hexdigest()
-        return hmac.compare_digest(expected, provided)
 
-    @classmethod
-    @ability(name="email_send")
-    async def send_email(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        recipient: str,
-        subject: str,
-        body: str,
-        attachments: Optional[List[str]] = None,
-        importance: str = "normal",
-    ) -> str:
         """Send an email via SMTP submission to a Stalwart server."""
         validation_error = cls._validate_send_inputs(
             recipient, subject, body, attachments
@@ -391,7 +367,6 @@ class StalwartProvider(AbstractEmailProvider):
                 start_tls=config["start_tls"],
             )
             return f"Email sent successfully to {recipient}"
-        except Exception as e:
             logger.error(f"Error sending Stalwart email: {e}")
             return f"Failed to send email: {e}"
 
@@ -482,7 +457,6 @@ def _coerce_stalwart_event(raw: Dict[str, Any], event_type: str) -> EmailDeliver
     )
 
 
-async def _dispatch_stalwart_events(payload: Any, fallback_event: str) -> None:
     """Fan a Stalwart webhook payload (list, single dict, or ``{"events": [...]}``
     envelope) through the canonical hook bus."""
     rows: List[Dict[str, Any]]

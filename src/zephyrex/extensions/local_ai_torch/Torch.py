@@ -55,7 +55,6 @@ TORCH_SETTINGS: Tuple[InstanceSetting, ...] = (
 )
 
 
-class AbstractTorchProvider(AbstractLocalAIProvider):
     """A PyTorch model; each instance is one model directory."""
 
     dependencies: ClassVar[Dependencies] = TORCH_DEPENDENCIES

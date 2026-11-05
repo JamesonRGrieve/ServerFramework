@@ -47,8 +47,6 @@ from typing import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class PermissionDef:
     """A canonical permission whose name is also a valid OAuth scope.
 
     Attributes:
@@ -71,14 +69,12 @@ class PermissionDef:
     system_only: bool = False
 
 
-class PermissionCollisionError(Exception):
     """Two extensions declared the same permission name with different defs.
 
     The error message names the colliding permission and the source(s) so the
     operator has a one-step path to the conflict.
     """
 
-    def __init__(self, name: str, sources: List[str]):
         self.name = name
         self.sources = sources
         super().__init__(
@@ -95,7 +91,6 @@ class PermissionCollisionError(Exception):
 # ---------------------------------------------------------------------------
 
 
-class PermissionRegistry:
     """In-memory permission registry consumed by the OAuth extension.
 
     The registry collects ``PermissionDef`` instances from every registered
@@ -104,7 +99,6 @@ class PermissionRegistry:
     catalog and validate token scopes.
     """
 
-    def __init__(self) -> None:
         # name -> (def, source extension name)
         self._by_name: Dict[str, Tuple[PermissionDef, str]] = {}
         # name -> list of source extensions that registered the same def
@@ -115,11 +109,6 @@ class PermissionRegistry:
     # Registration
     # ------------------------------------------------------------------
 
-    def register(
-        self,
-        perms: Iterable[PermissionDef],
-        source: str = "<unknown>",
-    ) -> None:
         """Register a batch of permissions sourced from ``source``.
 
         Identical-definition duplicates are accepted as no-ops. Conflicting
@@ -156,7 +145,6 @@ class PermissionRegistry:
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._by_name
 
-    def iter_permissions(self) -> Iterator[PermissionDef]:
         """Iterate over registered permissions in registration order."""
         for definition, _source in self._by_name.values():
             yield definition
@@ -173,7 +161,6 @@ class PermissionRegistry:
     # Validation
     # ------------------------------------------------------------------
 
-    def validate_uniqueness(self) -> None:
         """Re-walk the merged registry and raise on any collisions.
 
         ``register`` already raises on collisions, but a callable validator
@@ -194,9 +181,6 @@ class PermissionRegistry:
 # ---------------------------------------------------------------------------
 
 
-def _walk_implies(
-    name: str, registry: PermissionRegistry, _seen: Optional[Set[str]] = None
-) -> Set[str]:
     """Return ``{name}`` plus everything it transitively implies."""
     if _seen is None:
         _seen = set()
@@ -210,12 +194,6 @@ def _walk_implies(
     return _seen
 
 
-def has_permission(
-    name: str,
-    role_grants: Set[str],
-    token_scopes: Optional[Set[str]] = None,
-    registry: Optional[PermissionRegistry] = None,
-) -> bool:
     """Return True if a request with ``role_grants`` (and optionally
     ``token_scopes`` for OAuth-bearing requests) holds permission ``name``.
 
@@ -256,7 +234,6 @@ def has_permission(
 # ---------------------------------------------------------------------------
 
 
-def expand_wildcard(scope: str, registry: PermissionRegistry) -> Set[str]:
     """Expand a wildcard scope (e.g. ``payment.subscription.*``) into the
     concrete permission set declared in the registry.
 
@@ -291,11 +268,6 @@ def expand_wildcard(scope: str, registry: PermissionRegistry) -> Set[str]:
 # ---------------------------------------------------------------------------
 
 
-def is_session_freshly_verified(
-    session: Any,
-    freshness_window_seconds: int = 300,
-    now: Optional[datetime] = None,
-) -> bool:
     """Return True if ``session`` was verified within ``freshness_window_seconds``.
 
     The OAuth extension calls this when gating a ``sensitive=True`` permission.
@@ -331,9 +303,6 @@ def is_session_freshly_verified(
 # ---------------------------------------------------------------------------
 
 
-def iter_extension_permissions(
-    extension_classes: Iterable[Any],
-) -> Iterator[Tuple[Any, PermissionDef]]:
     """Yield ``(extension_class, permission_def)`` pairs by calling
     ``get_permissions()`` on each ``AbstractStaticExtension`` subclass.
 
@@ -352,7 +321,6 @@ def iter_extension_permissions(
         )
         try:
             perms = getter()
-        except Exception:
             # An extension's get_permissions raising should not crash the
             # whole iteration -- the registry's collision check happens
             # downstream, so an empty contribution from one extension is
@@ -362,9 +330,6 @@ def iter_extension_permissions(
             yield ext_class, perm
 
 
-def collect_extension_permissions_into(
-    registry: PermissionRegistry, extension_classes: Iterable[Any]
-) -> None:
     """Convenience: walk ``iter_extension_permissions`` and register each
     permission against the registry, attributing the source to the
     extension's ``name`` attribute (or its class name as fallback)."""

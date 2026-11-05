@@ -283,9 +283,6 @@ def mirror(
     return len(records)
 
 
-def sales_report(
-    orders: StoreOrderManager, since: datetime, provider_instance_id: Optional[str]
-) -> Dict[str, Any]:
     """Sales since ``since`` from the orders ``orders``' requester can see."""
     search: Dict[str, Any] = {"order_date": {"after": since}}
     if provider_instance_id:

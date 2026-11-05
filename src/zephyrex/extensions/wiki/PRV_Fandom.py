@@ -18,7 +18,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 DEFAULT_WIKI_DOMAIN = "community"
 
 
-class PRV_Fandom_Wiki(AbstractWikiProvider):
     name: ClassVar[str] = "fandom"
     friendly_name: ClassVar[str] = "Fandom"
     description: ClassVar[str] = "A Fandom (MediaWiki) wiki"

@@ -28,7 +28,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 STATUS_FIELD = "status_code"
 
 
-class PRV_Instagram_Social(AbstractSocialProvider):
     name: ClassVar[str] = "instagram"
     friendly_name: ClassVar[str] = "Instagram"
     description: ClassVar[str] = "An Instagram professional account"
@@ -88,10 +87,6 @@ class PRV_Instagram_Social(AbstractSocialProvider):
             return {"image_url": url}
         return {"media_type": "VIDEO", "video_url": url}
 
-    @classmethod
-    async def publish(
-        cls, instance: ProviderInstanceModel, content: str, media_urls: List[str]
-    ) -> Dict[str, Any]:
         if not media_urls:
             raise cls.refuse("every post needs a photo or video")
         if len(media_urls) == 1:

@@ -54,7 +54,6 @@ def metrics_status() -> MetricsStatus:
     return MetricsStatus(active=False)
 
 
-def error_reporter_status() -> ErrorReporterStatus:
     from zephyrex.extensions.observability.ErrorReporters import (
         RollbarErrorReporter,
         SentryErrorReporter,

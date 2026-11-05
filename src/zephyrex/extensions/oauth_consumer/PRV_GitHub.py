@@ -27,15 +27,12 @@ GITHUB_API = "https://api.github.com"
 DEFAULT_SCOPES = "read:user user:email"
 
 
-def _primary_email(entries: Any) -> Tuple[Optional[str], bool]:
     """The primary address and whether GitHub verified it."""
     for entry in entries if isinstance(entries, list) else []:
         if isinstance(entry, dict) and entry.get("primary") is True:
-            return text(entry.get("email")), entry.get("verified") is True
     return None, False
 
 
-class PRV_GitHub(AbstractIdentityProvider):
     name: ClassVar[str] = "oauth_github"
     public_name: ClassVar[str] = "github"
     friendly_name: ClassVar[str] = "GitHub"
@@ -51,8 +48,6 @@ class PRV_GitHub(AbstractIdentityProvider):
     def _base(cls, instance: ProviderInstanceModel, key: str, default: str) -> str:
         return (cls.setting(instance, key) or default).rstrip("/")
 
-    @classmethod
-    async def endpoints(cls, instance: ProviderInstanceModel) -> Endpoints:
         web = cls._base(instance, "web_url", GITHUB_WEB)
         return Endpoints(
             authorize=f"{web}/login/oauth/authorize",
@@ -60,14 +55,6 @@ class PRV_GitHub(AbstractIdentityProvider):
             userinfo=f"{cls._base(instance, 'api_url', GITHUB_API)}/user",
         )
 
-    @classmethod
-    async def identity(
-        cls,
-        instance: ProviderInstanceModel,
-        endpoints: Endpoints,
-        tokens: TokenSet,
-        nonce: str,
-    ) -> Identity:
         user_url = endpoints.userinfo or f"{GITHUB_API}/user"
         user: Dict[str, Any] = await cls.api_json(
             user_url, tokens.access_token, "user API"
@@ -79,15 +66,9 @@ class PRV_GitHub(AbstractIdentityProvider):
         email, verified = _primary_email(
             await cls.api_json(f"{user_url}/emails", tokens.access_token, "user API")
         )
-        name = text(user.get("name"))
         first, _, last = (name or "").partition(" ")
         return Identity(
             subject=str(user["id"]),
             email=email.strip().lower() if email else None,
             email_verified=email is not None and verified,
-            first_name=text(first),
-            last_name=text(last),
-            display_name=name or text(user.get("login")),
-            username=text(user.get("login")),
-            picture=text(user.get("avatar_url")),
         )

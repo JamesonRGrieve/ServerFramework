@@ -23,7 +23,6 @@ from zephyrex.extensions.ExternalErrors import (
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
-def openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Neutral messages as Chat Completions messages."""
     found: list[dict[str, Any]] = []
     for message in messages:
@@ -59,7 +58,6 @@ def openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return found
 
 
-def openai_answer(answer: Mapping[str, Any], model: str) -> dict[str, Any]:
     """A Chat Completions response as a neutral chat answer."""
     choices = answer.get("choices") or []
     if not choices:
@@ -108,7 +106,6 @@ def timed_transcript(answer: dict[str, Any]) -> dict[str, Any]:
     return {"text": str(answer.get("text", "")).strip(), "segments": segments}
 
 
-class OpenAICompatibleProvider(AbstractAIProvider):
     """A server speaking the OpenAI API at ``base(instance)``."""
 
     max_tokens_field: ClassVar[str] = "max_tokens"

@@ -19,7 +19,6 @@ from zephyrex.lib.Logging import logger
 # -- Item 46 helpers ----------------------------------------------------------
 
 
-def _apply_federation_directives(type_class: type, directives: Tuple[Any, ...]) -> None:
     """Attach Apollo Federation v2 directive metadata to a type.
 
     Strawberry's federation support reads ``__strawberry_definition__.directives``
@@ -40,16 +39,11 @@ def _apply_federation_directives(type_class: type, directives: Tuple[Any, ...]) 
         existing.append(d)
     try:
         definition.directives = existing
-    except Exception as e:  # noqa: BLE001
         logger.warning(
             f"Failed to attach federation directives to {type_class.__name__}: {e}"
         )
 
 
-def _diff_signatures(
-    previous: Tuple[Tuple[str, ...], ...],
-    current: Tuple[Tuple[str, ...], ...],
-) -> Tuple[Set[str], Set[str]]:
     """Return ``(added, removed)`` between two signature snapshots.
 
     Each signature is ``(query, mutation, subscription, types)``; entries are
@@ -57,7 +51,6 @@ def _diff_signatures(
     """
     labels = ("query", "mutation", "subscription", "type")
 
-    def _flatten(sig: Tuple[Tuple[str, ...], ...]) -> Set[str]:
         flat: Set[str] = set()
         for label, names in zip(labels, sig):
             for name in names:
@@ -97,7 +90,6 @@ def _diff_signatures(
 #   - Namespacing under the extension name is opt-in via ``namespace=True``.
 
 
-class GraphQLCompositionCollisionError(Exception):
     """Two extensions registered conflicting GraphQL contributions."""
 
     def __init__(
@@ -120,14 +112,11 @@ class GraphQLCompositionCollisionError(Exception):
         )
 
 
-class FieldKind(str, Enum):
     QUERY = "query"
     MUTATION = "mutation"
     SUBSCRIPTION = "subscription"
 
 
-@dataclass(frozen=True)
-class FederationDirective:
     """Apollo Federation v2 directive applied to a contributed type."""
 
     name: str
@@ -146,8 +135,6 @@ _ALLOWED_FED_DIRECTIVES: Set[str] = {
 }
 
 
-@dataclass
-class FieldContribution:
     """A root-field contribution from an extension."""
 
     extension_name: str
@@ -167,8 +154,6 @@ class FieldContribution:
         return self.name
 
 
-@dataclass
-class TypeContribution:
     """A custom type contribution (not backed by a BLL manager)."""
 
     extension_name: str
@@ -177,8 +162,6 @@ class TypeContribution:
     federation_directives: Tuple[FederationDirective, ...] = ()
     namespace: bool = False
 
-    @property
-    def emitted_name(self) -> str:
         base = self.name or self.type_class.__name__
         if self.namespace:
             return f"{self.extension_name.capitalize()}{base}"
@@ -188,8 +171,6 @@ class TypeContribution:
 DataLoaderBatchFn = Callable[[Sequence[Hashable]], Any]
 
 
-@dataclass
-class DataLoaderSpec:
     """Per-request DataLoader registration."""
 
     extension_name: str
@@ -201,10 +182,8 @@ class DataLoaderSpec:
 RebuildCallback = Callable[[], None]
 
 
-class GraphQLContributionRegistry:
     """Process-wide store of extension-contributed GraphQL surface."""
 
-    def __init__(self) -> None:
         self._fields: Dict[FieldKind, Dict[str, List[FieldContribution]]] = {
             FieldKind.QUERY: {},
             FieldKind.MUTATION: {},
@@ -222,7 +201,6 @@ class GraphQLContributionRegistry:
         bucket.append(contribution)
         self._notify()
 
-    def register_type(self, contribution: TypeContribution) -> None:
         for d in contribution.federation_directives:
             if d.name not in _ALLOWED_FED_DIRECTIVES:
                 raise ValueError(
@@ -233,22 +211,18 @@ class GraphQLContributionRegistry:
         self._types.setdefault(contribution.emitted_name, []).append(contribution)
         self._notify()
 
-    def register_dataloader(self, spec: DataLoaderSpec) -> None:
         existing = self._dataloaders.get(spec.name)
         if existing is not None and existing.batch_load_fn is not spec.batch_load_fn:
             raise GraphQLCompositionCollisionError(
                 kind="dataloader",
                 name=spec.name,
                 extensions=[existing.extension_name, spec.extension_name],
-                detail="DataLoader names are global; rename one or share the function.",
             )
         self._dataloaders[spec.name] = spec
         self._notify()
 
-    def fields(self, kind: FieldKind) -> Dict[str, List[FieldContribution]]:
         return {k: list(v) for k, v in self._fields[kind].items()}
 
-    def types(self) -> Dict[str, List[TypeContribution]]:
         return {k: list(v) for k, v in self._types.items()}
 
     def dataloaders(self) -> Dict[str, DataLoaderSpec]:
@@ -257,17 +231,14 @@ class GraphQLContributionRegistry:
     def subscribe_rebuild(self, cb: RebuildCallback) -> None:
         self._rebuild_subscribers.append(cb)
 
-    def unsubscribe_rebuild(self, cb: RebuildCallback) -> None:
         if cb in self._rebuild_subscribers:
             self._rebuild_subscribers.remove(cb)
 
-    def _notify(self) -> None:
         if self._suspended:
             return
         for cb in list(self._rebuild_subscribers):
             try:
                 cb()
-            except Exception as e:  # noqa: BLE001
                 logger.warning(f"GQL rebuild subscriber failed: {e}")
 
     def suspend(self) -> "GraphQLContributionRegistry":
@@ -279,7 +250,6 @@ class GraphQLContributionRegistry:
         self._suspended = False
         self._notify()
 
-    def resolve_fields(self, kind: FieldKind) -> Dict[str, FieldContribution]:
         winners: Dict[str, FieldContribution] = {}
         for emitted_name, contributions in self._fields[kind].items():
             if len(contributions) == 1:
@@ -295,7 +265,6 @@ class GraphQLContributionRegistry:
             )
         return winners
 
-    def resolve_types(self) -> Dict[str, TypeContribution]:
         winners: Dict[str, TypeContribution] = {}
         for emitted_name, contributions in self._types.items():
             if len(contributions) == 1:
@@ -311,7 +280,6 @@ class GraphQLContributionRegistry:
             )
         return winners
 
-    def reset(self) -> None:
         for kind in FieldKind:
             self._fields[kind].clear()
         self._types.clear()
@@ -349,7 +317,6 @@ def reset_gql_contribution_registry() -> None:
     _GLOBAL_CONTRIBUTION_REGISTRY.reset()
 
 
-def _extension_name_for_caller(explicit: Optional[str]) -> str:
     """Best-effort extension name from the caller's module path."""
     if explicit:
         return explicit
@@ -369,7 +336,6 @@ def _extension_name_for_caller(explicit: Optional[str]) -> str:
     return "core"
 
 
-def _make_field_decorator(kind: FieldKind):
     def decorator(
         *,
         return_type: Any,
@@ -380,7 +346,6 @@ def _make_field_decorator(kind: FieldKind):
         namespace: bool = False,
         priority: int = 50,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
             field_name = name or fn.__name__
             ext = _extension_name_for_caller(extension_name)
             _GLOBAL_CONTRIBUTION_REGISTRY.register_field(
@@ -417,7 +382,6 @@ def gql_type(
 ) -> Callable[[type], type]:
     """Register a Strawberry-decorated type as an extension contribution."""
 
-    def deco(cls: type) -> type:
         ext = _extension_name_for_caller(extension_name)
         _GLOBAL_CONTRIBUTION_REGISTRY.register_type(
             TypeContribution(

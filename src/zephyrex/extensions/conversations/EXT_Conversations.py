@@ -27,7 +27,6 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
-class EXT_Conversations(AbstractStaticExtension):
     name: ClassVar[str] = "conversations"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (

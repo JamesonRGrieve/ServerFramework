@@ -137,7 +137,6 @@ WORDPRESS_TYPES = (
 )
 
 
-class WordPressShapedSite:
     """The site's records, by type."""
 
     def __init__(self) -> None:
@@ -167,7 +166,6 @@ class WordPressShapedSite:
             record["modified"] = record[VERSION_FIELD] = self.stamp()
 
 
-class WordPressShapedSession(FederatedSession):
     def __init__(self, site: WordPressShapedSite) -> None:
         self.site = site
 
@@ -238,7 +236,6 @@ class WordPressShapedSession(FederatedSession):
             del self.site.records[type_name][int(key)]
 
 
-class WordPressShapedSource(AbstractFederatedSource):
     """The site, for every requester but those it ``refuses`` (read live,
     as a provider's own access rule is)."""
 

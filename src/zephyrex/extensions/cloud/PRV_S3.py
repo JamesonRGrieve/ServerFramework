@@ -29,7 +29,6 @@ _AUTH_ERRORS = {
 _MISSING = {"NoSuchKey", "NoSuchBucket", "404"}
 
 
-class PRV_S3_Cloud(AbstractCloudProvider):
     name: ClassVar[str] = "s3"
     friendly_name: ClassVar[str] = "Amazon S3"
     description: ClassVar[str] = "Amazon S3 or an S3-compatible store"
@@ -76,8 +75,6 @@ class PRV_S3_Cloud(AbstractCloudProvider):
         ]
     )
 
-    @classmethod
-    def _client(cls, instance: ProviderInstanceModel) -> Tuple[Any, str]:
         """``(boto3 S3 client, bucket)``."""
         if not importable("boto3"):
             raise TransientExternalError(

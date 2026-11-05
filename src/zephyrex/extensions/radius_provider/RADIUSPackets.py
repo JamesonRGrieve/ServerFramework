@@ -77,12 +77,9 @@ ReplyValue = Union[str, int]
 ReplyAttributes = Sequence[Tuple[str, ReplyValue]]
 
 
-class MalformedPacket(ValueError):
     """A datagram that is not a well-formed RADIUS packet."""
 
 
-@dataclass(frozen=True)
-class RawAttribute:
     offset: int
     type: int
     value: bytes
@@ -93,7 +90,6 @@ def dictionary() -> Dictionary:
     return Dictionary(io.StringIO(_DICTIONARY))
 
 
-def packet_header(datagram: bytes) -> Tuple[int, int, bytes, bytes]:
     """``(code, identifier, authenticator, packet)`` of a datagram, the
     packet cut to the length its header states (RFC 2865 §3: octets past
     it are padding)."""
@@ -105,7 +101,6 @@ def packet_header(datagram: bytes) -> Tuple[int, int, bytes, bytes]:
     return code, identifier, datagram[4:HEADER_LENGTH], datagram[:length]
 
 
-def raw_attributes(packet: bytes) -> List[RawAttribute]:
     attributes: List[RawAttribute] = []
     offset = HEADER_LENGTH
     while offset < len(packet):
@@ -123,7 +118,6 @@ def raw_attributes(packet: bytes) -> List[RawAttribute]:
     return attributes
 
 
-def request_is_authentic(packet: bytes, secret: bytes) -> bool:
     """Whether an Access-Request carries exactly one Message-Authenticator
     and it is the HMAC-MD5, under ``secret``, of the packet with that
     attribute's value zeroed."""
@@ -136,11 +130,8 @@ def request_is_authentic(packet: bytes, secret: bytes) -> bool:
         + bytes(AUTHENTICATOR_LENGTH)
         + packet[start + AUTHENTICATOR_LENGTH :]
     )
-    expected = hmac.new(secret, zeroed, hashlib.md5).digest()
-    return hmac.compare_digest(expected, found[0].value)
 
 
-def decode_request(packet: bytes, secret: bytes) -> AuthPacket:
     try:
         return AuthPacket(packet=packet, secret=secret, dict=dictionary())
     except PacketError as exc:
@@ -152,7 +143,6 @@ def raw_values(request: AuthPacket, kind: int) -> List[bytes]:
     return values
 
 
-def user_password(request: AuthPacket) -> str:
     """The User-Password in clear (RFC 2865 §5.2)."""
     values = raw_values(request, USER_PASSWORD)
     if len(values) != 1:
@@ -164,7 +154,6 @@ def user_password(request: AuthPacket) -> str:
     return password
 
 
-def user_name(request: AuthPacket) -> str:
     try:
         values = request["User-Name"] if "User-Name" in request else []
     except UnicodeDecodeError as exc:
@@ -175,9 +164,6 @@ def user_name(request: AuthPacket) -> str:
     return name
 
 
-def reply(
-    request: AuthPacket, accepted: bool, attributes: ReplyAttributes = ()
-) -> bytes:
     """The signed Access-Accept or Access-Reject answering ``request``.
 
     The Message-Authenticator is added first, so it is the first attribute

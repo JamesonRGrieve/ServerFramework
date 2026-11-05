@@ -62,7 +62,6 @@ except ImportError:
         return None
 
 
-class Smtp2goProvider(AbstractEmailProvider):
     """SMTP2go email provider using the hosted HTTP API."""
 
     name: ClassVar[str] = "smtp2go"
@@ -163,8 +162,6 @@ class Smtp2goProvider(AbstractEmailProvider):
             return False
         return True
 
-    @classmethod
-    def health_check(cls) -> HealthReport:
         api_key = cls.setting(None, "api_key")
         api_url = cls.setting(None, "api_url") or ""
         if not api_key:
@@ -191,13 +188,8 @@ class Smtp2goProvider(AbstractEmailProvider):
             return HealthReport(
                 HealthStatus.DOWN, detail=f"email_summary status {status}"
             )
-        except Exception as exc:
             return HealthReport(HealthStatus.DOWN, detail=f"network error: {exc}")
 
-    @classmethod
-    def bond_instance(
-        cls, instance: Optional[ProviderInstanceModel]
-    ) -> Optional[AbstractProviderInstance_SDK]:
         if not _httpx_available:
             logger.error("httpx package not available")
             return None
@@ -220,7 +212,6 @@ class Smtp2goProvider(AbstractEmailProvider):
                 "auth_strategy": auth_strategy,
             }
             return AbstractProviderInstance_SDK(config)
-        except Exception as e:
             logger.error(f"Failed to bond SMTP2go instance: {e}")
             return None
 
@@ -228,8 +219,6 @@ class Smtp2goProvider(AbstractEmailProvider):
     # authenticates its callbacks with a bearer token.
     SMTP2GO_WEBHOOK_SECRET_ENV: ClassVar[str] = "SMTP2GO_WEBHOOK_SECRET"
 
-    @classmethod
-    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
         """Verify an SMTP2go webhook via a bearer-token check.
 
         SMTP2go authenticates its webhook callbacks with a bearer token in the
@@ -250,19 +239,7 @@ class Smtp2goProvider(AbstractEmailProvider):
         if not token:
             logger.debug("SMTP2go webhook missing bearer token; rejecting.")
             return False
-        return hmac.compare_digest(token, secret)
 
-    @classmethod
-    @ability(name="email_send")
-    async def send_email(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        recipient: str,
-        subject: str,
-        body: str,
-        attachments: Optional[List[str]] = None,
-        importance: str = "normal",
-    ) -> str:
         """Send an email via SMTP2go's /email/send REST API."""
         validation_error = cls._validate_send_inputs(
             recipient, subject, body, attachments
@@ -331,13 +308,11 @@ class Smtp2goProvider(AbstractEmailProvider):
                 logger.debug(f"SMTP2go: email sent successfully to {recipient}")
                 return f"Email sent successfully to {recipient}"
             return f"Failed to send email: {response.status_code}: {response.text}"
-        except Exception as e:
             logger.error(f"Error sending SMTP2go email: {e}")
             return f"Failed to send email: {e}"
         finally:
             try:
                 await config["client"].aclose()
-            except Exception:
                 pass
 
     @staticmethod
@@ -423,7 +398,6 @@ def _coerce_smtp2go_event(raw: Dict[str, Any], event_type: str) -> EmailDelivery
     )
 
 
-async def _dispatch_smtp2go_events(payload: Any, fallback_event: str) -> None:
     """Fan an SMTP2go webhook payload (list, single dict, or ``{"data": [...]}``
     envelope) through the canonical hook bus."""
     rows: List[Dict[str, Any]]

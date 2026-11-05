@@ -111,7 +111,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
-def _build_auth_strategy(strategy_name: str, **kwargs):
     """Construct an `AuthStrategy` from a name and kwargs.
 
     Returns ``None`` if the AuthStrategy module is unavailable (Batch B not
@@ -120,7 +119,6 @@ def _build_auth_strategy(strategy_name: str, **kwargs):
     """
     try:
         from zephyrex.extensions.AuthStrategy import APIKeyAuth, BasicAuth
-    except Exception:  # pragma: no cover — Batch B coupling
         return None
 
     name = (strategy_name or "").lower()
@@ -145,7 +143,6 @@ def _build_auth_strategy(strategy_name: str, **kwargs):
 SENDGRID_API_URL = "https://api.sendgrid.com"
 
 
-class SendgridProvider(AbstractEmailProvider):
     """
     Sendgrid email provider for AGInfrastructure.
     Note: Sendgrid only supports sending emails, not receiving or managing them.
@@ -284,10 +281,6 @@ class SendgridProvider(AbstractEmailProvider):
         """``path`` on the instance's API address."""
         return (cls.setting(instance, "api_url") or SENDGRID_API_URL).rstrip("/") + path
 
-    @classmethod
-    def bond_instance(
-        cls, instance: Optional[ProviderInstanceModel]
-    ) -> Optional[AbstractProviderInstance_SDK]:
         """
         Bond a provider instance with SendGrid SDK.
 
@@ -335,10 +328,8 @@ class SendgridProvider(AbstractEmailProvider):
             else:
                 # Even without from_email, attach auth_strategy where possible
                 if auth_strategy is not None:
-                    setattr(client, "auth_strategy", auth_strategy)
                 return AbstractProviderInstance_SDK(client)
 
-        except Exception as e:
             logger.error(f"Failed to bond SendGrid instance: {e}")
             return None
 
@@ -356,8 +347,6 @@ class SendgridProvider(AbstractEmailProvider):
     # Item 94 — Event Webhook signature verification.
     # ------------------------------------------------------------------
 
-    @classmethod
-    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
         """Verify a SendGrid Event Webhook delivery.
 
         Preferred path: ECDSA-SHA256 with the public key from the
@@ -386,7 +375,6 @@ class SendgridProvider(AbstractEmailProvider):
         except (TypeError, ValueError):
             logger.debug("SendGrid webhook timestamp is not numeric; rejecting.")
             return False
-        if abs(time.time() - ts_epoch) > float(cls.replay_window_seconds):
             logger.debug("SendGrid webhook timestamp outside replay window; rejecting.")
             return False
 
@@ -428,10 +416,6 @@ class SendgridProvider(AbstractEmailProvider):
         nonce = hashlib.sha256(signed_payload).hexdigest()
         return ts_epoch, nonce
 
-    @staticmethod
-    def _verify_ecdsa(
-        public_key_pem: str, signature_b64: str, timestamp: str, body: bytes
-    ) -> bool:
         """ECDSA-SHA256 path. Returns False on any error (defensive)."""
         try:
             from cryptography.exceptions import InvalidSignature
@@ -457,7 +441,6 @@ class SendgridProvider(AbstractEmailProvider):
         except InvalidSignature:
             logger.debug("SendGrid webhook ECDSA signature invalid.")
             return False
-        except Exception as exc:
             logger.debug(f"SendGrid webhook ECDSA verification error: {exc}")
             return False
 
@@ -498,8 +481,6 @@ class SendgridProvider(AbstractEmailProvider):
 
         return True
 
-    @classmethod
-    def health_check(cls) -> HealthReport:
         """Probe upstream liveness via ``GET /v3/scopes`` (Items 27 + 97).
 
         Routes through the shared ``ProviderHTTPClient`` so the request
@@ -528,7 +509,6 @@ class SendgridProvider(AbstractEmailProvider):
                     HealthStatus.DEGRADED, detail=f"scopes status {status}"
                 )
             return HealthReport(HealthStatus.DOWN, detail=f"scopes status {status}")
-        except Exception as exc:  # noqa: BLE001 — defensive, never raise
             return HealthReport(HealthStatus.DOWN, detail=f"network error: {exc}")
 
     @staticmethod
@@ -545,17 +525,6 @@ class SendgridProvider(AbstractEmailProvider):
         logger.warning("Getting emails is not supported by SendGrid")
         return []
 
-    @classmethod
-    @ability(name="email_send")
-    async def send_email(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        recipient: str,
-        subject: str,
-        body: str,
-        attachments: Optional[List[str]] = None,
-        importance: str = "normal",
-    ) -> str:
         """
         Send an email using SendGrid.
         """
@@ -654,7 +623,6 @@ class SendgridProvider(AbstractEmailProvider):
                 return f"Email sent successfully to {recipient}"
             else:
                 return f"Failed to send email: {response.status_code}: {response.text}"
-        except Exception as e:
             logger.error(f"Error sending SendGrid email: {str(e)}")
             return f"Failed to send email: {str(e)}"
 
@@ -735,7 +703,6 @@ class SendgridProvider(AbstractEmailProvider):
 # ============================================================================
 
 
-def _sendgrid_message_to_sg_payload(message: EmailMessage) -> Dict[str, Any]:
     """Item 93 — declarative `EmailMessage` → SendGrid mail-send JSON.
 
     Routes through the `SendgridProvider.field_mappings` pipeline so the
@@ -802,7 +769,6 @@ def _sendgrid_message_to_sg_payload(message: EmailMessage) -> Dict[str, Any]:
     return payload
 
 
-def _sendgrid_payload_to_message_kwargs(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Item 93 — declarative SendGrid mail-send JSON → `EmailMessage` kwargs.
 
     Inverse of `_sendgrid_message_to_sg_payload`; round-trip integrity is
@@ -865,7 +831,6 @@ _SUPPRESSION_PATHS: Dict[str, str] = {
 }
 
 
-class SendgridEmailInstance(AbstractEmailProviderInstance):
     """Item 95 — bonded SendGrid email instance with the capability ladder.
 
     Construction: pass the `ProviderInstanceModel` and an optional
@@ -898,7 +863,6 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
     # those over the typed instance. Until then, satisfy the abstracts by
     # delegating to the legacy provider classmethods where possible.
 
-    async def send(self, message: EmailMessage) -> SentMessage:
         # Sending bonds through the provider instance's settings; an instance
         # built from an API key alone serves only the HTTP ladder methods.
         # Unconfigured is this provider's failure, so rotation moves on.
@@ -1026,7 +990,6 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
             raise map_upstream_status(status, str(body), provider="sendgrid")
         return status, body
 
-    async def validate_address(self, email: str) -> EmailValidationResult:
         _, data = await self._request(
             "POST",
             "/v3/validations/email",
@@ -1083,13 +1046,6 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
             rows=rows, succeeded=succeeded, failed=failed, template_id=template_id
         )
 
-    async def list_suppressions(
-        self,
-        suppression_type: str,
-        *,
-        limit: int = 50,
-        cursor: Optional[str] = None,
-    ) -> SuppressionListPage:
         path = _SUPPRESSION_PATHS.get(suppression_type)
         if path is None:
             raise EmailValidationError(
@@ -1190,14 +1146,6 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
             raw={"rows": data} if isinstance(data, list) else (data or {}),
         )
 
-    async def list_messages(
-        self,
-        *,
-        since: Optional[datetime] = None,
-        status: Optional[str] = None,
-        limit: int = 50,
-        cursor: Optional[str] = None,
-    ) -> MessageListPage:
         # SendGrid's email-activity API uses a `query` string + `limit`.
         # We round-trip the cursor through the framework's `next_token`
         # envelope per Item 7 so the surface is uniform with other
@@ -1270,7 +1218,6 @@ def _coerce_sendgrid_event(raw: Dict[str, Any], event_type: str) -> EmailDeliver
     )
 
 
-async def _dispatch_sendgrid_events(payload: Any, fallback_event: str) -> None:
     """Walk a SendGrid Event-Webhook payload (list-of-dicts, single dict,
     or `{"events": [...]}` envelope from the webhook router) and fan
     each row through the canonical hook bus."""
@@ -1300,7 +1247,6 @@ class _EmailExtensionStub:
     extension_name = "email"
 
 
-def _register_sendgrid_webhook_handlers() -> None:
     """Register handlers for SendGrid's documented Event Webhook event types.
 
     Idempotent: re-importing this module re-registers the same handlers
@@ -1350,7 +1296,6 @@ _register_sendgrid_webhook_handlers()
 # ============================================================================
 
 
-class SendGrid_ContactModel(AbstractExternalModel):
     """External model for SendGrid Contact API resource."""
 
     # SendGrid API configuration
@@ -1584,7 +1529,6 @@ class SendGrid_ContactModel(AbstractExternalModel):
 # ============================================================================
 
 
-class SendGrid_TemplateModel(AbstractExternalModel):
     """External model for SendGrid Template API resource."""
 
     # SendGrid API configuration
@@ -1752,7 +1696,6 @@ class SendGrid_TemplateModel(AbstractExternalModel):
 # ============================================================================
 
 
-class SendGrid_CampaignModel(AbstractExternalModel):
     """External model for SendGrid Campaign API resource."""
 
     # SendGrid API configuration

@@ -76,7 +76,6 @@ def _amount(money: Optional[Mapping[str, Any]]) -> Tuple[Any, Any]:
     return money.get("amount"), money.get("currency_code")
 
 
-def aliexpress_order(found: Mapping[str, Any]) -> Dict[str, Any]:
     """An order from the list (``order_dto``) or the detail (``data``)."""
     total, currency = _amount(found.get("pay_amount") or found.get("order_amount"))
     lines = (
@@ -103,7 +102,6 @@ def aliexpress_order(found: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
 
-class PRV_Aliexpress_ECommerce(AbstractEcommerceProvider):
     name: ClassVar[str] = "aliexpress"
     friendly_name: ClassVar[str] = "AliExpress"
     description: ClassVar[str] = "An AliExpress seller account"

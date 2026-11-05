@@ -69,40 +69,32 @@ PROXY_PREFIX = "/v1/proxy"
 _TAG = "Proxy Auth"
 
 
-class RequestTooLarge(Exception):
     """The client's body ran past the upstream's request cap."""
 
 
-class ResponseTooLarge(Exception):
     """The upstream's body ran past its response cap; the answer is cut off."""
 
 
-def live_user(model_registry: Any, user_id: str) -> Optional[UserModel]:
     """The user, unless deleted (a ROOT read includes deleted rows)."""
     UserDB = UserModel.DB(model_registry.DB.manager.Base)
     users: List[UserModel] = UserDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         id=user_id,
-        filters=[UserDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=UserModel,
     )
     return users[0] if users else None
 
 
-def live_team_ids(model_registry: Any, user_id: str) -> FrozenSet[str]:
     """The teams the user belongs to through an enabled, unexpired,
     undeleted membership of a team that is not deleted."""
     base = model_registry.DB.manager.Base
     UserTeamDB = UserTeamModel.DB(base)
     now = datetime.now(timezone.utc)
     memberships: List[UserTeamModel] = UserTeamDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         user_id=user_id,
         enabled=True,
-        filters=[UserTeamDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=UserTeamModel,
     )
@@ -115,16 +107,13 @@ def live_team_ids(model_registry: Any, user_id: str) -> FrozenSet[str]:
         return frozenset()
     TeamDB = TeamModel.DB(base)
     teams: List[TeamModel] = TeamDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
-        filters=[TeamDB.id.in_(member_of), TeamDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=TeamModel,
     )
     return frozenset(str(team.id) for team in teams)
 
 
-def identity_of(user: UserModel, teams: FrozenSet[str]) -> Identity:
     full_name = " ".join(part for part in (user.first_name, user.last_name) if part)
     return Identity(
         user_id=str(user.id),
@@ -135,31 +124,23 @@ def identity_of(user: UserModel, teams: FrozenSet[str]) -> Identity:
     )
 
 
-def declared_upstream(
-    model_registry: Any, name: str
-) -> Optional[ProviderInstanceModel]:
     """The enabled, undeleted upstream instance ROOT created under
     ``name``, or None."""
-    root_id = env("ROOT_ID")
-    provider = ProviderManager(model_registry=model_registry, requester_id=root_id).get(
         name=PRV_Upstream_ProxyAuthProvider.name
     )
     InstanceDB = ProviderInstanceModel.DB(model_registry.DB.manager.Base)
     found: List[ProviderInstanceModel] = InstanceDB.list(
-        requester_id=root_id,
         model_registry=model_registry,
         provider_id=provider.id,
         name=name,
         enabled=True,
         created_by_user_id=root_id,
-        filters=[InstanceDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=ProviderInstanceModel,
     )
     return found[0] if found else None
 
 
-def raw_rest_and_query(request: Request, upstream_name: str) -> Tuple[str, str]:
     """The path below ``/v1/proxy/<upstream>/`` exactly as the client sent
     it (still percent-encoded, with any ``.json``-style suffix the content
     negotiation strips from the routed path), and the raw query."""
@@ -175,7 +156,6 @@ def raw_rest_and_query(request: Request, upstream_name: str) -> Tuple[str, str]:
     return rest, query
 
 
-def forwarding_headers(request: Request, public_prefix: str) -> RawHeaders:
     """Where the request came from, as this server saw it."""
     found = [
         ("X-Forwarded-For", request.client.host if request.client else None),
@@ -191,7 +171,6 @@ def forwarding_headers(request: Request, public_prefix: str) -> RawHeaders:
     ]
 
 
-async def capped_body(request: Request, limit: int) -> AsyncIterator[bytes]:
     sent = 0
     async for chunk in request.stream():
         sent += len(chunk)
@@ -201,7 +180,6 @@ async def capped_body(request: Request, limit: int) -> AsyncIterator[bytes]:
             yield chunk
 
 
-async def relayed(response: httpx.Response, limit: int) -> AsyncIterator[bytes]:
     """The upstream's body as it arrives, cut off past ``limit`` bytes."""
     sent = 0
     try:
@@ -214,7 +192,6 @@ async def relayed(response: httpx.Response, limit: int) -> AsyncIterator[bytes]:
         await response.aclose()
 
 
-def carries_body(raw: RawHeaders) -> bool:
     length = declared_length(raw)
     chunked = any(
         name.decode("latin-1").lower() == "transfer-encoding" for name, _ in raw
@@ -222,7 +199,6 @@ def carries_body(raw: RawHeaders) -> bool:
     return chunked or bool(length)
 
 
-class ProxyAuthManager(AbstractBLLManager, RouterMixin):
     """Proxy routes only: the upstreams are provider instances."""
 
     prefix: ClassVar[Optional[str]] = PROXY_PREFIX
@@ -230,7 +206,6 @@ class ProxyAuthManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.JWT
     routes_to_register: ClassVar[Optional[List[RouteType]]] = []
 
-    def upstream_for(self, name: str, teams: FrozenSet[str]) -> Upstream:
         instance = declared_upstream(self.model_registry, name)
         if instance is None:
             raise HTTPException(status_code=404, detail=f"No upstream {name!r}")
@@ -245,7 +220,6 @@ class ProxyAuthManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(status_code=403, detail="Not a member of its teams")
         return upstream
 
-    async def forward(self, request: Request, upstream_name: str) -> Response:
         user = live_user(self.model_registry, str(self.requester.id))
         if user is None or user.active is False:
             raise HTTPException(status_code=403, detail="This account is disabled")

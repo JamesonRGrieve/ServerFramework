@@ -16,7 +16,6 @@ from typing import Any, Mapping
 from zephyrex.lib.Logging import ErrorReporter, logger
 
 
-def _sentry_before_send(event: Any, hint: Any) -> Any:
     """Sentry ``before_send`` hook (M-5). Scrubs known PII from the event
     message + breadcrumbs using the ``privacy`` extension's filter when loaded,
     falling back to the secrets-only redactor otherwise."""
@@ -30,7 +29,6 @@ def _sentry_before_send(event: Any, hint: Any) -> Any:
             m = crumb.get("message")
             if isinstance(m, str):
                 crumb["message"] = redact(m)
-    except Exception:
         return event
     # Delegate richer PII pattern coverage to the ``privacy`` extension via the
     # ``_pii_hooks["log_filter"]`` registry (core never imports the extension).
@@ -40,7 +38,6 @@ def _sentry_before_send(event: Any, hint: Any) -> Any:
     if pii_filter is not None:
         try:
             pii_filter(event)
-        except Exception:
             return event
     return event
 
@@ -79,7 +76,6 @@ class SentryErrorReporter(ErrorReporter):
                 "no-op until the dependency is available."
             )
 
-    def report(self, exception: BaseException, context: Mapping[str, Any]) -> None:
         if self._sentry_sdk is None:
             return None
         try:
@@ -87,10 +83,8 @@ class SentryErrorReporter(ErrorReporter):
                 for key, value in context.items():
                     try:
                         scope.set_extra(key, value)
-                    except Exception:
                         continue
                 self._sentry_sdk.capture_exception(exception)
-        except Exception as e:
             logger.warning(
                 "SentryErrorReporter.report: capture_exception failed; "
                 f"swallowing to avoid masking the original error ({e})"

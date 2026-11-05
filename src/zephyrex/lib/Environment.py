@@ -30,7 +30,6 @@ inflection.defnoun("team_metadata", "team_metadata")
 inflection.classical(all=True)  # Use classical Latin plurals
 
 
-class AppSettings(BaseModel):
     ENVIRONMENT: Literal["local", "staging", "development", "production", "ci"] = (
         "local"
     )
@@ -131,8 +130,6 @@ class AppSettings(BaseModel):
             return "5" if str(log_level).lower() == "debug" else "20"
         return v
 
-    @model_validator(mode="after")
-    def _generate_dev_secrets(self):
         """Auto-generate random secrets for non-production environments.
 
         In local/development/ci, an empty JWT_SECRET or the ROOT_API_KEY
@@ -144,7 +141,6 @@ class AppSettings(BaseModel):
         if self.ENVIRONMENT in ("production", "staging"):
             return self
         if not (self.JWT_SECRET or "").strip():
-            generated = secrets.token_urlsafe(32)
             object.__setattr__(self, "JWT_SECRET", generated)
             _env_logger.warning(
                 "JWT_SECRET was empty — generated a random key for %s; tokens "
@@ -155,7 +151,6 @@ class AppSettings(BaseModel):
         if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
             # Never logged: an unknown random key leaves root API-key access
             # closed until the operator sets one.
-            object.__setattr__(self, "ROOT_API_KEY", secrets.token_urlsafe(32))
             _env_logger.warning(
                 "ROOT_API_KEY was unset or default 'n0ne' — generated an "
                 "unlogged random key, so root API-key access is disabled. "
@@ -163,8 +158,6 @@ class AppSettings(BaseModel):
             )
         return self
 
-    @model_validator(mode="after")
-    def _reconcile_environment_alias(self):
         """Honour APP_ENV as a legacy alias for ENVIRONMENT.
 
         Two env-var names (`APP_ENV` vs `ENVIRONMENT`) used to feed
@@ -183,8 +176,6 @@ class AppSettings(BaseModel):
                 object.__setattr__(self, "ENVIRONMENT", "development")
         return self
 
-    @model_validator(mode="after")
-    def _enforce_production_fail_closed(self):
         """In ENVIRONMENT=production/staging, refuse insecure defaults.
 
         Short-circuits application start-up rather than relying on runtime
@@ -235,7 +226,6 @@ class AppSettings(BaseModel):
         # These checks run while this module is first imported (the module-level
         # ``settings``), before ``env()`` below is defined: read os.environ directly.
         if encryption_dependent:
-            fernet_key = (os.environ.get("FRAMEWORK_FERNET_KEY") or "").strip()
             if not fernet_key:
                 problems.append(
                     "FRAMEWORK_FERNET_KEY is unset but the loaded extensions "
@@ -251,7 +241,6 @@ class AppSettings(BaseModel):
         # ``ALLOW_PLAINTEXT_DATABASE=true``.
         ssl_mode = (self.DATABASE_SSL or "").strip().lower()
         if ssl_mode in ("", "disable", "allow", "prefer"):
-            if (os.environ.get("ALLOW_PLAINTEXT_DATABASE") or "").lower() != "true":
                 problems.append(
                     f"DATABASE_SSL={ssl_mode!r} is unsafe in production "
                     "(use 'require' or 'verify-full', or set "
@@ -261,7 +250,6 @@ class AppSettings(BaseModel):
         # egress oracle. It exists for unit tests; production/staging
         # must reject it loudly rather than silently boot with the guard
         # off because of one stray env variable in the deploy.
-        ssrf_disable = (os.environ.get("DISABLE_SSRF_GUARD") or "").strip().lower()
         if ssrf_disable in ("1", "true", "yes", "on"):
             problems.append(
                 "DISABLE_SSRF_GUARD is truthy; outbound SSRF protection "
@@ -275,8 +263,6 @@ class AppSettings(BaseModel):
 
     model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}  # type: ignore[typeddict-unknown-key]
 
-    @classmethod
-    def register_env_vars(cls, env: Dict[str, Any]) -> None:
         """
         Register additional environment variables at runtime.
         This allows extensions and providers to inject their own environment variables.
@@ -330,11 +316,9 @@ class AppSettings(BaseModel):
                     f"Successfully registered {registered_count} new environment variables"
                 )
 
-        except Exception as e:
             logger.error(f"Error registering environment variables: {e}")
 
 
-def _discover_encryption_dependent(extension_names: set) -> set:
     """Return the subset of ``extension_names`` whose package source
     references the ``SecretEncryption`` helper.
 
@@ -351,7 +335,6 @@ def _discover_encryption_dependent(extension_names: set) -> set:
         return set()
     try:
         ext_dir = pathlib.Path(__file__).parent.parent / "extensions"
-    except Exception:
         return set()
     if not ext_dir.is_dir():
         return set()
@@ -379,7 +362,6 @@ def _discover_encryption_dependent(extension_names: set) -> set:
 settings = AppSettings.model_validate(os.environ)
 
 
-def _edit_distance(a: str, b: str) -> int:
     """Levenshtein distance between two strings."""
     if len(a) < len(b):
         return _edit_distance(b, a)
@@ -394,10 +376,8 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
-def _warn_near_miss_env_vars() -> None:
     """Log warnings for env vars that look like typos of known fields."""
     known = set(AppSettings.model_fields.keys())
-    for var in os.environ:
         if var in known or var.startswith("_"):
             continue
         for field_name in known:
@@ -424,7 +404,6 @@ def refresh_settings() -> None:
     settings = AppSettings.model_validate(os.environ)
 
 
-def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
     """
     Register environment variables from extensions and providers.
     This updates both the AppSettings model and the global settings instance.
@@ -441,12 +420,10 @@ def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
     AppSettings.register_env_vars(env)
 
     # Update the global settings instance
-    global settings
 
     # Create new settings instance with the updated model
     try:
         # Merge current environment with new defaults
-        env_data = dict(os.environ)
         for var_name, default_value in env.items():
             if var_name not in env_data:
                 env_data[var_name] = str(default_value)
@@ -458,21 +435,16 @@ def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
         settings = new_settings
 
         logger.debug(
-            f"Updated global settings with {len(env)} new environment variables"
         )
 
-    except Exception as e:
-        logger.error(f"Error updating global settings: {e}")
 
 
-def resolve_environment() -> str:
     """Canonical environment name from ENVIRONMENT or APP_ENV.
 
     Reads ``os.environ`` directly so monkeypatching is honoured.
     ENVIRONMENT wins when both are set. Returns lowercase.
     """
     return (
-        (os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "development")
         .strip()
         .lower()
     )
@@ -486,7 +458,6 @@ def is_staging() -> bool:
     return resolve_environment() == "staging"
 
 
-def env(var: str, default: Optional[str] = "") -> str:
     """
     Get environment variable with fallback to a provided default value.
 
@@ -500,7 +471,6 @@ def env(var: str, default: Optional[str] = "") -> str:
     return os.getenv(var, default or "")
 
 
-def env_bool(var: str, default: bool = False) -> bool:
     """Get an environment variable as a boolean.
 
     Truthy values: ``"true"``, ``"1"``, ``"yes"``, ``"on"`` (case-insensitive).
@@ -512,7 +482,6 @@ def env_bool(var: str, default: bool = False) -> bool:
     return val in ("true", "1", "yes", "on")
 
 
-def env_int(var: str, default: int = 0) -> int:
     """Get an environment variable as an integer, with a fallback default."""
     val = env(var, "").strip()
     if not val:
@@ -523,7 +492,6 @@ def env_int(var: str, default: int = 0) -> int:
         return default
 
 
-def extract_base_domain(uri: str) -> str:
     """
     Extracts the base domain or IP address from a given URI or email-like string.
 
@@ -582,5 +550,4 @@ def extract_base_domain(uri: str) -> str:
     return ".".join(part for part in [extracted.domain, extracted.suffix] if part)
 
 
-class AbstractRegistry(ABC):
     pass

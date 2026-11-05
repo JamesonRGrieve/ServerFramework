@@ -29,11 +29,9 @@ MAPS_TOKEN_LIFETIME_SECONDS = 600
 ACCESS_TOKEN_MARGIN_SECONDS = 60
 
 
-def maps_token(team_id: str, key_id: str, private_key: str, now: float) -> str:
     """The signed Maps token ``/v1/token`` trades for an access token."""
     issued = int(now)
     try:
-        return jwt.encode(
             {
                 "iss": team_id,
                 "iat": issued,
@@ -50,7 +48,6 @@ def maps_token(team_id: str, key_id: str, private_key: str, now: float) -> str:
         ) from exc
 
 
-class PRV_Apple_Maps(AbstractMapsProvider):
     name: ClassVar[str] = "apple_maps"
     friendly_name: ClassVar[str] = "Apple Maps"
     description: ClassVar[str] = "Apple Maps Server API"
@@ -90,11 +87,8 @@ class PRV_Apple_Maps(AbstractMapsProvider):
             )
         return str(team_id), str(key_id), str(private_key)
 
-    @classmethod
-    async def _access_token(cls, instance: ProviderInstanceModel) -> str:
         credentials = cls._credentials(instance)
         cached = cls._access_tokens.get(str(instance.id))
-        now = time.time()
         if cached and cached[0] == credentials and cached[2] > now:
             return cached[1]
         answer = await cls.get_json(
@@ -157,14 +151,6 @@ class PRV_Apple_Maps(AbstractMapsProvider):
         results = answer.get("results") or []
         return cls._place(results[0]) if results else None
 
-    @classmethod
-    async def directions(
-        cls,
-        instance: ProviderInstanceModel,
-        origin: str,
-        destination: str,
-        mode: str,
-    ) -> Dict[str, Any]:
         answer = await cls._get(
             instance,
             "/v1/directions",

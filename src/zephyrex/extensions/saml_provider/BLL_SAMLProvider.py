@@ -142,7 +142,6 @@ def _root() -> str:
 # ---------------------------------------------------------------------------
 
 
-class SamlServiceProviderModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """A Service Provider registered with this IdP."""
 
     name: str = Field(..., description="What the SP is called")
@@ -177,7 +176,6 @@ class SamlServiceProviderModel(ApplicationModel, UpdateMixinModel, metaclass=Mod
 
     table_comment: ClassVar[str] = "Service Providers registered with the SAML IdP"
 
-    class Create(BaseModel):
         name: str
         entity_id: str
         acs_urls: List[str]
@@ -189,7 +187,6 @@ class SamlServiceProviderModel(ApplicationModel, UpdateMixinModel, metaclass=Mod
         allow_idp_initiated: bool = False
         enabled: bool = True
 
-    class Update(BaseModel):
         name: Optional[str] = None
         entity_id: Optional[str] = None
         acs_urls: Optional[List[str]] = None
@@ -201,7 +198,6 @@ class SamlServiceProviderModel(ApplicationModel, UpdateMixinModel, metaclass=Mod
         allow_idp_initiated: Optional[bool] = None
         enabled: Optional[bool] = None
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         name: Optional[StringSearchModel] = None
         entity_id: Optional[StringSearchModel] = None
         enabled: Optional[bool] = None
@@ -221,15 +217,12 @@ class SamlSubjectModel(
     table_comment: ClassVar[str] = "Pairwise SAML NameIDs, one per user and SP"
     permission_references: ClassVar[List[str]] = ["saml_service_provider"]
 
-    class Create(BaseModel):
         saml_service_provider_id: str
         user_id: str
         name_id: str
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search):
         saml_service_provider_id: Optional[StringSearchModel] = None
         user_id: Optional[StringSearchModel] = None
 
@@ -260,7 +253,6 @@ class SamlPendingRequestModel(
     table_comment: ClassVar[str] = "SAML requests waiting for their user to sign in"
     permission_references: ClassVar[List[str]] = ["saml_service_provider"]
 
-    class Create(BaseModel):
         saml_service_provider_id: str
         ticket: str
         request_id: Optional[str] = None
@@ -270,11 +262,9 @@ class SamlPendingRequestModel(
         is_passive: bool = False
         expires_at: datetime
 
-    class Update(BaseModel):
         login_redirected: Optional[bool] = None
         consumed_at: Optional[datetime] = None
 
-    class Search(ApplicationModel.Search):
         saml_service_provider_id: Optional[StringSearchModel] = None
         ticket: Optional[StringSearchModel] = None
         request_id: Optional[StringSearchModel] = None
@@ -290,7 +280,6 @@ def _invalid(detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail=detail)
 
 
-def acs_url_problem(url: str) -> Optional[str]:
     """Why ``url`` cannot be an ACS URL, or None. Assertions are bearer
     credentials, so they go over https only (plain http to loopback, for
     development)."""
@@ -304,7 +293,6 @@ def acs_url_problem(url: str) -> Optional[str]:
     return None
 
 
-def checked_registration(fields: Dict[str, Any]) -> Dict[str, Any]:
     """A registration's fields, normalized, or 422 naming the first
     problem. ``fields`` is the whole registration (on update, the stored
     one with the change applied)."""
@@ -354,7 +342,6 @@ def checked_registration(fields: Dict[str, Any]) -> Dict[str, Any]:
     return checked
 
 
-def protocol_view(registration: SamlServiceProviderModel) -> ServiceProvider:
     return ServiceProvider(
         entity_id=registration.entity_id,
         acs_urls=tuple(registration.acs_urls),
@@ -369,7 +356,6 @@ def protocol_view(registration: SamlServiceProviderModel) -> ServiceProvider:
 # ---------------------------------------------------------------------------
 
 
-class SamlServiceProviderManager(AbstractBLLManager, RouterMixin):
     """SP registrations: root or system only, on every surface."""
 
     _model = SamlServiceProviderModel
@@ -377,14 +363,6 @@ class SamlServiceProviderManager(AbstractBLLManager, RouterMixin):
     tags: ClassVar[Optional[List[str]]] = ["SAML Identity Provider"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def __init__(
-        self,
-        model_registry: Any = None,
-        requester_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        parent: Optional[Any] = None,
-    ) -> None:
         if requester_id is not None and not server_side(requester_id):
             raise HTTPException(
                 status_code=403,
@@ -392,22 +370,16 @@ class SamlServiceProviderManager(AbstractBLLManager, RouterMixin):
             )
         super().__init__(
             model_registry=model_registry,
-            requester_id=requester_id,
             target_id=target_id,
             target_team_id=target_team_id,
             parent=parent,
         )
 
-    def _refuse_taken_entity_id(
-        self, entity_id: str, own_id: Optional[str] = None
-    ) -> None:
-        for existing in self.list(entity_id=entity_id, deleted_at=None):
             if existing.id != own_id:
                 raise HTTPException(
                     status_code=409, detail=f"{entity_id!r} is already registered"
                 )
 
-    def create(self, **kwargs: Any) -> Any:
         if isinstance(kwargs.get("entities"), list):
             entities = [
                 checked_registration({**kwargs, **e}) for e in kwargs.pop("entities")
@@ -427,7 +399,6 @@ class SamlServiceProviderManager(AbstractBLLManager, RouterMixin):
         self._refuse_taken_entity_id(checked["entity_id"])
         return super().create(**checked)
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         stored = self.get(id=id).model_dump()
         changes = {
             k: v
@@ -447,49 +418,36 @@ class SamlServiceProviderManager(AbstractBLLManager, RouterMixin):
         }
         return super().update(id, **normalized, **extra)
 
-    def enabled_by_entity_id(
-        self, entity_id: str
-    ) -> Optional[SamlServiceProviderModel]:
-        for registration in self.list(entity_id=entity_id, deleted_at=None):
             if registration.enabled:
                 found: SamlServiceProviderModel = registration
                 return found
         return None
 
 
-class SamlSubjectManager(AbstractBLLManager):
     _model = SamlSubjectModel
 
-    def pairwise_id(self, sp_id: str, user_id: str) -> str:
         """The user's persistent NameID at the SP, made the first time."""
         for subject in self.list(
-            saml_service_provider_id=sp_id, user_id=user_id, deleted_at=None
         ):
             existing: str = subject.name_id
             return existing
         created = self.create(
             saml_service_provider_id=sp_id,
             user_id=user_id,
-            name_id=secrets.token_urlsafe(PAIRWISE_ID_BYTES),
         )
         made: str = created.name_id
         return made
 
 
-class SamlPendingRequestManager(AbstractBLLManager):
     _model = SamlPendingRequestModel
 
-    def purge_expired(self, now: datetime) -> None:
         """Forget requests past their lapse; by then their AuthnRequest ids
         are also too old to be accepted again."""
-        for lapsed in self.search(expires_at={"before": now}, deleted_at=None):
             self.delete(id=lapsed.id)
 
     def seen(self, sp_id: str, request_id: str) -> bool:
         return bool(self.list(saml_service_provider_id=sp_id, request_id=request_id))
 
-    def by_ticket(self, ticket: str) -> Optional[SamlPendingRequestModel]:
-        for pending in self.list(ticket=ticket, deleted_at=None):
             found: SamlPendingRequestModel = pending
             return found
         return None
@@ -500,7 +458,6 @@ class SamlPendingRequestManager(AbstractBLLManager):
 # ---------------------------------------------------------------------------
 
 
-class PostBindingForm(RouteModel):
     """An HTTP-POST binding message, as the SP's form posts it."""
 
     SAMLRequest: str = Field(..., description="The base64 AuthnRequest")
@@ -515,13 +472,11 @@ def _forbidden(detail: str) -> HTTPException:
     return HTTPException(status_code=403, detail=detail)
 
 
-def _bounded_relay_state(relay_state: Optional[str]) -> Optional[str]:
     if relay_state is not None and len(relay_state) > MAX_RELAY_STATE_LENGTH:
         raise _bad_request(f"RelayState is at most {MAX_RELAY_STATE_LENGTH} characters")
     return relay_state
 
 
-def assertion_lifetime() -> timedelta:
     raw = env("SAML_PROVIDER_ASSERTION_LIFETIME_SECONDS") or str(
         DEFAULT_ASSERTION_LIFETIME_SECONDS
     )
@@ -533,7 +488,6 @@ def assertion_lifetime() -> timedelta:
     return timedelta(seconds=min(max(seconds, low), high))
 
 
-def idp_site() -> IdPSite:
     """Where SPs reach this IdP: ``SAML_PROVIDER_BASE_URL`` (else
     ``SERVER_URI``), and the entity id ``SAML_PROVIDER_ENTITY_ID`` (else
     the metadata URL)."""
@@ -546,20 +500,17 @@ def idp_site() -> IdPSite:
     )
 
 
-def signing_identity(model_registry: Any) -> SigningIdentity:
     """The newest enabled signing-key instance's identity, else the
     environment's. 503 when there is none or it is unusable."""
     root = _root()
     instance = None
     try:
         provider = ProviderManager(
-            model_registry=model_registry, requester_id=root
         ).get(name=PRV_SAMLSigningKey.name)
     except HTTPException:
         provider = None
     if provider is not None:
         instances = ProviderInstanceManager(
-            model_registry=model_registry, requester_id=root
         ).list(provider_id=provider.id)
         enabled = [i for i in instances if i.enabled]
         if enabled:
@@ -570,7 +521,6 @@ def signing_identity(model_registry: Any) -> SigningIdentity:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
-async def off_loop(work: Callable[[], T]) -> T:
     """Run blocking pysaml2/xmlsec1 work on a worker thread, bounded."""
     try:
         return await asyncio.wait_for(
@@ -594,12 +544,10 @@ def _post_page(
     )
 
 
-class SignedInUser(RouteModel):
     id: str
     authenticated_at: datetime
 
 
-class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
     """The IdP's protocol endpoints. They authenticate for themselves: an
     SP's message carries no session, and an unauthenticated browser is sent
     to sign in rather than refused."""
@@ -621,7 +569,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
             model_registry=self.model_registry, requester_id=_root()
         )
 
-    def _signed_in(self, request: Request) -> Optional[SignedInUser]:
         """The user whose session the request carries (the session cookie
         arrives as the bearer header), and when they signed in; None for no
         session, or a credential that is not a session."""
@@ -638,7 +585,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
         except HTTPException:
             return None
         try:
-            claims = jwt.decode(token.strip(), options={"verify_signature": False})
         except jwt.PyJWTError:
             return None
         if (
@@ -664,7 +610,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
     ) -> T:
         site = idp_site()
 
-        def run() -> T:
             with IdP.idp_server(
                 site, identity, sp, want_signed_post_requests=want_signed_post_requests
             ) as server:
@@ -696,20 +641,9 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
         )
         return _post_page(acs_url, xml, relay_state)
 
-    def _park(
-        self,
-        registration: SamlServiceProviderModel,
-        *,
-        request_id: Optional[str],
-        acs_url: str,
-        relay_state: Optional[str],
-        force_authn: bool = False,
-        is_passive: bool = False,
-    ) -> RedirectResponse:
         now = _now()
         pending = self._pending()
         pending.purge_expired(now)
-        ticket = secrets.token_urlsafe(TICKET_BYTES)
         pending.create(
             saml_service_provider_id=registration.id,
             ticket=ticket,
@@ -726,10 +660,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
             headers=NO_STORE,
         )
 
-    @staticmethod
-    def _chosen_acs(
-        registration: SamlServiceProviderModel, request: samlp.AuthnRequest
-    ) -> str:
         """The registered ACS URL the request names exactly (by URL or by
         index), else the first registered. 400 for any other."""
         urls = registration.acs_urls
@@ -752,13 +682,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
                 ) from None
         return urls[0]
 
-    async def _receive(
-        self,
-        encoded: str,
-        binding: str,
-        relay_state: Optional[str],
-        raw_query: Optional[str],
-    ) -> Response:
         """Check an SP-initiated AuthnRequest and park it for its user."""
         relay_state = _bounded_relay_state(relay_state)
         try:
@@ -826,7 +749,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
             is_passive=request.is_passive == "true",
         )
 
-    def _to_sign_in(self, pending: SamlPendingRequestModel) -> RedirectResponse:
         """Send the browser to sign in, to come back to this request."""
         self._pending().update(pending.id, login_redirected=True)
         response = RedirectResponse(
@@ -934,16 +856,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
             relay_state=_bounded_relay_state(relay_state),
         )
 
-    @custom_route(
-        method="GET",
-        path=CONTINUE_PATH,
-        authentication_type="none",
-        response_class=Response,
-        expose_in=(ExposeIn.REST,),
-        openapi_tags=("SAML Identity Provider",),
-        summary="Answer a parked request for the signed-in user",
-    )
-    async def continue_route(self, request: Request, ticket: str) -> Response:
         pending_requests = self._pending()
         found = pending_requests.by_ticket(ticket)
         now = _now()
@@ -957,7 +869,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
             )
         pending: SamlPendingRequestModel = found
         registrations = self._registrations()
-        live = registrations.list(id=pending.saml_service_provider_id, deleted_at=None)
         registration = live[0] if live else None
         if (
             registration is None
@@ -970,7 +881,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
         sp = protocol_view(registration)
         identity = signing_identity(self.model_registry)
 
-        async def refusal(status: str, message: str) -> HTMLResponse:
             pending_requests.update(pending.id, consumed_at=now)
             return await self._error_page(
                 identity,
@@ -1002,7 +912,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
             return self._to_sign_in(pending)
         pending_requests.update(pending.id, consumed_at=now)
         account = UserManager(
-            model_registry=self.model_registry, requester_id=user.id
         ).get(id=user.id)
         if registration.name_id_format == "email":
             if not account.email:
@@ -1012,7 +921,6 @@ class SamlIdentityProviderManager(AbstractBLLManager, RouterMixin):
             subject_value = str(account.email)
         else:
             subject_value = SamlSubjectManager(
-                model_registry=self.model_registry, requester_id=_root()
             ).pairwise_id(registration.id, user.id)
         site = idp_site()
         attributes = self._released(registration, account)

@@ -61,11 +61,6 @@ _acl_hooks: dict = {
 }
 
 
-def register_acl_hooks(
-    *,
-    permission_db_class=None,
-    create_permission=None,
-) -> None:
     for name, fn in (
         ("permission_db_class", permission_db_class),
         ("create_permission", create_permission),

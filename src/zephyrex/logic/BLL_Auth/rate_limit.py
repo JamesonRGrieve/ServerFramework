@@ -16,12 +16,6 @@ from zephyrex.logic.AbstractLogicManager import (
 from zephyrex.logic.BLL_Auth._shared import BaseModel
 
 
-class RateLimitPolicyModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    NameMixinModel,
-    metaclass=ModelMeta,
-):
     Manager: ClassVar[Type["RateLimitPolicyManager"]] = None  # type: ignore[assignment]
     resource_pattern: str = Field(..., description="Resource pattern to match")
     window_seconds: int = Field(..., description="Time window in seconds")
@@ -35,13 +29,11 @@ class RateLimitPolicyModel(
     is_system_entity: ClassVar[bool] = True
     seed_creator_id: ClassVar[str] = env("SYSTEM_ID")
 
-    class Create(BaseModel, NameMixinModel):
         resource_pattern: str = Field(..., description="Resource pattern to match")
         window_seconds: int = Field(..., description="Time window in seconds")
         max_requests: int = Field(..., description="Maximum requests in time window")
         scope: str = Field(..., description="Scope of rate limiting (user, ip, global)")
 
-    class Update(BaseModel):
         name: Optional[str] = Field(None, description="Policy name")
         resource_pattern: Optional[str] = Field(
             None, description="Resource pattern to match"
@@ -56,14 +48,12 @@ class RateLimitPolicyModel(
             None, description="Scope of rate limiting (user, ip, global)"
         )
 
-    class Search(ApplicationModel.Search, NameMixinModel.Search):
         resource_pattern: Optional[StringSearchModel] | None = None
         window_seconds: Optional[NumericalSearchModel] | None = None
         max_requests: Optional[NumericalSearchModel] | None = None
         scope: Optional[StringSearchModel] | None = None
 
 
-class RateLimitPolicyManager(AbstractBLLManager, RouterMixin):
     _model = RateLimitPolicyModel
 
 

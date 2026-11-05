@@ -15,7 +15,6 @@ DEFAULT_API_URL = "https://api.github.com"
 API_VERSION = "2022-11-28"
 
 
-class PRV_GitHub_Source(GitHubStyleProvider):
     name: ClassVar[str] = "github"
     friendly_name: ClassVar[str] = "GitHub"
     description: ClassVar[str] = "GitHub or GitHub Enterprise Server"

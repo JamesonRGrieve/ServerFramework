@@ -24,7 +24,6 @@ _CLIENT_ERROR = 400
 _UNAUTHORIZED = 401
 
 
-class PRV_Twilio_SMS(AbstractSMSProvider):
     name: ClassVar[str] = "twilio"
     friendly_name: ClassVar[str] = "Twilio"
     description: ClassVar[str] = "Twilio Programmable Messaging"

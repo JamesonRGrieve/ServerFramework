@@ -65,7 +65,6 @@ FRAMEWORK_MODEL_MODULES = frozenset(
 REFERENCE_EXEMPT_PREFIXES = ("Base", "Application")
 
 
-def _uses_model_meta(info: TypeInfo) -> bool:
     return any(
         base.declared_metaclass is not None
         and base.declared_metaclass.type.fullname == MODEL_META_FULLNAME
@@ -83,13 +82,6 @@ def _optional(typ: Type) -> Type:
     return UnionType([typ, NoneType()])
 
 
-def _add_class(
-    api: SemanticAnalyzerPluginInterface,
-    owner: TypeInfo,
-    name: str,
-    bases: List[Instance],
-    fields: Dict[str, Type],
-) -> TypeInfo:
     """Create a class nested in ``owner`` with the given bases and fields."""
     fullname = f"{owner.fullname}.{name}"
     classdef = ClassDef(name, Block([]))
@@ -111,9 +103,6 @@ def _add_class(
     return info
 
 
-def _add_reference_family(
-    api: SemanticAnalyzerPluginInterface, model: TypeInfo
-) -> None:
     field_name = _reference_field_name(model.name)
     id_field_name = f"{field_name}_id"
     str_type = api.named_type("builtins.str")
@@ -147,14 +136,12 @@ def _add_reference_family(
     )
 
 
-def _field_node(owner: TypeInfo, name: str, typ: Type) -> SymbolTableNode:
     var = Var(name, typ)
     var.info = owner
     var._fullname = f"{owner.fullname}.{name}"
     return SymbolTableNode(MDEF, var, plugin_generated=True)
 
 
-def _bind_nested_namespaces(info: TypeInfo) -> None:
     """Bind nested classes defined by more than one base to the MRO-first one.
 
     Runs on every semantic-analysis pass: names the plugin bound earlier are
@@ -182,7 +169,6 @@ def _bind_hook(ctx: ClassDefContext) -> None:
     _bind_nested_namespaces(ctx.cls.info)
 
 
-def _transform_model(ctx: ClassDefContext) -> None:
     info = ctx.cls.info
     metadata = info.metadata.setdefault(METADATA_KEY, {})
     # Generate Reference before binding so the generated class owns the name
@@ -197,7 +183,6 @@ def _transform_model(ctx: ClassDefContext) -> None:
     _bind_nested_namespaces(info)
 
 
-def _is_framework_model_base(info: TypeInfo) -> bool:
     """True for the framework's model bases/mixins and generated Reference
     classes: the classes that carry nested ``Optional``/``Search``/``ID``
     namespaces meant to be read per declaring class."""
@@ -218,7 +203,6 @@ def _chain(first: ClassHook, then: ClassHook) -> ClassHook:
     return hook
 
 
-class ZephyrexPlugin(Plugin):
     def __init__(self, options: Options) -> None:
         super().__init__(options)
         # Imported here: pydantic.mypy only imports cleanly inside a mypy run.
@@ -230,10 +214,8 @@ class ZephyrexPlugin(Plugin):
         super().set_modules(modules)
         self._pydantic.set_modules(modules)
 
-    def get_metaclass_hook(self, fullname: str) -> Optional[ClassHook]:
         return _transform_model if fullname == MODEL_META_FULLNAME else None
 
-    def get_base_class_hook(self, fullname: str) -> Optional[ClassHook]:
         sym = self.lookup_fully_qualified(fullname)
         if sym is None or not isinstance(sym.node, TypeInfo):
             return None

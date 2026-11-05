@@ -87,7 +87,6 @@ PUBLISHED_HISTORY_SIZE = 1000
 EventHandler = Callable[[BaseModel], Awaitable[None] | None]
 
 
-class AbstractEventBus(ABC):
     """Typed publish/subscribe contract.
 
     Implementations must:
@@ -110,7 +109,6 @@ class AbstractEventBus(ABC):
     async def close(self) -> None: ...
 
 
-class InMemoryEventBus(AbstractEventBus):
     """In-process default; subscribers run on the publishing event loop.
 
     Use for tests and single-process deployments. NOT durable across
@@ -123,7 +121,6 @@ class InMemoryEventBus(AbstractEventBus):
         self._published_events: deque[BaseModel] = deque(maxlen=PUBLISHED_HISTORY_SIZE)
         self._closed = False
 
-    async def publish(self, event: BaseModel) -> None:
         if self._closed:
             raise RuntimeError("Event bus is closed; cannot publish")
         self._published_events.append(event)
@@ -152,7 +149,6 @@ class InMemoryEventBus(AbstractEventBus):
 # ---------------------------------------------------------------------------
 
 
-class BrokerTransport(ABC):
     """Pluggable transport for the broker-backed event bus adapters.
 
     Adapters (Kafka/NATS/Redis-Streams) delegate every wire-level
@@ -184,7 +180,6 @@ class BrokerTransport(ABC):
         """Drain subscribers and tear down any held connections."""
 
 
-class InMemoryBrokerTransport(BrokerTransport):
     """Real publish/subscribe semantics, in-process. Production transports
     must mirror these semantics: per-topic isolation, per-subscriber
     invocation, swallowed handler errors logged but not raised."""
@@ -195,13 +190,11 @@ class InMemoryBrokerTransport(BrokerTransport):
         )
         self._closed = False
 
-    async def send(self, topic: str, payload: bytes) -> None:
         if self._closed:
             raise RuntimeError("Broker transport is closed; cannot send")
         for handler in list(self._subscribers.get(topic, [])):
             try:
                 await handler(payload)
-            except Exception as exc:  # noqa: BLE001
                 # Cross-process semantics: a subscriber error must not
                 # take the publisher down. Log + swallow.
                 _logger.error(
@@ -227,7 +220,6 @@ class InMemoryBrokerTransport(BrokerTransport):
 # ---------------------------------------------------------------------------
 
 
-class _BrokerEventBus(AbstractEventBus):
     """Shared adapter base for broker-backed buses.
 
     Owns the wire-format contract (event-class topic key + JSON encoding)
@@ -259,7 +251,6 @@ class _BrokerEventBus(AbstractEventBus):
         payload = json.dumps(event.model_dump()).encode("utf-8")
         await self._transport.send(topic, payload)
 
-    def subscribe(self, event_class: type[BaseModel], handler: EventHandler) -> None:
         topic = self._topic_for(event_class)
         self._handlers[topic].append((event_class, handler))
         if topic not in self._subscribed_topics:
@@ -281,12 +272,9 @@ class _BrokerEventBus(AbstractEventBus):
     async def _wire_subscription(self, topic: str) -> None:
         await self._transport.subscribe(topic, self._dispatch_factory(topic))
 
-    def _dispatch_factory(self, topic: str) -> Callable[[bytes], Awaitable[None]]:
-        async def _dispatch(payload: bytes) -> None:
             for event_class, handler in list(self._handlers.get(topic, [])):
                 try:
                     event = event_class.model_validate_json(payload)
-                except Exception as exc:  # noqa: BLE001
                     _logger.error("Broker payload decode failed for %s: %s", topic, exc)
                     if self._dlq_topic:
                         await self._transport.send(self._dlq_topic, payload)
@@ -295,12 +283,10 @@ class _BrokerEventBus(AbstractEventBus):
                     result = handler(event)
                     if hasattr(result, "__await__"):
                         await result
-                except Exception as exc:  # noqa: BLE001
                     _logger.error("Broker subscriber failed on %s: %s", topic, exc)
                     if self._dlq_topic:
                         try:
                             await self._transport.send(self._dlq_topic, payload)
-                        except Exception:  # noqa: BLE001
                             _logger.error(
                                 "DLQ forward failed for topic %s", self._dlq_topic
                             )
@@ -313,7 +299,6 @@ class _BrokerEventBus(AbstractEventBus):
         self._subscribed_topics.clear()
 
 
-class KafkaEventBus(_BrokerEventBus):
     """Kafka-backed event bus.
 
     The framework's core does NOT import the Kafka SDK directly — that
@@ -330,7 +315,6 @@ class KafkaEventBus(_BrokerEventBus):
     """
 
 
-class NATSEventBus(_BrokerEventBus):
     """NATS-backed event bus.
 
     See :class:`KafkaEventBus` for the construction shape — the framework's
@@ -339,7 +323,6 @@ class NATSEventBus(_BrokerEventBus):
     """
 
 
-class RedisStreamsEventBus(_BrokerEventBus):
     """Valkey/Redis-Streams-backed event bus.
 
     The framework's core does not import ``redis-py``; the transport

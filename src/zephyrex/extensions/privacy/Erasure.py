@@ -44,21 +44,17 @@ def register_eraser(
         _SIGNING_OUT.discard(name)
 
 
-def erase_credentials(user_id: str, model_registry: Any) -> None:
     """The account's own credentials (its password hash), which the core
     keeps and no extension owns: deleted with the account. Safe to run twice."""
     from zephyrex.lib.Environment import env
     from zephyrex.logic.BLL_Auth.user import UserCredentialModel
 
-    root_id = env("ROOT_ID")
     CredentialDB = UserCredentialModel.DB(model_registry.DB.manager.Base)
     rows = (
         CredentialDB.list(
-            requester_id=root_id,
             model_registry=model_registry,
             filters=[
                 CredentialDB.user_id == user_id,
-                CredentialDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=UserCredentialModel,
@@ -67,11 +63,9 @@ def erase_credentials(user_id: str, model_registry: Any) -> None:
     )
     for row in rows:
         CredentialDB.delete(
-            requester_id=root_id, model_registry=model_registry, id=row.id
         )
 
 
-def erase_user(user_id: str, model_registry: Any) -> ErasureReport:
     """Run, for ``user_id``, the erasers of the extensions loaded into
     ``model_registry``'s app (a registration is process-wide; another app in
     the process may not have loaded the extension). When they all succeed,
@@ -106,7 +100,6 @@ def _bound(
     return erase
 
 
-def _erase_before_deleting(context: Any) -> None:
     from zephyrex.lib.Preconditions import check_route_record
 
     manager = context.manager

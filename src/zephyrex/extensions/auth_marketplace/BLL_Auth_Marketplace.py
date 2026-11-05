@@ -47,11 +47,9 @@ class UserPaymentPortalModel(
         "Per-user link to a payment provider; one row per (user, provider) pair"
     )
 
-    class Create(BaseModel, UserModel.Reference.ID):
         payment_portal_id: str
         customer_id: Optional[str] = None
 
-    class Update(BaseModel):
         customer_id: Optional[str] = None
 
     class Search(
@@ -88,7 +86,6 @@ class TeamPaymentPortalModel(
         payment_portal_id: str
         customer_id: Optional[str] = None
 
-    class Update(BaseModel):
         customer_id: Optional[str] = None
 
     class Search(
@@ -101,7 +98,6 @@ class TeamPaymentPortalModel(
         customer_id: Optional[StringSearchModel] = None
 
 
-class UserPaymentPortalManager(AbstractBLLManager, RouterMixin):
     _model = UserPaymentPortalModel
     prefix: ClassVar[Optional[str]] = "/v1/marketplace/user-portals"
     tags: ClassVar[Optional[List[str]]] = ["Marketplace"]
@@ -111,7 +107,6 @@ class UserPaymentPortalManager(AbstractBLLManager, RouterMixin):
     _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
 
-class TeamPaymentPortalManager(AbstractBLLManager, RouterMixin):
     _model = TeamPaymentPortalModel
     prefix: ClassVar[Optional[str]] = "/v1/marketplace/team-portals"
     tags: ClassVar[Optional[List[str]]] = ["Marketplace"]

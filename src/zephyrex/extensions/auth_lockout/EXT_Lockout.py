@@ -13,7 +13,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 
 
-class AuthLockoutExtension(AbstractStaticExtension):
     name: ClassVar[str] = "auth_lockout"
     description: ClassVar[str] = (
         "Persisted failed-login records and per-user lockout policy"

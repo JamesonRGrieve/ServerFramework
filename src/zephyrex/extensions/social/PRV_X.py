@@ -36,7 +36,6 @@ def problem(payload: Any) -> str:
     return f"{body.get('title', '')}: {body.get('detail', '')}".strip(": ")
 
 
-class PRV_X_Social(AbstractSocialProvider):
     name: ClassVar[str] = "x"
     friendly_name: ClassVar[str] = "X"
     description: ClassVar[str] = "X (formerly Twitter)"

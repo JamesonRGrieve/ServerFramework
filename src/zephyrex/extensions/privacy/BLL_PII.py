@@ -94,7 +94,6 @@ def pii(klass: PIIClass) -> PIIAnnotation:
     return PIIAnnotation(klass=klass)
 
 
-def _classify_field(field_info: Any) -> PIIClass:
     """Inspect a Pydantic v2 FieldInfo for a PIIAnnotation.
 
     Scans both ``metadata`` (set via ``Field(metadata=[...])``) and the
@@ -208,7 +207,6 @@ ERASURE_EVENT_AUDIT_CLASS = {
 }
 
 
-class ErasureOrchestrator:
     """Orchestrates ``erase_user`` calls across registered extensions.
 
     Erasure runs in **reverse** dependency order so leaf extensions release
@@ -278,7 +276,6 @@ class ErasureOrchestrator:
 # ---------------------------------------------------------------------------
 
 
-class DataExporter:
     """Symmetric counterpart to ``ErasureOrchestrator`` for GDPR Article 20.
 
     Each registered exporter returns a JSON-serializable dict of the user's

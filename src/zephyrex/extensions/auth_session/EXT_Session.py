@@ -16,7 +16,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 
 
-class AuthSessionExtension(AbstractStaticExtension):
     name: ClassVar[str] = "auth_session"
     description: ClassVar[str] = (
         "Persisted session rows that back JWT revocation, refresh, and "

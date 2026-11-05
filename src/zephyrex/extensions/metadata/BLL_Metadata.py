@@ -58,7 +58,6 @@ class MetadataModel(
         value: Optional[StringSearchModel] = None
 
 
-class MetadataManager(AbstractBLLManager):
     _model = MetadataModel
 
     def create_validation(self, entity):
@@ -68,9 +67,6 @@ class MetadataManager(AbstractBLLManager):
                 status_code=400, detail="Either user_id or team_id must be provided"
             )
 
-    def _preference_rows(
-        self, key: str, user_id: Optional[str], team_id: Optional[str]
-    ) -> List[MetadataModel]:
         """The rows holding ``key`` for exactly this user and/or team.
 
         A user's own preference excludes rows the system created for them
@@ -86,7 +82,6 @@ class MetadataManager(AbstractBLLManager):
             owner["team_id"] = team_id
         rows = self.search(key=key, **owner)
         if user_id and not team_id:
-            system_ids = {env("ROOT_ID"), env("SYSTEM_ID")}
             rows = [
                 row
                 for row in rows
@@ -94,13 +89,6 @@ class MetadataManager(AbstractBLLManager):
             ]
         return rows
 
-    def set_preference(
-        self,
-        key: str,
-        value: str,
-        user_id: Optional[str] = None,
-        team_id: Optional[str] = None,
-    ) -> Dict[str, str]:
         """Set or update a metadata preference"""
         if not user_id and not team_id:
             raise HTTPException(
@@ -112,7 +100,6 @@ class MetadataManager(AbstractBLLManager):
             record = exact_matches[0]
             if user_id and not team_id:
                 with MetadataManager(
-                    requester_id=user_id, model_registry=self.model_registry
                 ) as temp_mgr:
                     temp_mgr.update(id=record.id, value=value)
             else:
@@ -126,7 +113,6 @@ class MetadataManager(AbstractBLLManager):
                 create_args["team_id"] = team_id
             if user_id and not team_id:
                 with MetadataManager(
-                    requester_id=user_id, model_registry=self.model_registry
                 ) as temp_mgr:
                     temp_mgr.create(**create_args)
             else:
@@ -141,7 +127,6 @@ class MetadataManager(AbstractBLLManager):
         return exact_matches[0].value if exact_matches else None
 
 
-class TeamMetadataManager(MetadataManager):
     """Filters by team_id by default."""
 
     def create_validation(self, entity):
@@ -162,7 +147,6 @@ class TeamMetadataManager(MetadataManager):
         return super().get_preference(key, team_id=self.target_team_id)
 
 
-class UserMetadataManager(MetadataManager):
     """Filters by user_id by default."""
 
     def create_validation(self, entity):

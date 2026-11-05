@@ -97,7 +97,6 @@ class GEDCOMFile:
         return self.pedigree.get((child, family), "biological")
 
 
-def _parse_lines(text: str) -> List[_Node]:
     roots: List[_Node] = []
     stack: List[_Node] = []
     for number, raw in enumerate(text.lstrip("﻿").splitlines(), start=1):
@@ -126,7 +125,6 @@ def _parse_lines(text: str) -> List[_Node]:
     return roots
 
 
-def _version(roots: Sequence[_Node]) -> str:
     head = next((r for r in roots if r.tag == "HEAD"), None)
     gedc = head.first("GEDC") if head else None
     vers = gedc.first("VERS") if gedc else None
@@ -171,7 +169,6 @@ def _event(person: GEDCOMPerson, node: _Node, label: str) -> Optional[date]:
     return exact
 
 
-def parse(text: str) -> GEDCOMFile:
     """Read GEDCOM 5.5, 5.5.1, 5.5.5 or 7.0."""
     roots = _parse_lines(text)
     version = _version(roots)
@@ -256,11 +253,6 @@ def _value(text: str) -> str:
     return " ".join(text.split())
 
 
-def dumps(
-    people: Iterable[ExportPerson],
-    families: Iterable[ExportFamily],
-    source: str = "zephyrex",
-) -> str:
     """Write GEDCOM 5.5.1 (UTF-8)."""
     people = list(people)
     families = list(families)

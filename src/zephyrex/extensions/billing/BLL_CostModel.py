@@ -43,7 +43,6 @@ from typing import Any, Callable, Optional, Protocol
 # ---------------------------------------------------------------------------
 
 
-class CostModel(Protocol):
     """Pure callable: ``(request, response) -> Decimal`` returning the
     cost of a single upstream call.
 
@@ -71,8 +70,6 @@ class CostModel(Protocol):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class ConstantCostModel:
     """A flat per-call cost. Useful for upstreams with a fixed fee per
     request regardless of payload (some webhook ingestion services,
     some SMS providers)."""
@@ -83,8 +80,6 @@ class ConstantCostModel:
         return self.per_call_usd
 
 
-@dataclass(frozen=True)
-class TokenBasedCostModel:
     """AI/LLM-style cost: prompt tokens × prompt price + completion
     tokens × completion price + a fixed per-request component.
 
@@ -110,7 +105,6 @@ class TokenBasedCostModel:
             return int(obj.get(key, default))
         return int(getattr(obj, key, default))
 
-    def __call__(self, request: Any, response: Any) -> Decimal:
         prompt = self._get(response, "prompt_tokens")
         completion = self._get(response, "completion_tokens")
         prompt_cost = (Decimal(prompt) / Decimal(1000)) * self.prompt_price_per_1k
@@ -120,8 +114,6 @@ class TokenBasedCostModel:
         return prompt_cost + completion_cost + self.per_request_fixed_usd
 
 
-@dataclass(frozen=True)
-class PercentOfAmountCostModel:
     """Payment-processor-style cost: a percentage of the transaction
     amount plus a fixed per-transaction component (e.g. Stripe's
     "2.9% + $0.30").
@@ -136,8 +128,6 @@ class PercentOfAmountCostModel:
     percent: Decimal
     per_transaction_usd: Decimal = Decimal("0")
 
-    @staticmethod
-    def _get(obj: Any, key: str, default: Decimal = Decimal("0")) -> Decimal:
         if obj is None:
             return default
         if isinstance(obj, dict):
@@ -150,8 +140,6 @@ class PercentOfAmountCostModel:
         return (amount * self.percent / Decimal(100)) + self.per_transaction_usd
 
 
-@dataclass(frozen=True)
-class FreeCostModel:
     """Zero-cost. Provider explicitly declares "free" (e.g. health
     checks, public data fetches) so the absence of a cost model on the
     provider class is distinguishable from "this is free"."""
@@ -165,8 +153,6 @@ class FreeCostModel:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class TenantCostCap:
     """Per-tenant USD ceiling that pairs with the ``CostModel``. When
     accumulated cost in the configured window exceeds the cap, the
     framework triggers the configured branch:
@@ -185,7 +171,6 @@ class TenantCostCap:
     window: str = "30d"
     behavior: str = "hard_fail"  # or "warn_and_continue"
 
-    def __post_init__(self) -> None:
         if self.behavior not in ("hard_fail", "warn_and_continue"):
             raise ValueError(
                 f"TenantCostCap.behavior must be 'hard_fail' or "
@@ -200,7 +185,6 @@ _WINDOW_SUFFIX_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "y": 31_536_00
 _WINDOW_RE_BILLING = __import__("re").compile(r"^(\d+)([smhdy])$")
 
 
-def _validate_window(window: str) -> None:
     if window == "forever":
         return
     if not _WINDOW_RE_BILLING.match(window):

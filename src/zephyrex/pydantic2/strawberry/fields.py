@@ -16,15 +16,12 @@ from strawberry.types import Info as Info
 from zephyrex.pydantic2.manager_contract import ManagerContract
 
 
-def convert_field_name(field_name: str) -> str:
     """The GraphQL (camelCase) name of a Python field name."""
     if field_name in ["id", "__typename"]:
         return field_name
     return str(stringcase.camelcase(field_name))
 
 
-@dataclass
-class ModelInfo:
     """Information about a model and its relationships"""
 
     model_class: Type[BaseModel]
@@ -39,8 +36,6 @@ class ModelInfo:
 # -- Item 39 — per-resource versioning / deprecation in GraphQL ---------------
 
 
-@strawberry.schema_directive(locations=[Location.FIELD_DEFINITION])
-class Sunset:
     """Custom GraphQL ``@sunset(date: ...)`` directive.
 
     Attached to fields whose source ``RouterMixin`` manager declares
@@ -66,7 +61,6 @@ def _versioning_metadata_for(manager_class: Any) -> Tuple[Optional[str], Optiona
     )
 
 
-def _build_field_kwargs(manager_class: Any) -> Dict[str, Any]:
     """Build the kwargs forwarded to ``strawberry.field`` for a manager.
 
     When ``deprecated_in`` is set, the field gains a ``deprecation_reason``
@@ -128,7 +122,6 @@ class SilentDroppedGQL:
     ability: Optional[str] = None
 
 
-def render_degradation_sentinel_gql(result: Any) -> Optional[Any]:
     """Item 48 — convert a rotation degradation sentinel into a typed
     Strawberry GraphQL result.
 
@@ -149,7 +142,6 @@ def render_degradation_sentinel_gql(result: Any) -> Optional[Any]:
     """
     try:
         from zephyrex.extensions.ExternalErrors import extract_degradation_sentinel
-    except Exception:  # pragma: no cover - defensive
         return None
 
     sentinel = extract_degradation_sentinel(result)
@@ -167,7 +159,6 @@ def render_degradation_sentinel_gql(result: Any) -> Optional[Any]:
     )
 
 
-def degradation_aware(resolver: Callable[..., Any]) -> Callable[..., Any]:
     """Item 48 — decorator that converts a resolver's degradation sentinel
     return values into typed Strawberry GraphQL results.
 
@@ -181,7 +172,6 @@ def degradation_aware(resolver: Callable[..., Any]) -> Callable[..., Any]:
     """
     if asyncio.iscoroutinefunction(resolver):
 
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             result = await resolver(*args, **kwargs)
             converted = render_degradation_sentinel_gql(result)
             return converted if converted is not None else result
@@ -192,7 +182,6 @@ def degradation_aware(resolver: Callable[..., Any]) -> Callable[..., Any]:
         async_wrapper.__wrapped__ = resolver  # type: ignore[attr-defined]
         return async_wrapper
 
-    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         result = resolver(*args, **kwargs)
         converted = render_degradation_sentinel_gql(result)
         return converted if converted is not None else result

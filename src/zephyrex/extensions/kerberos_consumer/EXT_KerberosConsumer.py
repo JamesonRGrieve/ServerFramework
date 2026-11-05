@@ -29,7 +29,6 @@ from zephyrex.lib.Dependencies import (
 GSSAPI_REQUIREMENT = ">=1.12.0"
 
 
-class EXT_KerberosConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "kerberos_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -70,11 +69,6 @@ class EXT_KerberosConsumer(AbstractStaticExtension):
 
     _abilities: ClassVar[Set[str]] = {"kerberos_linked_principals"}
 
-    @classmethod
-    @ability("kerberos_linked_principals")
-    async def kerberos_linked_principals(
-        cls, requester_id: str
-    ) -> List[Dict[str, Any]]:
         """The Kerberos principals that sign in as ``requester_id``."""
         from zephyrex.extensions.kerberos_consumer.BLL_KerberosConsumer import (
             KerberosPrincipalManager,

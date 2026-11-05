@@ -119,15 +119,11 @@ def radius_dictionary() -> Dictionary:
 DICTIONARY = radius_dictionary()
 
 
-@dataclass(frozen=True)
-class Endpoint:
     """One RADIUS server: a host name or address, and a port."""
 
     host: str
     port: int
 
-    @classmethod
-    def parse(cls, entry: str, default_port: int) -> "Endpoint":
         """``host``, ``host:port``, ``[v6]:port`` or a bare IPv6 address."""
         text = entry.strip()
         if not text:
@@ -157,8 +153,6 @@ class Endpoint:
         return f"{self.host}:{self.port}"
 
 
-@dataclass(frozen=True)
-class TLSSettings:
     """RadSec credentials: the CA that signs the servers' certificates, this
     client's certificate and key (PEM), and the name the servers'
     certificates must carry when it is not the host they are reached by."""
@@ -168,7 +162,6 @@ class TLSSettings:
     client_key_pem: str
     server_name: Optional[str] = None
 
-    def context(self, workdir: Path) -> ssl.SSLContext:
         """A verifying client context. ``load_cert_chain`` reads files, so
         the certificate and key are written to ``workdir`` (private to
         this process, removed by the caller)."""
@@ -188,7 +181,6 @@ class TLSSettings:
         context.load_cert_chain(str(cert_file), str(key_file))
         return context
 
-    def check(self) -> None:
         """Refuse PEM material a TLS context will not load."""
         with tempfile.TemporaryDirectory(prefix="radsec-") as workdir:
             try:
@@ -200,8 +192,6 @@ class TLSSettings:
                 ) from exc
 
 
-@dataclass(frozen=True)
-class ServiceSettings:
     """A RADIUS service: its servers in fail-over order and how to reach
     them."""
 
@@ -214,8 +204,6 @@ class ServiceSettings:
     tls: Optional[TLSSettings] = None
 
 
-@dataclass(frozen=True)
-class Reply:
     """A verified reply: what it says, which server sent it (its index in
     the service), and the attributes a sign-in uses."""
 
@@ -226,12 +214,9 @@ class Reply:
     session_timeout: Optional[int] = None
 
 
-class DiscardedReply(Exception):
     """A datagram that is not a verified reply to the request."""
 
 
-@dataclass
-class _Unanswered(Exception):
     """No verified reply from one server: why, and whether anything that
     arrived failed verification (a wrong secret, a forged reply)."""
 
@@ -239,8 +224,6 @@ class _Unanswered(Exception):
     discarded: List[str] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class Request:
     """An encoded Access-Request: its bytes, and its Identifier and Request
     Authenticator, which the reply must match."""
 
@@ -255,7 +238,6 @@ class Request:
         return self.raw[4:HEADER_LENGTH]
 
 
-def _bounded_text(value: str, what: str, limit: int) -> bytes:
     encoded = value.encode("utf-8")
     if not encoded or len(encoded) > limit or "\x00" in value:
         raise InvalidInputExternalError(
@@ -264,23 +246,13 @@ def _bounded_text(value: str, what: str, limit: int) -> bytes:
     return encoded
 
 
-def build_access_request(
-    secret: bytes,
-    username: str,
-    password: str,
-    *,
-    nas_identifier: Optional[str] = None,
-    state: Optional[bytes] = None,
-) -> Request:
     """An Access-Request with a fresh Identifier and Request Authenticator,
     Message-Authenticator first, and the password hidden."""
     _bounded_text(username, "User-Name", MAX_ATTRIBUTE_VALUE_LENGTH)
     _bounded_text(password, "User-Password", MAX_PASSWORD_LENGTH)
     packet = AuthPacket(
         code=ACCESS_REQUEST,
-        id=secrets.randbelow(256),
         secret=secret,
-        authenticator=secrets.token_bytes(AUTHENTICATOR_LENGTH),
         dict=DICTIONARY,
     )
     packet.add_message_authenticator()
@@ -298,7 +270,6 @@ def build_access_request(
     return Request(raw)
 
 
-def _attributes(body: bytes) -> Iterator[Tuple[int, int, bytes]]:
     """Each attribute of a packet body: its offset, type and value."""
     offset = 0
     while offset < len(body):
@@ -311,22 +282,17 @@ def _attributes(body: bytes) -> Iterator[Tuple[int, int, bytes]]:
         offset += length
 
 
-def message_authenticator(
-    secret: bytes, packet: bytes, authenticator: bytes, at: Optional[int]
-) -> bytes:
     """The HMAC-MD5 of ``packet`` with ``authenticator`` in its header and,
     when ``at`` names the Message-Authenticator value's offset, that value
     zeroed (RFC 3579 section 3.2)."""
     body = bytearray(packet[HEADER_LENGTH:])
     if at is not None:
         body[at : at + AUTHENTICATOR_LENGTH] = bytes(AUTHENTICATOR_LENGTH)
-    digest: bytes = hmac.new(
         secret, packet[:4] + authenticator + bytes(body), hashlib.md5
     ).digest()
     return digest
 
 
-def verify_reply(request: Request, datagram: bytes, secret: bytes) -> Packet:
     """The decoded reply when ``datagram`` is a verified reply to
     ``request``; :class:`DiscardedReply` saying why when it is not."""
     if len(datagram) < HEADER_LENGTH:
@@ -342,7 +308,6 @@ def verify_reply(request: Request, datagram: bytes, secret: bytes) -> Packet:
         raise DiscardedReply(f"packet code {code}, not an Access reply")
     body = reply[HEADER_LENGTH:]
     expected = hashlib.md5(reply[:4] + request.authenticator + body + secret).digest()
-    if not hmac.compare_digest(expected, reply[4:HEADER_LENGTH]):
         raise DiscardedReply(
             "a Response Authenticator that does not verify (wrong shared secret?)"
         )
@@ -359,7 +324,6 @@ def verify_reply(request: Request, datagram: bytes, secret: bytes) -> Packet:
     signed = message_authenticator(
         secret, reply, request.authenticator, offset + ATTRIBUTE_HEADER_LENGTH
     )
-    if not hmac.compare_digest(signed, value):
         raise DiscardedReply("a Message-Authenticator that does not verify")
     try:
         return Packet(packet=reply, dict=DICTIONARY, secret=secret)
@@ -372,7 +336,6 @@ def _first(packet: Packet, name: str) -> Any:
     return values[0] if values else None
 
 
-def read_reply(packet: Packet, endpoint_index: int) -> Reply:
     message = _first(packet, "Reply-Message")
     timeout = _first(packet, "Session-Timeout")
     return Reply(
@@ -392,10 +355,8 @@ def _resolve(endpoint: Endpoint, kind: socket.SocketKind) -> Tuple[Any, ...]:
     return found[0]
 
 
-class RADIUSClient:
     """Sends Access-Requests to one RADIUS service."""
 
-    def __init__(self, service: ServiceSettings) -> None:
         if not service.endpoints:
             raise InvalidInputExternalError(
                 "A RADIUS service names no servers", provider=PROVIDER_NAME
@@ -406,14 +367,6 @@ class RADIUSClient:
             )
         self.service = service
 
-    def authenticate(
-        self,
-        username: str,
-        password: str,
-        *,
-        state: Optional[bytes] = None,
-        endpoint_index: Optional[int] = None,
-    ) -> Reply:
         """The verified reply of the first server that gives one. A
         challenge's answer (``state``) goes only to ``endpoint_index``, the
         server that issued it.
@@ -462,7 +415,6 @@ class RADIUSClient:
             f"No RADIUS server answered: {detail}", provider=PROVIDER_NAME
         )
 
-    def _over_udp(self, endpoint: Endpoint, request: Request) -> Packet:
         family, kind, proto, _, address = _resolve(endpoint, socket.SOCK_DGRAM)
         discarded: List[str] = []
         with socket.socket(family, kind, proto) as sock:
@@ -492,7 +444,6 @@ class RADIUSClient:
                         discarded.append(str(reason))
         raise _Unanswered(f"{endpoint.label()} timed out", discarded)
 
-    def _over_tls(self, endpoint: Endpoint, request: Request) -> Packet:
         tls = self.service.tls
         if tls is None:
             raise _Unanswered(f"{endpoint.label()}: RadSec needs certificates")
@@ -523,13 +474,6 @@ class RADIUSClient:
         except OSError as exc:
             raise _Unanswered(f"{endpoint.label()} is unreachable ({exc})") from exc
 
-    def _read_tls_reply(
-        self,
-        endpoint: Endpoint,
-        stream: ssl.SSLSocket,
-        request: Request,
-        deadline: float,
-    ) -> Packet:
         """Packets off the stream until one verifies. TCP keeps the
         framing: each packet's Length says where the next begins."""
         header = self._read_exactly(stream, 4, deadline)
@@ -549,8 +493,6 @@ class RADIUSClient:
                 f"{endpoint.label()} sent no verifiable reply", [str(reason)]
             ) from None
 
-    @staticmethod
-    def _read_exactly(stream: ssl.SSLSocket, count: int, deadline: float) -> bytes:
         chunks = bytearray()
         while len(chunks) < count:
             remaining = deadline - time.monotonic()

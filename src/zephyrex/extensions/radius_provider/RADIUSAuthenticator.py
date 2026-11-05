@@ -50,8 +50,6 @@ TUNNEL_TYPE_VLAN = "VLAN"
 TUNNEL_MEDIUM_IEEE_802 = "IEEE-802"
 
 
-@dataclass(frozen=True)
-class Decision:
     accepted: bool
     attributes: Tuple[Tuple[str, ReplyValue], ...] = ()
 
@@ -59,9 +57,6 @@ class Decision:
 REJECT = Decision(accepted=False)
 
 
-def policy_attributes(
-    policy: Optional[RadiusTeamPolicyModel],
-) -> Tuple[Tuple[str, ReplyValue], ...]:
     if policy is None:
         return ()
     attributes: List[Tuple[str, ReplyValue]] = []
@@ -78,7 +73,6 @@ def policy_attributes(
     return tuple(attributes)
 
 
-class PAPAuthenticator:
     """Decides Access-Requests carrying a User-Name and User-Password."""
 
     def __init__(self, model_registry: Any) -> None:
@@ -89,9 +83,6 @@ class PAPAuthenticator:
     def _base(self) -> Any:
         return self.model_registry.DB.manager.Base
 
-    def decide(
-        self, client: RadiusClientModel, user_name: str, password: str, source: str
-    ) -> Decision:
         identifier = UserManager._normalize_identifier(user_name)
         actor = f"{client.id}:{identifier}"
         if self.lockouts.is_locked(actor, LOCKOUT_FLOW):
@@ -102,7 +93,6 @@ class PAPAuthenticator:
         if user is None or user.id is None:
             # Spend a password check's time, as the web login does, so an
             # unknown name is not told apart from a wrong password.
-            bcrypt.checkpw(password.encode(), _DUMMY_BCRYPT_HASH)
             self.lockouts.record_failure(actor, LOCKOUT_FLOW)
             return REJECT
         user_id: str = user.id
@@ -119,7 +109,6 @@ class PAPAuthenticator:
             self._record_failure(user_id, actor, source)
             return REJECT
 
-        verifier = UserManager(model_registry=self.model_registry, requester_id=user_id)
         if not verifier.verify_password(user_id, password):
             self._record_failure(user_id, actor, source)
             return REJECT
@@ -140,15 +129,12 @@ class PAPAuthenticator:
             accepted=True, attributes=policy_attributes(policies.for_teams(teams))
         )
 
-    def _user(self, identifier: str) -> Optional[UserModel]:
         """The one undeleted account with this email or username."""
         User = UserModel.DB(self._base)
         users: List[UserModel] = User.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 or_(User.email == identifier, User.username == identifier),
-                User.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=UserModel,
@@ -161,16 +147,13 @@ class PAPAuthenticator:
         if record is not None:
             record(user_id, source, self.model_registry)
 
-    def _active_team_ids(self, user_id: str) -> List[str]:
         """Teams the user is an enabled, unexpired member of."""
         now = datetime.now(timezone.utc)
         UserTeam = UserTeamModel.DB(self._base)
         memberships: List[UserTeamModel] = UserTeam.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             user_id=user_id,
             enabled=True,
-            filters=[UserTeam.deleted_at.is_(None)],
             return_type="dto",
             override_dto=UserTeamModel,
         )

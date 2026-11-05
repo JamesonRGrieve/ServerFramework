@@ -12,7 +12,6 @@ from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Auth_Merge(AbstractStaticExtension):
     name: ClassVar[str] = "auth_merge"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (
@@ -25,8 +24,6 @@ class EXT_Auth_Merge(AbstractStaticExtension):
     _abilities: ClassVar[Set[str]] = {"user_merge"}
     _providers: ClassVar[List] = []
 
-    @classmethod
-    def on_initialize(cls) -> bool:
         from zephyrex.extensions.auth_merge import (  # noqa: F401
             BLL_Auth_Merge,
         )

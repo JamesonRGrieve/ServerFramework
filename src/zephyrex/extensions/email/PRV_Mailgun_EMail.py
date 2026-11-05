@@ -40,7 +40,6 @@ except ImportError:  # pragma: no cover - optional driver
     _requests_available = False
 
 
-class MailgunProvider(AbstractEmailProvider):
     """Mailgun email provider using the hosted HTTP API (send-only)."""
 
     name: ClassVar[str] = "mailgun"
@@ -112,8 +111,6 @@ class MailgunProvider(AbstractEmailProvider):
             return False
         return True
 
-    @classmethod
-    def health_check(cls) -> HealthReport:
         api_key = cls.setting(None, "api_key")
         domain = cls.setting(None, "domain")
         if not api_key or not domain:
@@ -138,7 +135,6 @@ class MailgunProvider(AbstractEmailProvider):
                     HealthStatus.DEGRADED, detail=f"stats status {status}"
                 )
             return HealthReport(HealthStatus.DOWN, detail=f"stats status {status}")
-        except Exception as exc:  # noqa: BLE001 — defensive
             return HealthReport(HealthStatus.DOWN, detail=f"network error: {exc}")
 
     @classmethod
@@ -166,17 +162,6 @@ class MailgunProvider(AbstractEmailProvider):
             logger.error(f"Failed to bond Mailgun instance: {e}")
             return None
 
-    @classmethod
-    @ability(name="email_send")
-    async def send_email(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        recipient: str,
-        subject: str,
-        body: str,
-        attachments: Optional[List[str]] = None,
-        importance: str = "normal",
-    ) -> str:
         """Send an email via Mailgun's /messages REST API."""
         validation_error = cls._validate_send_inputs(
             recipient, subject, body, attachments
@@ -233,14 +218,12 @@ class MailgunProvider(AbstractEmailProvider):
                 logger.debug(f"Mailgun: email sent successfully to {recipient}")
                 return f"Email sent successfully to {recipient}"
             return f"Failed to send email: {response.status_code}: {response.text}"
-        except Exception as e:  # noqa: BLE001
             logger.error(f"Error sending Mailgun email: {e}")
             return f"Failed to send email: {e}"
         finally:
             for fh in open_files:
                 try:
                     fh.close()
-                except Exception:
                     pass
 
     @staticmethod

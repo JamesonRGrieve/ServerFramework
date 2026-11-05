@@ -22,7 +22,6 @@ from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Logging import logger
 
 
-class EXT_OAuthConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "oauth_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -54,8 +53,6 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         "oauth_access_token",
     }
 
-    @classmethod
-    def on_initialize(cls) -> bool:
         """Provider tokens and PKCE verifiers are stored encrypted: without
         an encryption key the extension refuses to run."""
         from zephyrex.lib.SecretEncryption import (
@@ -75,8 +72,6 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         register_merge_participation()
         return True
 
-    @classmethod
-    def validate_config(cls) -> List[str]:
         from zephyrex.lib.SecretEncryption import (
             MissingFernetKeyError,
             assert_encryption_available,
@@ -88,9 +83,6 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
             return [str(exc)]
         return []
 
-    @classmethod
-    @ability("list_oauth_providers")
-    async def list_oauth_providers(cls) -> List[Dict[str, Any]]:
         """The providers users can sign in with: the name to pass as
         ``provider``, the provider, its display name and kind."""
         from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
@@ -98,13 +90,9 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         )
         from zephyrex.lib.Environment import env
 
-        manager = cls.as_requester(OAuthConsumerManager, env("ROOT_ID"))
         listed = manager.providers_list()
         return [entry.model_dump() for entry in listed.providers]
 
-    @classmethod
-    @ability("list_oauth_identities")
-    async def list_oauth_identities(cls, requester_id: str) -> List[Dict[str, Any]]:
         """The requester's identities at providers (no tokens)."""
         from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
             OAuthIdentityManager,
@@ -117,11 +105,6 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
             for identity in manager.list() or []
         ]
 
-    @classmethod
-    @ability("oauth_access_token")
-    async def oauth_access_token(
-        cls, requester_id: str, identity_id: str
-    ) -> Dict[str, Any]:
         """A current access token at the provider for one of the
         requester's identities, refreshed when it lapsed."""
         from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
@@ -134,13 +117,6 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         return token.model_dump(mode="json")
 
 
-async def delegated_access_token(
-    user_id: str,
-    identity_provider: str,
-    required_scope: str,
-    service: str,
-    model_registry: Any,
-) -> str:
     """A current access token at ``identity_provider`` (e.g. ``google``)
     for ``user_id``, from the most recently used of their linked identities
     there whose sign-in granted ``required_scope``: for extensions reaching a

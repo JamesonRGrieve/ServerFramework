@@ -14,7 +14,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 
 
-class AclRbacExtension(AbstractStaticExtension):
     name: ClassVar[str] = "acl_rbac"
     description: ClassVar[str] = (
         "Per-record ACL with the canonical 6-verb shape (Scope #5)"

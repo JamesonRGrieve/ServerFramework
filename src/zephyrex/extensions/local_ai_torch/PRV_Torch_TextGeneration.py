@@ -42,14 +42,6 @@ def end_of_text_ids(model: Any, tokenizer: Any) -> Set[int]:
     return {i for i in ids if isinstance(i, int)}
 
 
-def generate(
-    text_model: TextModel,
-    prompt: str,
-    max_new_tokens: int,
-    temperature: Optional[float],
-    seconds: float,
-    templated: bool,
-) -> Generated:
     """``prompt`` continued by at most ``max_new_tokens`` tokens, for at
     most ``seconds``; greedy at temperature 0, the model's own sampling
     defaults when no temperature is given. A ``templated`` prompt already
@@ -86,7 +78,6 @@ def generate(
     )
 
 
-class PRV_Torch_TextGeneration(AbstractTorchProvider):
     name: ClassVar[str] = "torch_text_generation"
     friendly_name: ClassVar[str] = "PyTorch text model"
     description: ClassVar[str] = "Chat and text completion with a transformers model"

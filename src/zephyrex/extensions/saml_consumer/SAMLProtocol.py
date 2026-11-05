@@ -95,7 +95,6 @@ _SSO_SERVICE = f"{{{NS_METADATA}}}SingleSignOnService"
 _LONG_FRACTION = re.compile(r"(\.\d{6})\d+")
 
 
-class SAMLResponseRefused(AuthExternalError):
     """The IdP's response was not accepted. ``reason`` is one of a fixed set
     of words (``bad_signature``, ``wrapped``, ``audience``, ``expired``,
     ``unsolicited``, ``in_response_to``, ``replayed``, ...), safe to show;
@@ -112,7 +111,6 @@ def _invalid(message: str) -> InvalidInputExternalError:
     return InvalidInputExternalError(message, provider="saml")
 
 
-def parse_xml(text: str, what: str) -> Element:
     """``text`` parsed with DTDs, entities and external references refused."""
     try:
         root: Element = fromstring(text, forbid_dtd=True)
@@ -121,7 +119,6 @@ def parse_xml(text: str, what: str) -> Element:
     return root
 
 
-def parse_saml_time(value: Optional[str]) -> Optional[datetime]:
     """An ``xs:dateTime`` as an aware UTC datetime; None when absent."""
     if not value:
         return None
@@ -134,7 +131,6 @@ def parse_saml_time(value: Optional[str]) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
-def pem_certificate(text: str) -> str:
     """A certificate as PEM, from PEM or the bare base64 metadata carries."""
     body = text.strip()
     if "-----BEGIN CERTIFICATE-----" not in body:
@@ -156,7 +152,6 @@ def _wrap(text: str, width: int = 64) -> List[str]:
     return [text[i : i + width] for i in range(0, len(text), width)]
 
 
-def check_key_pair(private_key_pem: str, certificate_pem: str) -> None:
     """The SP key is an RSA key, and the certificate is for it."""
     try:
         key = serialization.load_pem_private_key(
@@ -182,15 +177,12 @@ def check_key_pair(private_key_pem: str, certificate_pem: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class IdPMetadata:
     entity_id: str
     sso_redirect_url: str
     signing_certificates: Tuple[str, ...]
     wants_signed_requests: bool
 
 
-def parse_idp_metadata(xml: str) -> IdPMetadata:
     """The one SAML 2.0 identity provider ``xml`` describes: an
     EntityDescriptor, or an EntitiesDescriptor holding exactly one IdP."""
     if len(xml.encode()) > MAX_METADATA_BYTES:
@@ -251,8 +243,6 @@ def parse_idp_metadata(xml: str) -> IdPMetadata:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class AssertedIdentity:
     issuer: str
     name_id: str
     name_id_format: Optional[str]
@@ -266,7 +256,6 @@ class AssertedIdentity:
     def is_transient(self) -> bool:
         return self.name_id_format == NAMEID_FORMAT_TRANSIENT
 
-    def attribute(self, names: Sequence[str]) -> Optional[str]:
         """The first value of the first of ``names`` (a Name or FriendlyName,
         matched without regard to case) the assertion carries."""
         lowered = {key.lower(): values for key, values in self.attributes.items()}
@@ -276,7 +265,6 @@ class AssertedIdentity:
                 return values[0]
         return None
 
-    def email(self, configured_attribute: Optional[str]) -> Optional[str]:
         if configured_attribute:
             return self.attribute([configured_attribute])
         if self.name_id_format == NAMEID_FORMAT_EMAILADDRESS:
@@ -318,14 +306,10 @@ DISPLAY_NAME_ATTRIBUTES = (
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class AuthnRequestRedirect:
     request_id: str
     location: str
 
 
-@dataclass(frozen=True)
-class ServiceProvider:
     """This server as the SP of one IdP. ``private_key_pem`` and
     ``certificate_pem`` (both or neither) sign AuthnRequests and decrypt
     encrypted assertions."""
@@ -348,8 +332,6 @@ class ServiceProvider:
     def signs_requests(self) -> bool:
         return bool(self.private_key_pem and self.certificate_pem)
 
-    @contextmanager
-    def client(self, allow_unsolicited: bool = False) -> Iterator[Saml2Client]:
         """A pysaml2 client for this SP. xmlsec1 reads the key from a file,
         so the key lives in a private temporary directory for the call."""
         with tempfile.TemporaryDirectory(prefix="saml_sp_") as directory:
@@ -401,7 +383,6 @@ class ServiceProvider:
         with self.client() as client:
             return str(entity_descriptor(client.config))
 
-    def authn_request(self, relay_state: str = "") -> AuthnRequestRedirect:
         """An AuthnRequest over HTTP-Redirect: its ID, to hold until the
         response, and the IdP URL to send the browser to. Signed when the
         SP has a key."""
@@ -423,9 +404,6 @@ class ServiceProvider:
         location = dict(info["headers"])["Location"]
         return AuthnRequestRedirect(request_id=str(request_id), location=str(location))
 
-    def validate(
-        self, saml_response: str, expected_request_id: Optional[str]
-    ) -> AssertedIdentity:
         """What the IdP's ``SAMLResponse`` (the HTTP-POST binding's base64
         value) asserts, once every check in the module doc passes.
         ``expected_request_id`` is the AuthnRequest this browser has
@@ -459,9 +437,6 @@ class ServiceProvider:
             )
         return asserted_identity(verified, assertion, idp.entity_id, in_response_to)
 
-    def verify_signatures(
-        self, saml_response: str, in_response_to: Optional[str]
-    ) -> Any:
         """pysaml2's verdict: the schema, the signatures (each one the IdP is
         configured to make, and at least one) and its own profile checks;
         an encrypted assertion comes back decrypted."""
@@ -477,7 +452,6 @@ class ServiceProvider:
             raise SAMLResponseRefused("in_response_to", repr(exc)) from exc
         except (SAMLError, ValueError, AttributeError, TypeError) as exc:
             raise SAMLResponseRefused("invalid", repr(exc)) from exc
-        except Exception as exc:
             # pysaml2 raises bare Exception for some profile failures
             # (audience, unknown conditions); each is a refusal.
             raise SAMLResponseRefused("invalid", repr(exc)) from exc
@@ -486,7 +460,6 @@ class ServiceProvider:
         return verified
 
 
-def decode_response(saml_response: str) -> str:
     if len(saml_response) > MAX_RESPONSE_BYTES:
         raise SAMLResponseRefused("malformed", "SAMLResponse too large")
     try:
@@ -502,7 +475,6 @@ def decode_response(saml_response: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def check_shape(root: Element, decrypted: bool = False) -> Element:
     """The single assertion, after refusing any document shaped the way
     signature-wrapping attacks need: a second assertion (or one moved out
     of place), a duplicated ID, or a signature anywhere but directly in the
@@ -559,9 +531,6 @@ def check_shape(root: Element, decrypted: bool = False) -> Element:
     return assertion
 
 
-def check_solicitation(
-    root: Element, expected_request_id: Optional[str], allow_unsolicited: bool
-) -> Optional[str]:
     """The request this response answers: the outstanding one, or None for
     an unsolicited response the IdP may send."""
     in_response_to = root.get("InResponseTo")
@@ -579,12 +548,10 @@ def check_solicitation(
     return in_response_to
 
 
-def _issuer(element: Element) -> Optional[str]:
     issuer = element.find(_ISSUER)
     return (issuer.text or "").strip() if issuer is not None else None
 
 
-def check_response(root: Element, acs_url: str, idp_entity_id: str) -> None:
     if root.get("Version") != "2.0":
         raise SAMLResponseRefused("malformed", f"Version {root.get('Version')!r}")
     if root.get("Destination") != acs_url:
@@ -601,12 +568,6 @@ def check_response(root: Element, acs_url: str, idp_entity_id: str) -> None:
         )
 
 
-def check_assertion(
-    assertion: Element,
-    sp: ServiceProvider,
-    idp_entity_id: str,
-    in_response_to: Optional[str],
-) -> None:
     """The Web SSO profile's rules for the assertion itself."""
     now = datetime.now(timezone.utc)
     skew = timedelta(seconds=CLOCK_SKEW_SECONDS)
@@ -651,7 +612,6 @@ def check_assertion(
         _check_window(item, now, skew)
 
 
-def _check_window(element: Element, now: datetime, skew: timedelta) -> None:
     not_before = parse_saml_time(element.get("NotBefore"))
     not_on_or_after = parse_saml_time(element.get("NotOnOrAfter"))
     if not_before is not None and now + skew < not_before:
@@ -664,9 +624,6 @@ def _check_window(element: Element, now: datetime, skew: timedelta) -> None:
         )
 
 
-def asserted_identity(
-    verified: Any, assertion: Element, issuer: str, in_response_to: Optional[str]
-) -> AssertedIdentity:
     """The subject and attributes of the verified assertion (pysaml2's
     parsed copy, whose signature it checked), with the latest
     NotOnOrAfter that bounds it, to remember its ID until then."""

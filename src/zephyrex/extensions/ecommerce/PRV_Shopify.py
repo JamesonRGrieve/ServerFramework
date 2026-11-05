@@ -60,7 +60,6 @@ def short(global_id: str) -> str:
     return global_id.rsplit("/", 1)[-1]
 
 
-def shopify_status(node: Mapping[str, Any]) -> str:
     if node.get("cancelledAt"):
         return "cancelled"
     financial = node.get("displayFinancialStatus")
@@ -74,7 +73,6 @@ def shopify_status(node: Mapping[str, Any]) -> str:
     return "processing"
 
 
-def shopify_order(node: Mapping[str, Any]) -> Dict[str, Any]:
     money = (node.get("totalPriceSet") or {}).get("shopMoney") or {}
     return order(
         short(node["id"]),
@@ -100,7 +98,6 @@ def shopify_order(node: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
 
-class PRV_Shopify_ECommerce(AbstractEcommerceProvider):
     name: ClassVar[str] = "shopify"
     friendly_name: ClassVar[str] = "Shopify"
     description: ClassVar[str] = "A Shopify store"

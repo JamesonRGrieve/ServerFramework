@@ -51,7 +51,6 @@ class RegistryDiff:
     def has_changes(self) -> bool:
         return bool(self.added or self.removed or self.changed_version)
 
-    def summary(self) -> str:
         parts = []
         if self.added:
             parts.append(f"added={self.added}")
@@ -69,9 +68,6 @@ class RegistryDiff:
         return "; ".join(parts)
 
 
-def discover_on_disk_versions(
-    extensions_root: Optional[str] = None,
-) -> Dict[str, str]:
     """Walk the extensions root and return ``{name: version}``.
 
     Versions come from ``manifest.toml`` when present. When absent, the
@@ -101,7 +97,6 @@ def discover_on_disk_versions(
                 m: ExtensionManifest = load_manifest(manifest_path)
                 out[m.name] = m.version
                 continue
-            except Exception as e:
                 logger.warning(
                     f"manifest.toml at {manifest_path} unreadable, falling back: {e}"
                 )
@@ -129,12 +124,6 @@ def compute_diff(
     return diff
 
 
-def rebuild_registry(
-    previous_registry: "ExtensionRegistry",
-    *,
-    extensions_csv: Optional[str] = None,
-    run_migrations: bool = True,
-) -> Tuple["ExtensionRegistry", RegistryDiff]:
     """Rebuild an ``ExtensionRegistry`` from the current on-disk state.
 
     Args:

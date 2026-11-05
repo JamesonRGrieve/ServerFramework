@@ -173,7 +173,6 @@ def json_size(value: Any) -> int:
     return len(json.dumps(jsonable_encoder(value), default=str))
 
 
-def check_inputs(inputs: Any) -> Dict[str, Any]:
     """A run's inputs: an object of variables, each named as an identifier,
     within the size limit."""
     if inputs is None:
@@ -200,7 +199,6 @@ def _identifier(name: Optional[str], what: str) -> None:
         raise _invalid(f"{what} is an identifier other than {END!r}, not {name!r}")
 
 
-def check_step(step: Dict[str, Any]) -> None:
     """``step``'s fields are what its kind needs (422 otherwise): the parts
     of a step that can be checked without reading anything."""
     kind = step.get("kind")
@@ -374,7 +372,6 @@ class RunRequest(RouteModel):
     )
 
 
-class ChainManager(AbstractBLLManager, RouterMixin):
     _model = ChainModel
 
     prefix: ClassVar[Optional[str]] = "/v1/chain"
@@ -497,7 +494,6 @@ class ChainStepModel(
         kind: Optional[StringSearchModel] = None
 
 
-class ChainStepManager(AbstractBLLManager, RouterMixin):
     _model = ChainStepModel
 
     prefix: ClassVar[Optional[str]] = "/v1/chain-step"
@@ -509,7 +505,6 @@ class ChainStepManager(AbstractBLLManager, RouterMixin):
         steps = self.list(chain_id=chain_id)
         return sorted(steps, key=lambda s: (s.position, str(s.created_at), s.id))
 
-    def _references(self, step: Dict[str, Any]) -> None:
         """The step's prompt and ability, read as the requester; an ability
         no chain may call is refused."""
         if step.get("kind") == "prompt":
@@ -567,7 +562,6 @@ class CancelRequest(RouteModel):
     )
 
 
-class ChainRunManager(AbstractBLLManager, RouterMixin):
     _model = ChainRunModel
 
     prefix: ClassVar[Optional[str]] = "/v1/chain-run"

@@ -15,7 +15,6 @@ DEFAULT_BASE_URL = "https://codeberg.org"
 API_PATH = "/api/v1"
 
 
-class PRV_Forgejo_Source(GitHubStyleProvider):
     name: ClassVar[str] = "forgejo"
     friendly_name: ClassVar[str] = "Forgejo"
     description: ClassVar[str] = "Forgejo or Gitea (Codeberg by default)"

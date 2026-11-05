@@ -66,7 +66,6 @@ _MERGE_CONSENT_TTL_SECONDS = 600
 _MERGE_CONSENT_AUD = "auth.user_merge.consent"
 
 
-def _mint_merge_consent_token(*, target_user_id: str, initiating_user_id: str) -> str:
     """Mint a single-use JWT proving the target consents to be merged
     into the initiating user. Caller is responsible for verifying the
     target's own session before calling this helper."""
@@ -78,9 +77,6 @@ def _mint_merge_consent_token(*, target_user_id: str, initiating_user_id: str) -
     )
 
 
-def _verify_merge_consent_token(
-    token: str, *, target_user_id: str, initiating_user_id: str
-) -> None:
     """Validate ``token`` and burn its ``jti``. Raises HTTPException 403
     on any failure (forged signature, wrong subject, expired, replayed)."""
     try:
@@ -105,7 +101,6 @@ def _verify_merge_consent_token(
 # ---------------------------------------------------------------------------
 
 
-class MergeContext(BaseModel):
     """Payload passed to every registered merge handler."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -140,7 +135,6 @@ def unregister_merge_handler(name: str) -> None:
     _HANDLERS.pop(name, None)
 
 
-def make_merge_registrar(name: str, handler: MergeHandler) -> Callable[[], None]:
     """Return a no-arg callable that registers *handler* under *name*.
 
     This is a convenience factory so extensions that participate in user-merge
@@ -167,9 +161,6 @@ def list_merge_handlers() -> List[str]:
     return sorted(_HANDLERS.keys())
 
 
-def _run_merge_handlers(
-    ctx: MergeContext, loaded_extensions: Collection[str]
-) -> Dict[str, str]:
     """Invoke the handler of every extension in ``loaded_extensions`` with
     ``ctx`` and return per-handler error strings (empty if every handler
     succeeded). The handler table is process-global; a handler whose
@@ -180,7 +171,6 @@ def _run_merge_handlers(
             continue
         try:
             handler(ctx)
-        except Exception as exc:  # pragma: no cover — defensive
             logger.warning(f"Merge handler {name!r} raised: {exc}")
             errors[name] = str(exc)
     return errors
@@ -218,21 +208,17 @@ class UserMergeModel(
 
     table_comment: ClassVar[str] = "Audit record of user-account consolidation events"
 
-    class Create(BaseModel):
         initiating_user_id: str
         target_user_id: str
 
-    class Update(BaseModel):
         completed_at: Optional[datetime] = None
         handler_errors: Optional[str] = None
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         initiating_user_id: Optional[StringSearchModel] = None
         target_user_id: Optional[StringSearchModel] = None
         completed_at: Optional[DateSearchModel] = None
 
 
-class UserMergeRequest(BaseModel):
     initiating_user_id: str = Field(..., description="The surviving user (data-owner)")
     target_user_id: str = Field(
         ..., description="The user being merged in and deactivated"
@@ -247,13 +233,11 @@ class UserMergeRequest(BaseModel):
     )
 
 
-class UserMergeResponse(BaseModel):
     message: str
     merge_id: str
     handler_errors: str = ""
 
 
-class UserMergeConsentRequest(BaseModel):
     initiating_user_id: str = Field(
         ...,
         description=(
@@ -264,12 +248,10 @@ class UserMergeConsentRequest(BaseModel):
     )
 
 
-class UserMergeConsentResponse(BaseModel):
     consent_token: str
     expires_in_seconds: int
 
 
-class UserMergeManager(AbstractBLLManager, RouterMixin):
     _model = UserMergeModel
     prefix: ClassVar[Optional[str]] = "/v1/auth/user-merge"
     tags: ClassVar[Optional[List[str]]] = ["User Merge"]
@@ -282,7 +264,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         RouteType.SEARCH,
     ]
 
-    def create_validation(self, entity) -> None:
         """Refuse direct CREATE — audit rows are minted by ``merge_users``."""
         from zephyrex.database.StaticPermissions import is_root_id
 
@@ -293,12 +274,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
                 "use POST /v1/auth/user-merge/merge",
             )
 
-    def _assert_can_merge(
-        self,
-        initiating_user_id: str,
-        target_user_id: str,
-        consent_token: Optional[str],
-    ) -> None:
         """Authorization for a merge call.
 
         - ROOT_ID may merge anyone (operator path; bypasses target consent).
@@ -330,7 +305,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
             initiating_user_id=initiating_user_id,
         )
 
-    def _validate(self, initiating_user_id: str, target_user_id: str) -> None:
         if initiating_user_id == target_user_id:
             raise HTTPException(
                 status_code=400, detail="Cannot merge a user with themselves"
@@ -342,7 +316,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         ):
             if (
                 UserDB.get(
-                    requester_id=env("ROOT_ID"),
                     model_registry=self.model_registry,
                     id=user_id,
                     return_type="dto",
@@ -354,12 +327,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
                     status_code=404, detail=f"{role} user not found: {user_id}"
                 )
 
-    def merge_users(
-        self,
-        initiating_user_id: str,
-        target_user_id: str,
-        consent_token: Optional[str] = None,
-    ) -> Dict[str, str]:
         """Merge ``target_user_id`` into ``initiating_user_id``.
 
         Authorization: caller is the initiating user AND presents a
@@ -378,7 +345,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
 
         UserMergeDB = UserMergeModel.DB(self.model_registry.DB.manager.Base)
         merge = UserMergeDB.create(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=UserMergeModel,
@@ -389,7 +355,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         UserTeamDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
         target_memberships = (
             UserTeamDB.list(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 filters=[UserTeamDB.user_id == target_user_id],
                 return_type="dto",
@@ -401,7 +366,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
             m.team_id: m
             for m in (
                 UserTeamDB.list(
-                    requester_id=env("ROOT_ID"),
                     model_registry=self.model_registry,
                     filters=[UserTeamDB.user_id == initiating_user_id],
                     return_type="dto",
@@ -414,7 +378,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         # The target consented to the merge (their consent token), so the
         # server carries their memberships over, as root.
         ut_manager = UserTeamManager(
-            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
         for membership in target_memberships:
             if membership.team_id not in initiating_memberships:
@@ -430,7 +393,6 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         ctx = MergeContext(
             initiating_user_id=initiating_user_id,
             target_user_id=target_user_id,
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
         )
         handler_errors = _run_merge_handlers(
@@ -439,14 +401,12 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
 
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         UserDB.update(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=target_user_id,
             new_properties={"active": False},
         )
 
         UserMergeDB.update(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=merge.id,
             new_properties={

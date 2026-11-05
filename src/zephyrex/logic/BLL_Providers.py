@@ -29,7 +29,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_serializer, model_validator
 
 
-def _validate_name_min_length(instance, entity_label: str = "Name"):
     """Shared name-length validator for Create models."""
     if instance.name and len(instance.name) < 2:
         raise ValueError(f"{entity_label} must be at least 2 characters long")
@@ -58,12 +57,10 @@ from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 from zephyrex.logic.BLL_Extensions import AbilityModel, ExtensionModel
 
 
-class ManagerContractError(TypeError):
     """Raised by `validate_manager_constructors` when a manager violates the
     documented `model_registry`-first contract (Item 70)."""
 
 
-def _resolve_provider_name(provider_class: Any, *, warn_missing: bool = False) -> str:
     """Derive a canonical provider name from a provider class.
 
     Checks for an explicit ``name`` attribute first; falls back to stripping
@@ -82,8 +79,6 @@ def _resolve_provider_name(provider_class: Any, *, warn_missing: bool = False) -
     return name
 
 
-@dataclass(frozen=True)
-class _CallProvider:
     """Rotation step: call the rotated callable with this provider instance.
     The driver sends back the result or throws the raised exception into the
     step generator, where the rotation policy handles it."""
@@ -93,8 +88,6 @@ class _CallProvider:
     kwargs: Dict[str, Any]
 
 
-@dataclass(frozen=True)
-class _Wait:
     """Rotation step: back off for ``seconds`` before continuing."""
 
     seconds: float
@@ -103,7 +96,6 @@ class _Wait:
 RotationSteps = Generator[Union[_CallProvider, _Wait], Any, Any]
 
 
-def _drive_rotation(steps: RotationSteps, callable_func: Callable[..., Any]) -> Any:
     """Run rotation steps synchronously (``RotationManager.rotate``)."""
     try:
         step = next(steps)
@@ -116,7 +108,6 @@ def _drive_rotation(steps: RotationSteps, callable_func: Callable[..., Any]) -> 
                 result = callable_func(
                     step.provider_instance, *step.args, **step.kwargs
                 )
-            except Exception as exc:
                 step = steps.throw(exc)
             else:
                 step = steps.send(result)
@@ -124,9 +115,6 @@ def _drive_rotation(steps: RotationSteps, callable_func: Callable[..., Any]) -> 
         return done.value
 
 
-async def _adrive_rotation(
-    steps: RotationSteps, callable_func: Callable[..., Any]
-) -> Any:
     """Run rotation steps on the event loop (``RotationManager.arotate``).
 
     The callable's awaitable is awaited inside the attempt, so a failing
@@ -145,7 +133,6 @@ async def _adrive_rotation(
                 )
                 if inspect.isawaitable(result):
                     result = await result
-            except Exception as exc:
                 step = steps.throw(exc)
             else:
                 step = steps.send(result)
@@ -153,7 +140,6 @@ async def _adrive_rotation(
         return done.value
 
 
-def root_rotation_name(extension_name: str) -> str:
     """Canonical name of an extension's root rotation: each underscore-separated
     part PascalCased (``auth_mfa`` -> ``Root_Auth_Mfa``). The single source for
     the rotation seeder, the rotation/provider-instance link seeder and
@@ -173,7 +159,6 @@ def root_instance_name(provider_name: str) -> str:
     return f"Root_{stringcase.pascalcase(provider_name)}"
 
 
-def reads_environment_settings(provider_class: Any) -> bool:
     """Whether the provider takes any setting from the server's environment
     (a declared setting naming a variable, or a legacy ``_env``). Only such
     a provider gets a seeded ``Root_<Provider>``: that instance exists to
@@ -188,7 +173,6 @@ def reads_environment_settings(provider_class: Any) -> bool:
     )
 
 
-def _get_extension_registry(model_registry: Any) -> Any | None:
     """Return the ``ExtensionRegistry`` from *model_registry*, or ``None``
     when it is absent or empty.  Replaces the 3-line guard that was
     duplicated across every ``seed_data`` classmethod.
@@ -223,14 +207,11 @@ def _iter_extension_providers(
 _AUTH_COOLDOWNS: Dict[str, float] = {}
 
 
-def reset_auth_cooldowns() -> None:
     """Test helper: clear the in-process auth cooldown tracker."""
     _AUTH_COOLDOWNS.clear()
 
 
 # Item 51 — sticky-session routing primitives.
-@dataclass(frozen=True)
-class RoutingHint:
     """Per-call routing hint passed to `RotationManager.rotate`.
 
     Item 51: when `stickiness_key` is non-None, the rotation system pins
@@ -252,7 +233,6 @@ class RoutingHint:
 _STICKY_SESSIONS: Dict[Tuple[str, Optional[str]], Tuple[str, float]] = {}
 
 
-def _sticky_ttl_seconds() -> float:
     """Configurable TTL via env, default 600s."""
     raw = env("STICKY_SESSION_TTL_SECONDS")
     if not raw:
@@ -263,12 +243,10 @@ def _sticky_ttl_seconds() -> float:
         return 600.0
 
 
-def reset_sticky_sessions() -> None:
     """Test helper: clear the in-process sticky-session cache."""
     _STICKY_SESSIONS.clear()
 
 
-def _sticky_get(stickiness_key: str, ability: Optional[str]) -> Optional[str]:
     """Return the pinned provider_instance_id for `(stickiness_key, ability)`
     if present and not expired; otherwise None. Expired entries are evicted."""
     key = (stickiness_key, ability)
@@ -294,13 +272,11 @@ def _sticky_set(
     )
 
 
-def _sticky_invalidate(stickiness_key: str, ability: Optional[str]) -> None:
     """Drop the pin for `(stickiness_key, ability)` (e.g. on health failure
     or pinned-provider error)."""
     _STICKY_SESSIONS.pop((stickiness_key, ability), None)
 
 
-def validate_manager_constructors(*managers: type) -> None:
     """Walk each manager class's `__init__` signature and assert the first
     non-self parameter is named `model_registry`.
 
@@ -345,8 +321,6 @@ class ProviderModel(
     seed_creator_id: ClassVar[str] = env("SYSTEM_ID")
     seed_list: ClassVar[List[Dict[str, Any]]] = []
 
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Dynamically discover and return provider seed data."""
         try:
             logger.debug("Discovering providers for seeding...")
@@ -382,11 +356,9 @@ class ProviderModel(
             logger.debug(f"Total providers in seed data: {len(seed_data)}")
             return seed_data
 
-        except Exception as e:
             logger.error(f"Error discovering providers for seeding: {e}")
             return []
 
-    class Create(BaseModel):
         name: str
         friendly_name: Optional[str] | None = None
         agent_settings_json: Optional[str] | None = None
@@ -396,21 +368,16 @@ class ProviderModel(
         def validate_name_length(self):
             return _validate_name_min_length(self, "Provider name")
 
-    class Update(BaseModel):
         name: Optional[str] | None = None
         friendly_name: Optional[str] | None = None
         agent_settings_json: Optional[str] | None = None
         system: Optional[bool] | None = None
 
-    class Search(
-        ApplicationModel.Search, NameMixinModel.Search, UpdateMixinModel.Search
-    ):
         friendly_name: Optional[StringSearchModel] | None = None
         agent_settings_json: Optional[StringSearchModel] | None = None
         system: Optional[bool] | None = None
 
 
-class RootProviderSetting(BaseModel):
     """One environment setting a provider reads. A secret's value is never
     returned; ``set`` says whether it has one."""
 
@@ -420,14 +387,12 @@ class RootProviderSetting(BaseModel):
     value: Optional[str] = None
 
 
-class RootProviderHealth(BaseModel):
     """A live upstream check, from ``health_check`` (cached briefly)."""
 
     status: Literal["ok", "degraded", "down"]
     detail: str
 
 
-class RootProviderStatus(BaseModel):
     provider: str
     extension: str
     configured: bool
@@ -436,11 +401,9 @@ class RootProviderStatus(BaseModel):
     health: Optional[RootProviderHealth] = None
 
 
-class RootProviderStatusResponse(BaseModel):
     providers: List[RootProviderStatus]
 
 
-class InstanceSettingInfo(BaseModel):
     key: str
     description: str
     env: Optional[str] = Field(
@@ -456,13 +419,11 @@ class InstanceSettingInfo(BaseModel):
     )
 
 
-class ProviderSettingsCatalogue(BaseModel):
     provider_id: str
     provider: str
     settings: List[InstanceSettingInfo]
 
 
-class InstanceOwner(BaseModel):
     """Whose records a provider instance's work produces: the requester to
     write them as, and the user and team they belong to."""
 
@@ -471,21 +432,16 @@ class InstanceOwner(BaseModel):
     team_id: Optional[str] = None
 
 
-def instance_owner(model_registry: Any, provider_instance_id: str) -> InstanceOwner:
     """The owner of a provider instance (an account, a store): its user,
     else whoever created it, else root. Records an instance's work
     produces are written as this owner, so whoever can see the instance
     sees them; a root instance's stay root's."""
     instance = ProviderInstanceManager(
-        model_registry=model_registry, requester_id=env("ROOT_ID")
     ).get(id=provider_instance_id)
-    owner = instance.user_id or instance.created_by_user_id or env("ROOT_ID")
     return InstanceOwner(
-        requester_id=str(owner), user_id=instance.user_id, team_id=instance.team_id
     )
 
 
-def provider_class_named(model_registry: Any, name: str) -> Optional[Any]:
     """The loaded provider class called ``name``, among the attached app's
     extensions; None when no loaded extension has one."""
     extension_registry = getattr(model_registry, "extension_registry", None)
@@ -498,7 +454,6 @@ def provider_class_named(model_registry: Any, name: str) -> Optional[Any]:
     return None
 
 
-def _provider_env_settings(provider_cls: Any) -> Dict[str, bool]:
     """Each environment variable a provider reads, mapped to whether its value
     is a secret. A typed ``Settings`` model (Item 90) is authoritative: its
     ``SecretStr`` fields are secret. Otherwise the legacy ``_env`` dict names
@@ -536,11 +491,6 @@ def _provider_health(provider_cls: Any) -> RootProviderHealth:
     return RootProviderHealth(status=report.status.value, detail=report.detail)
 
 
-def root_provider_status(
-    extension_providers: Dict[str, List[Any]],
-    extension: Optional[str] = None,
-    health: bool = False,
-) -> RootProviderStatusResponse:
     """How each loaded provider's environment (root) configuration stands,
     optionally for one extension and with a live health check."""
     statuses = []
@@ -572,7 +522,6 @@ def root_provider_status(
     return RootProviderStatusResponse(providers=statuses)
 
 
-class ProviderManager(AbstractBLLManager, RouterMixin):
     _model = ProviderModel
 
     # RouterMixin configuration for testing
@@ -666,39 +615,30 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
             ],
         )
 
-    @property
-    def extensions(self) -> "ProviderExtensionManager":
         """Get the provider extension manager."""
         if self._extensions is None:
             # Import locally to avoid circular imports
             self._extensions = ProviderExtensionManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._extensions  # type: ignore[return-value]
 
-    @property
-    def instances(self) -> "ProviderInstanceManager":
         """Get the provider instance manager."""
         if self._instances is None:
             # Import locally to avoid circular imports
             self._instances = ProviderInstanceManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._instances  # type: ignore[return-value]
 
-    @property
-    def rotations(self) -> "RotationManager":
         """Get the rotation manager."""
         if self._rotations is None:
             # Import locally to avoid circular imports
             self._rotations = RotationManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
@@ -709,16 +649,12 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
     def list_runtime_providers():
         return ["OpenAI", "AGInYourPC"]
 
-    @staticmethod
-    def get_runtime_provider_options(provider_name):
         if provider_name == "OpenAI":
             return {"OPENAI_API_KEY": "", "OPENAI_MODEL": "gpt-4"}
         elif provider_name == "AGInYourPC":
             return {"AGINYOURPC_API_KEY": "", "AGINYOURPC_AI_MODEL": "local"}
         return {}
 
-    @classmethod
-    def static_list(cls, db_manager: DatabaseManager, **kwargs):
         """
         Static method to list rotations without requiring a manager instance.
         Used for extension root rotation lookup.
@@ -730,7 +666,6 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
 
         try:
             return cls.Model.DB(db_manager.Base).list(
-                requester_id=kwargs.get("created_by_user_id"),
                 db=session,
                 return_type="dto",
                 override_dto=cls.Model,
@@ -754,8 +689,6 @@ class ProviderExtensionModel(
     is_system_entity: ClassVar[bool] = True
     seed_creator_id: ClassVar[str] = env("SYSTEM_ID")
 
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Dynamically create provider-extension links based on discovered providers and extensions."""
         try:
             logger.debug("Creating provider-extension links for seeding...")
@@ -787,15 +720,12 @@ class ProviderExtensionModel(
             )
             return seed_data
 
-        except Exception as e:
             logger.error(f"Error creating provider-extension links: {e}")
             return []
 
-    class Create(BaseModel):
         provider_id: str
         extension_id: str
 
-    class Update(BaseModel):
         provider_id: Optional[str] | None = None
         extension_id: Optional[str] | None = None
 
@@ -807,7 +737,6 @@ class ProviderExtensionModel(
         extension_id: Optional[StringSearchModel] | None = None
 
 
-class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
     _model = ProviderExtensionModel
 
     # RouterMixin configuration
@@ -843,25 +772,20 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
         )
         self._ability = None
 
-    @property
-    def ability(self) -> "ProviderExtensionAbilityManager":
         """Get the provider extension ability manager."""
         if self._ability is None:
             # Import locally to avoid circular imports
             self._ability = ProviderExtensionAbilityManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._ability  # type: ignore[return-value]
 
-    def create_validation(self, entity):
         """Validate provider extension creation - check that provider and extension exist."""
         # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.provider_id:
             provider = ProviderModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_id,
             )
@@ -870,7 +794,6 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
 
         if entity.extension_id:
             extension = ExtensionModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.extension_id,
             )
@@ -892,20 +815,16 @@ class ProviderExtensionAbilityModel(
     is_system_entity: ClassVar[bool] = True
     seed_creator_id: ClassVar[str] = env("SYSTEM_ID")
 
-    class Create(BaseModel):
         provider_extension_id: str
         ability_id: str
 
-    class Update(BaseModel):
         provider_extension_id: Optional[str] | None = None
         ability_id: Optional[str] | None = None
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         provider_extension_id: Optional[StringSearchModel] | None = None
         ability_id: Optional[StringSearchModel] | None = None
 
 
-class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
     _model = ProviderExtensionAbilityModel
 
     # RouterMixin configuration
@@ -915,14 +834,12 @@ class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
     factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
     auth_dependency: ClassVar[Optional[str]] = "api_key_auth"
 
-    def create_validation(self, entity):
         """Validate provider extension ability creation - check that provider extension and ability exist."""
         # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.provider_extension_id:
             provider_extension = ProviderExtensionModel.DB(
                 self.model_registry.DB.manager.Base
             ).get(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_extension_id,
             )
@@ -933,7 +850,6 @@ class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
 
         if entity.ability_id:
             ability = AbilityModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.ability_id,
             )
@@ -996,8 +912,6 @@ class ProviderInstanceModel(
     is_system_entity: ClassVar[bool] = False
     seed_creator_id: ClassVar[str] = env("ROOT_ID")
 
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """The operator's ``Root_<Provider>`` instance of each loaded
         provider, root-scoped: it is the operator's, so it alone (with the
         system-scoped ones) defaults to the server's environment."""
@@ -1051,13 +965,11 @@ class ProviderInstanceModel(
             logger.debug(f"Total provider instances in seed data: {len(seed_data)}")
             return seed_data
 
-        except Exception as e:
             logger.error(f"Error discovering provider instances for seeding: {e}")
             return []
 
     # ``str | None``: inside a model body ``Optional`` is the model's nested
     # ``Optional`` class, not ``typing.Optional``.
-    def get_setting(self, key: str, default: str | None = None) -> str | None:
         """This instance's ``ProviderInstanceSetting`` value for ``key``, or
         ``default`` when the instance has no such setting.
 
@@ -1076,13 +988,11 @@ class ProviderInstanceModel(
         if registry is None:
             raise RuntimeError("No app registry attached to read provider settings")
         rows = ProviderInstanceSettingModel.DB(registry.DB.manager.Base).list(
-            requester_id=env("ROOT_ID"),
             model_registry=registry,
             return_type="dto",
             override_dto=ProviderInstanceSettingModel,
             provider_instance_id=self.id,
             key=key,
-            deleted_at=None,
         )
         from zephyrex.lib.SecretEncryption import decrypt_secret
 
@@ -1093,7 +1003,6 @@ class ProviderInstanceModel(
                 )
         return default
 
-    class Create(BaseModel):
         name: str
         provider_id: str
         model_name: Optional[str] | None = None
@@ -1110,7 +1019,6 @@ class ProviderInstanceModel(
         def validate_name_length(self):
             return _validate_name_min_length(self, "Provider instance name")
 
-    class Update(BaseModel):
         name: Optional[str] | None = None
         provider_id: Optional[str] | None = None
         model_name: Optional[str] | None = None
@@ -1144,7 +1052,6 @@ class ProviderInstanceModel(
 OPERATOR_SCOPES = frozenset({"root", "system"})
 
 
-class ProviderInstanceChildManager(AbstractBLLManager):
     """A row that belongs to one provider instance (its settings, its
     usage, its enabled abilities). Providers read these on the server's
     behalf as ROOT, so a row on an instance shapes what that instance does
@@ -1159,18 +1066,14 @@ class ProviderInstanceChildManager(AbstractBLLManager):
     - a row never moves to another instance (400).
     """
 
-    def _require_writable_instance(self, provider_instance_id: Optional[str]) -> None:
-        from zephyrex.database.StaticPermissions import user_can_edit
 
         if not provider_instance_id:
             raise HTTPException(
                 status_code=400, detail="provider_instance_id is required"
             )
-        requester_id = self.requester.id
         base = self.model_registry.DB.manager.Base
         instance_db = ProviderInstanceModel.DB(base)
         instance = instance_db.get(
-            requester_id=requester_id,
             model_registry=self.model_registry,
             id=provider_instance_id,
             return_type="dto",
@@ -1188,7 +1091,6 @@ class ProviderInstanceChildManager(AbstractBLLManager):
             )
         session = self.model_registry.DB.session()
         try:
-            editable = user_can_edit(
                 requester_id,
                 instance_db,
                 provider_instance_id,
@@ -1203,7 +1105,6 @@ class ProviderInstanceChildManager(AbstractBLLManager):
                 detail="Not authorized to change this provider instance",
             )
 
-    def _require_writable_row(self, id: str, moved_to: Optional[str] = None) -> Any:
         """The row ``id`` (404 when invisible), once its instance is one
         the requester may change and ``moved_to`` (if given) is that same
         instance."""
@@ -1223,12 +1124,10 @@ class ProviderInstanceChildManager(AbstractBLLManager):
         self._require_writable_row(id, kwargs.get("provider_instance_id"))
         return super().update(id, **kwargs)
 
-    def delete(self, id: str) -> None:
         self._require_writable_row(id)
         super().delete(id)
 
 
-class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
     _model = ProviderInstanceModel
 
     # RouterMixin configuration
@@ -1266,39 +1165,30 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
         self._setting = None
         self._ability = None
 
-    @property
-    def usage(self) -> "ProviderInstanceUsageManager":
         """Get the provider instance usage manager."""
         if self._usage is None:
             # Import locally to avoid circular imports
             self._usage = ProviderInstanceUsageManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._usage  # type: ignore[return-value]
 
-    @property
-    def setting(self) -> "ProviderInstanceSettingManager":
         """Get the provider instance setting manager."""
         if self._setting is None:
             # Import locally to avoid circular imports
             self._setting = ProviderInstanceSettingManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._setting  # type: ignore[return-value]
 
-    @property
-    def ability(self) -> "ProviderInstanceExtensionAbilityManager":
         """Get the provider instance extension ability manager."""
         if self._ability is None:
             # Import locally to avoid circular imports
             self._ability = ProviderInstanceExtensionAbilityManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
@@ -1308,7 +1198,6 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
     # Only the caller's own id may be claimed as an instance's user.
     _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
-    def _refuse_operator_scope(self, scope: Optional[str]) -> None:
         """An instance in the root or system scope speaks for the operator
         (an extension may trust what it vouches for), so only ROOT and
         SYSTEM may put one there."""
@@ -1320,17 +1209,14 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
                 detail=f"Only the operator may create {scope}-scoped instances",
             )
 
-    def update(self, id: str, **kwargs) -> Any:
         self._refuse_operator_scope(kwargs.get("scope"))
         return super().update(id, **kwargs)
 
-    def create_validation(self, entity):
         """Validate provider instance creation - check that provider exists."""
         self._refuse_operator_scope(entity.scope)
         # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.provider_id:
             provider = ProviderModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_id,
             )
@@ -1361,14 +1247,12 @@ class ProviderInstanceUsageModel(
     )
     permission_references: ClassVar[List[str]] = ["provider_instance"]
 
-    class Create(BaseModel):
         provider_instance_id: str
         key: Optional[str] | None = None
         value: Optional[int] | None = None
         user_id: Optional[str] | None = None
         team_id: Optional[str] | None = None
 
-    class Update(BaseModel):
         provider_instance_id: Optional[str] | None = None
         key: Optional[str] | None = None
         value: Optional[int] | None = None
@@ -1386,7 +1270,6 @@ class ProviderInstanceUsageModel(
         value: Optional[NumericalSearchModel] | None = None
 
 
-class ProviderInstanceUsageManager(ProviderInstanceChildManager, RouterMixin):
     """Usage is recorded by the server (as ROOT) against the user a call
     ran for; anyone else records it only on an instance they may change,
     and only as themselves."""
@@ -1429,7 +1312,6 @@ class ProviderInstanceSettingModel(
 
     is_system_entity: ClassVar[bool] = False
 
-    class Create(BaseModel):
         provider_instance_id: str
         key: str
         value: Optional[str] | None = None
@@ -1437,7 +1319,6 @@ class ProviderInstanceSettingModel(
         # key the provider declares secret.
         write_only: bool = False
 
-    class Update(BaseModel):
         provider_instance_id: Optional[str] | None = None
         key: Optional[str] | None = None
         value: Optional[str] | None = None
@@ -1452,7 +1333,6 @@ class ProviderInstanceSettingModel(
         value: Optional[StringSearchModel] | None = None
 
 
-class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
     _model = ProviderInstanceSettingModel
 
     # RouterMixin configuration
@@ -1462,7 +1342,6 @@ class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
     factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
     auth_dependency: ClassVar[Optional[str]] = "get_auth_user"
 
-    def create_validation(self, entity: Any) -> None:
         """A setting has a key, on an instance the requester may change."""
         if not entity.key:
             raise HTTPException(
@@ -1471,15 +1350,10 @@ class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
             )
         super().create_validation(entity)
 
-    def _declared_secret(
-        self, provider_instance_id: Optional[str], key: Optional[str]
-    ) -> bool:
         """Whether the instance's provider declares ``key`` a secret."""
         if not (provider_instance_id and key):
             return False
-        base, root_id = self.model_registry.DB.manager.Base, env("ROOT_ID")
         instance = ProviderInstanceModel.DB(base).get(
-            requester_id=root_id,
             model_registry=self.model_registry,
             id=provider_instance_id,
             return_type="dto",
@@ -1487,7 +1361,6 @@ class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
         )
         provider = (
             ProviderModel.DB(base).get(
-                requester_id=root_id,
                 model_registry=self.model_registry,
                 id=instance.provider_id,
                 return_type="dto",
@@ -1508,12 +1381,6 @@ class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
         except KeyError:
             return False
 
-    def _sealed(
-        self,
-        fields: Dict[str, Any],
-        provider_instance_id: Optional[str],
-        key: Optional[str],
-    ) -> Dict[str, Any]:
         """``fields`` with a secret's value encrypted and the row marked
         secret: when the provider declares the key secret, or the caller
         (or an earlier write) did."""
@@ -1529,7 +1396,6 @@ class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
             sealed["value"] = encrypt_secret(fields["value"])
         return sealed
 
-    def create(self, **kwargs: Any) -> Any:
         if isinstance(kwargs.get("entities"), list):
             kwargs["entities"] = [
                 self._sealed(
@@ -1546,7 +1412,6 @@ class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
             )
         )
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         existing = self.get(id=id)
         fields = {
             **kwargs,
@@ -1562,9 +1427,6 @@ class ProviderInstanceSettingManager(ProviderInstanceChildManager, RouterMixin):
         )
 
 
-class ProviderInstanceExtensionAbilityModel(
-    ApplicationModel, UpdateMixinModel, metaclass=ModelMeta
-):
     provider_instance_id: str
     provider_extension_ability_id: str
     state: bool = True
@@ -1576,13 +1438,11 @@ class ProviderInstanceExtensionAbilityModel(
     )
     permission_references: ClassVar[List[str]] = ["provider_instance"]
 
-    class Create(BaseModel):
         provider_instance_id: str
         provider_extension_ability_id: str
         state: bool = True
         forced: bool = False
 
-    class Update(BaseModel):
         provider_instance_id: Optional[str] | None = None
         provider_extension_ability_id: Optional[str] | None = None
         state: Optional[bool] | None = None
@@ -1598,17 +1458,12 @@ class ProviderInstanceExtensionAbilityModel(
         forced: Optional[bool] | None = None
 
 
-class ProviderInstanceExtensionAbilityManager(
-    ProviderInstanceChildManager, RouterMixin
-):
     _model = ProviderInstanceExtensionAbilityModel
 
-    def _require_visible_ability(self, ability_id: Optional[str]) -> None:
         """The ability enabled must be one the requester can see (404)."""
         if ability_id and not ProviderExtensionAbilityModel.DB(
             self.model_registry.DB.manager.Base
         ).exists(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=ability_id,
         ):
@@ -1616,11 +1471,9 @@ class ProviderInstanceExtensionAbilityManager(
                 status_code=404, detail="Provider extension ability not found"
             )
 
-    def create_validation(self, entity: Any) -> None:
         super().create_validation(entity)
         self._require_visible_ability(entity.provider_extension_ability_id)
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         self._require_visible_ability(kwargs.get("provider_extension_ability_id"))
         return super().update(id, **kwargs)
 
@@ -1650,8 +1503,6 @@ class RotationModel(
     is_system_entity: ClassVar[bool] = False
     seed_creator_id: ClassVar[str] = env("ROOT_ID")
 
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Create root rotations for each discovered extension."""
 
         try:
@@ -1691,7 +1542,6 @@ class RotationModel(
                             f"Added root rotation '{rotation_name}' for extension '{ext_name}'"
                         )
 
-                    except Exception as e:
                         logger.error(
                             f"Error creating root rotation for extension {ext_name}: {e}"
                         )
@@ -1703,11 +1553,9 @@ class RotationModel(
             logger.debug(f"Total root rotations in seed data: {len(seed_data)}")
             return seed_data
 
-        except Exception as e:
             logger.error(f"Error creating root rotations for seeding: {e}")
             return []
 
-    class Create(BaseModel):
         name: str
         description: Optional[str] | None = None
         user_id: Optional[str] | None = None
@@ -1717,7 +1565,6 @@ class RotationModel(
         def validate_name_length(self):
             return _validate_name_min_length(self, "Rotation name")
 
-    class Update(BaseModel):
         name: Optional[str] | None = None
         description: Optional[str] | None = None
         user_id: Optional[str] | None = None
@@ -1747,7 +1594,6 @@ def _safe_metric(fn, *args, **kwargs):
         logger.debug(f"telemetry call failed (ignored): {exc}")
 
 
-class RotationManager(AbstractBLLManager, RouterMixin):
     _model = RotationModel
 
     # RouterMixin configuration
@@ -1790,8 +1636,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         cls._idempotency_hits = 0
         cls._idempotency_misses = 0
 
-    @classmethod
-    def _cached_idempotency_get(cls, key: str) -> Tuple[bool, Any]:
         """Return ``(hit, value)``. On a hit emit the cache-hit counter;
         on a miss emit the cache-miss counter. Telemetry failures are
         swallowed via :func:`_safe_metric`."""
@@ -1801,7 +1645,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         if key in cls._idempotency_cache:
             cls._idempotency_hits += 1
             _safe_metric(metrics.counter, "idempotency_cache.hit")
-            return True, cls._idempotency_cache[key]
         cls._idempotency_misses += 1
         _safe_metric(metrics.counter, "idempotency_cache.miss")
         return False, None
@@ -1815,14 +1658,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
     def set_outbox_store(cls, store: Optional[Any]) -> None:
         cls._outbox_store = store
 
-    def __init__(
-        self,
-        model_registry: Optional[Any] | None = None,
-        requester_id: Optional[str] | None = None,
-        target_id: Optional[str] | None = None,
-        target_team_id: Optional[str] | None = None,
-        parent: Optional[Any] | None = None,
-    ) -> None:
         """Item 70 — `model_registry` first per the documented contract.
 
         Back-compat: if the first positional argument is a string we
@@ -1839,7 +1674,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             requester_id, model_registry = model_registry, None
         super().__init__(
             model_registry=model_registry,
-            requester_id=requester_id,
             target_id=target_id,
             target_team_id=target_team_id,
             parent=parent,
@@ -1854,12 +1688,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             self._rotation = self
         return self._rotation
 
-    @property
-    def provider_instances(self):
         if self._provider_instances is None:
             # Import locally to avoid circular imports
             self._provider_instances = RotationProviderInstanceManager(
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
@@ -1879,7 +1710,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         except ImportError:
             return None
 
-    def _resolve_rotation_policy(self, provider_instance):
         """Look up the per-provider `RotationPolicy` from the rotation
         policy module, falling back to defaults."""
         mod = self._load_rotation_policy_module()
@@ -1895,7 +1725,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return mod.default_rotation_policy()
         return None
 
-    def _resolve_degradation_policy(self, provider_instances):
         """Item 48 — walk attempted provider instances and pick the
         `DegradationPolicy` from the first one whose provider class
         declares one. Falls back to `default_degradation_policy()` (which
@@ -1914,7 +1743,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return mod.default_degradation_policy()
         return None
 
-    def _resolve_cost_model(self, provider_instance):
         """Item 84 — read the per-provider `CostModel` from the bonded
         provider class. Returns None when the provider does not declare
         one (the framework treats absence as "not metered" rather than
@@ -1924,7 +1752,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return None
         return getattr(provider_cls, "cost_model", None)
 
-    def _estimate_pre_call_cost(self, cost_model, args, kwargs) -> Optional[Decimal]:
         """Item 84 — best-effort pre-call cost estimate. Returns ``None``
         when the cost model declines (raises) — TokenBasedCostModel-style
         post-only models cannot pre-estimate, in which case the framework
@@ -1934,22 +1761,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return None
         try:
             cost = cost_model((args, kwargs), None)
-        except Exception:
             return None
         try:
             return Decimal(str(cost))
-        except Exception:
             return None
 
-    def _check_usd_quota(
-        self,
-        provider_instance: Any,
-        args: Any,
-        kwargs: Any,
-        *,
-        ability: Optional[str],
-        usd_quota: Optional[Any],
-    ) -> None:
         """Item 84 — per-tenant USD-cap pre-check. Refuse the call when
         the estimated cost would push the quota's `consumed_usd` past
         `limit_usd`. Skipped entirely when `usd_quota` is None or the row
@@ -1970,16 +1786,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             period=str(getattr(usd_quota, "period", "unknown")),
         )
 
-    def _charge_call(
-        self,
-        provider_instance: Any,
-        args: Any,
-        kwargs: Any,
-        result: Any,
-        *,
-        ability: Optional[str],
-        usd_quota: Optional[Any],
-    ) -> None:
         """Item 84 — account a successful provider call: the per-tenant
         cost counter, the cost audit log and the USD-cap true-up. Every
         successful call goes through here, the pinned attempt included.
@@ -2008,7 +1814,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 )
 
                 _emitter = get_cost_audit_emitter()
-            except Exception:  # noqa: BLE001
                 _emitter = None
             if _emitter is not None:
                 _emitter(
@@ -2032,14 +1837,12 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
                 with _FALLBACK_LOCK:
                     usd_quota.consumed_usd = usd_quota.consumed_usd + cost_dec
-        except Exception as cost_exc:
             logger.warning(
                 "cost_model raised for provider %s: %s",
                 getattr(provider_instance, "name", "unknown"),
                 cost_exc,
             )
 
-    def _emit_health_for(self, provider_instance) -> None:
         """Item 34 — best-effort: read the provider's health and emit
         ``provider_health_status{provider, status}`` as a gauge. Never
         raises; telemetry must not break a rotation."""
@@ -2058,10 +1861,8 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             status = getattr(report, "status", report)
             name = str(getattr(provider_instance, "name", "unknown"))
             _safe_metric(emit_provider_health_gauge, name, status)
-        except Exception as exc:  # noqa: BLE001
             logger.debug(f"health-gauge emit failed (ignored): {exc}")
 
-    def _tenant_id(self) -> str:
         """Item 84 — best-effort tenant identifier for cost metric labels."""
         requester = self.optional_requester
         team_id = getattr(requester, "team_id", None)
@@ -2082,7 +1883,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             delay_ms = max(0.0, delay_ms * factor)
         return _Wait(delay_ms / 1000.0)
 
-    def _sticky_pin_usable(self, rpi) -> bool:
         """Item 51: a pinned RPI is usable iff it is not under an active
         auth cooldown. Other health signals (DB unreachability, instance
         deletion) are surfaced when the pinned attempt actually runs."""
@@ -2091,15 +1891,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return True
         return time.monotonic() >= cooldown_expires
 
-    def _attempt_pinned(
-        self,
-        rpi,
-        args,
-        kwargs,
-        *,
-        ability: Optional[str],
-        usd_quota: Optional[Any],
-    ) -> Generator[_CallProvider, Any, Tuple[Any, bool]]:
         """Item 51: run the rotated callable against the pinned RPI exactly once.
 
         Returns ``(result, succeeded)`` so the caller can refresh the
@@ -2117,13 +1908,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 provider_instance = ProviderInstanceModel.DB(
                     self.model_registry.DB.Base
                 ).get(
-                    requester_id=self.requester.id,
                     model_registry=self.model_registry,
                     return_type="dto",
                     override_dto=ProviderInstanceModel,
                     id=rpi.provider_instance_id,
                 )
-        except Exception:
             return None, False
         if not provider_instance:
             return None, False
@@ -2132,7 +1921,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         )
         try:
             result = yield _CallProvider(provider_instance, args, kwargs)
-        except Exception as exc:
             policy_mod = self._load_rotation_policy_module()
             if policy_mod is not None:
                 InvalidInput = getattr(policy_mod, "InvalidInputExternalError", None)
@@ -2208,7 +1996,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         """
         return await _adrive_rotation(self._rotation_steps(args, kwargs), callable_func)
 
-    def _rotation_steps(self, args, kwargs) -> RotationSteps:
         """The rotation itself, as steps for a driver to execute (see
         :class:`_CallProvider` / :class:`_Wait`), so the sync and async entry
         points share one implementation of the policy."""
@@ -2256,7 +2043,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 rotation_provider_instances,
                 self.optional_requester,
                 ability=str(ability or "unknown"),
-                requester_id=(
                     self.optional_requester.id
                     if self.optional_requester is not None
                     else None
@@ -2264,7 +2050,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             )
         except HTTPException:
             raise
-        except Exception:  # pragma: no cover - defensive
             # Residency filter must never crash rotation; missing module or
             # resolver bugs degrade to "no filtering" rather than failure.
             pass
@@ -2343,7 +2128,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 ability=str(ability or "unknown"),
             )
             rotate_span_cm.__enter__()
-        except Exception as _exc:  # noqa: BLE001
             logger.debug(f"telemetry span open failed (ignored): {_exc}")
             rotate_span_cm = None
 
@@ -2366,23 +2150,8 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             if rotate_span_cm is not None:
                 try:
                     rotate_span_cm.__exit__(None, None, None)
-                except Exception as _exc:  # noqa: BLE001
                     logger.debug(f"telemetry span close failed (ignored): {_exc}")
 
-    def _rotate_chain(
-        self,
-        args,
-        kwargs,
-        *,
-        ordered_chain,
-        ability,
-        sticky_key,
-        policy_mod,
-        attempted_providers,
-        attempted_provider_instances,
-        metrics,
-        usd_quota=None,
-    ) -> RotationSteps:
         """Item 34 — extracted body of `rotate()` so the parent
         rotation span (and the attempt-span / metrics emissions) can
         wrap the chain-walk without re-indenting the whole method.
@@ -2414,13 +2183,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     provider_instance = ProviderInstanceModel.DB(
                         self.model_registry.DB.Base
                     ).get(
-                        requester_id=self.requester.id,
                         model_registry=self.model_registry,
                         return_type="dto",
                         override_dto=ProviderInstanceModel,
                         id=rpi.provider_instance_id,
                     )
-            except Exception as exc:  # back-compat: bare exception advances
                 logger.warning(f"Provider lookup failed: {exc}")
                 attempted_providers.append(
                     {
@@ -2470,7 +2237,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         transient_attempt=transient_attempt,
                     )
                     attempt_span_cm.__enter__()
-                except Exception as _exc:  # noqa: BLE001
                     logger.debug(
                         f"telemetry attempt-span enter failed (ignored): {_exc}"
                     )
@@ -2538,7 +2304,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     if sticky_key:
                         _sticky_set(sticky_key, ability, str(rpi.provider_instance_id))
                     return result
-                except Exception as exc:
                     # Item 84 — USD-cap pre-check refusal must surface
                     # immediately (operator-visible quota error), not get
                     # absorbed by the back-compat advance path.
@@ -2709,7 +2474,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     if attempt_span_cm is not None:
                         try:
                             attempt_span_cm.__exit__(None, None, None)
-                        except Exception as _exc:  # noqa: BLE001
                             logger.debug(
                                 f"telemetry attempt-span close failed (ignored): {_exc}"
                             )
@@ -2795,7 +2559,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
         raise HTTPException(status_code=500, detail=error_detail)
 
-    def _get_ordered_rotation_provider_instances(self):
         """
         Get rotation provider instances ordered by parent hierarchy.
 
@@ -2806,7 +2569,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             all_instances = RotationProviderInstanceModel.DB(
                 self.model_registry.DB.Base
             ).list(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 # db=session,
                 # db_manager=self.model_registry,
@@ -2868,8 +2630,6 @@ class RotationProviderInstanceModel(
     is_system_entity: ClassVar[bool] = False
     permission_references: ClassVar[List[str]] = ["rotation"]
 
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Create links between root rotations and provider instances."""
 
         try:
@@ -2935,7 +2695,6 @@ class RotationProviderInstanceModel(
                                 f"Added rotation/provider-instance instance link for rotation '{rotation_name}' and instance '{instance_name}'"
                             )
 
-                        except Exception as e:
                             logger.error(
                                 f"Error creating rotation/provider-instance instance link for {prv_class.__name__}: {e}"
                             )
@@ -2949,18 +2708,15 @@ class RotationProviderInstanceModel(
             )
             return seed_data
 
-        except Exception as e:
             logger.error(
                 f"Error creating rotation/provider-instance instance links for seeding: {e}"
             )
             return []
 
-    class Create(BaseModel):
         rotation_id: str
         provider_instance_id: str
         parent_id: Optional[str] | None = None
 
-    class Update(BaseModel):
         rotation_id: Optional[str] | None = None
         provider_instance_id: Optional[str] | None = None
         parent_id: Optional[str] | None = None
@@ -2974,7 +2730,6 @@ class RotationProviderInstanceModel(
         provider_instance_id: Optional[StringSearchModel] | None = None
 
 
-class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
     _model = RotationProviderInstanceModel
 
     # RouterMixin configuration
@@ -3010,22 +2765,16 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
         )
         self._rotation = None
 
-    @property
-    def rotation(self) -> "RotationManager":
         """Get the rotation manager instance."""
         if self._rotation is None:
             # Import locally to avoid circular imports
             self._rotation = RotationManager(  # type: ignore[assignment]
-                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
         return self._rotation  # type: ignore[return-value]
 
-    def _require_visible_references(
-        self, rotation_id: Optional[str], provider_instance_id: Optional[str]
-    ) -> None:
         """The rotation and provider instance a link names must be ones the
         requester can see, or they are not found (404). Checked as ROOT, any
         user could put any instance, theirs or not, into their rotation.
@@ -3041,19 +2790,16 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
         )
         for model, reference_id, not_found in references:
             if reference_id and not model.DB(base).exists(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=reference_id,
             ):
                 raise HTTPException(status_code=404, detail=not_found)
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         self._require_visible_references(
             kwargs.get("rotation_id"), kwargs.get("provider_instance_id")
         )
         return super().update(id, **kwargs)
 
-    def create_validation(self, entity):
         """Validate rotation provider instance creation: the rotation and
         provider instance must be visible to the requester."""
         self._require_visible_references(

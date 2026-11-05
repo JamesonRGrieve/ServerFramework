@@ -28,7 +28,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 DEFAULT_RPC_URL = "https://api.mainnet-beta.solana.com"
 
 
-class PRV_Solana_Crypto(AbstractCryptoProvider):
     name: ClassVar[str] = "solana"
     friendly_name: ClassVar[str] = "Solana"
     description: ClassVar[str] = "A Solana wallet"

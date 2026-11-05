@@ -26,7 +26,6 @@ from typing import Any, Optional
 _auth_provider: Optional[Any] = None
 
 
-def register_auth_provider(provider: Any) -> None:
     """Register the concrete identity/auth manager used by the generation engine.
 
     Called at import/boot by the identity extension (``logic.BLL_Auth`` does this
@@ -34,11 +33,9 @@ def register_auth_provider(provider: Any) -> None:
     identity manager the generated auth dependencies use, with no edits to
     ``lib/``.
     """
-    global _auth_provider
     _auth_provider = provider
 
 
-def get_auth_provider() -> Any:
     """Return the registered identity/auth manager.
 
     Raises ``RuntimeError`` with a clear message if nothing is registered, so a

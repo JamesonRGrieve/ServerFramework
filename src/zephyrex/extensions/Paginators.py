@@ -79,7 +79,6 @@ def query_hash(query_params: Optional[Dict[str, Any]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _token_hmac_key() -> bytes:
     from zephyrex.lib.Environment import env
 
     secret: str = env("JWT_SECRET")
@@ -102,9 +101,6 @@ def encode_token(provider_cursor: Any, page_size: Optional[int], q_hash: str) ->
     return f"{encoded}.{sig}"
 
 
-def decode_token(
-    token: str, expected_query_hash: Optional[str] = None
-) -> Dict[str, Any]:
     """Decode a token produced by `encode_token`.
 
     When `expected_query_hash` is provided, raises
@@ -122,8 +118,6 @@ def decode_token(
         padded = encoded_part + "=" * (-len(encoded_part) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
         if sig is not None:
-            expected_sig = hmac.new(_token_hmac_key(), raw, "sha256").hexdigest()[:16]
-            if not hmac.compare_digest(sig, expected_sig):
                 raise InvalidPaginationError("Pagination token signature invalid")
         payload = json.loads(raw)
     except InvalidPaginationError:
@@ -149,7 +143,6 @@ def decode_token(
 # ---------------------------------------------------------------------------
 
 
-class AbstractPaginator(ABC):
     """Per-provider pagination translator.
 
     Each subclass owns one contract: convert the internal offset/limit
@@ -258,7 +251,6 @@ class OffsetPaginator(AbstractPaginator):
         return list(items), token
 
 
-class CursorPaginator(AbstractPaginator):
     """Stripe-style cursor paginator using `starting_after` /
     `ending_before` semantics.
 
@@ -338,7 +330,6 @@ class CursorPaginator(AbstractPaginator):
         return list(items), token
 
 
-class PageTokenPaginator(AbstractPaginator):
     """Google-style page-token paginator.
 
     The upstream returns a `next_page_token` field; we pass it back as
@@ -392,7 +383,6 @@ class PageTokenPaginator(AbstractPaginator):
         return list(items), token
 
 
-class LinkHeaderPaginator(AbstractPaginator):
     """RFC-5988 `Link` header paginator (GitHub-style).
 
     The upstream response is expected to carry a `headers` mapping (or

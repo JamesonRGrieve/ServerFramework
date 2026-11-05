@@ -16,7 +16,6 @@ from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtensio
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Quota(AbstractStaticExtension):
     name: ClassVar[str] = "quota"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

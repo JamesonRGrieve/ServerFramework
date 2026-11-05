@@ -43,7 +43,6 @@ VERIFIED, MODIFIED, UNVERIFIED = "verified", "modified", "unverified"
 CLEAN, DIRTY, NONE, ERROR = "clean", "dirty", "none", "error"
 
 
-def shipped_files(root: Path) -> Iterator[Path]:
     """The files under ``root`` a wheel ships, in a stable order."""
     for path in sorted(root.rglob("*")):
         if (
@@ -56,7 +55,6 @@ def shipped_files(root: Path) -> Iterator[Path]:
             yield path
 
 
-def source_digest(root: Path) -> str:
     """SHA-256 over each shipped file's relative path and content hash."""
     digest = hashlib.sha256()
     for path in shipped_files(root):
@@ -65,7 +63,6 @@ def source_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-class _GitFailed(Exception):
     """git is missing, timed out, or refused (e.g. an unsafe-ownership repo)."""
 
 
@@ -78,11 +75,9 @@ def _git_environment() -> Dict[str, str]:
     }
 
 
-def _git(directory: Path, *arguments: str) -> str:
     """``git -C directory ...``'s output; raises _GitFailed when git cannot
     answer."""
     try:
-        result = subprocess.run(
             ["git", "-C", str(directory), *arguments],
             capture_output=True,
             text=True,
@@ -90,20 +85,17 @@ def _git(directory: Path, *arguments: str) -> str:
             check=False,
             env=_git_environment(),
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
         raise _GitFailed(str(error)) from error
     if result.returncode != 0:
         raise _GitFailed(result.stderr.strip())
     return result.stdout
 
 
-def _in_a_repository(directory: Path) -> bool:
     """Whether a ``.git`` sits at or above ``directory``; decided without git,
     so a missing git is an error only where there is a repository to ask."""
     return any((path / ".git").exists() for path in (directory, *directory.parents))
 
 
-def git_status(directory: Path) -> str:
     """``clean``/``dirty`` for a git checkout of the source under
     ``directory``; ``none`` when it is not one; ``error`` when git cannot say.
 
@@ -121,7 +113,6 @@ def git_status(directory: Path) -> str:
     return DIRTY if changes.strip() else CLEAN
 
 
-def _checkout_commit(directory: Path, status: str) -> Optional[str]:
     """HEAD of the checkout of ``directory`` (``status`` from git_status), or
     None when it is not one."""
     if status not in (CLEAN, DIRTY):
@@ -143,16 +134,12 @@ def build_manifest(root: Path, source_tree: Path) -> dict:
     }
 
 
-@dataclass(frozen=True)
-class SourceState:
     hash_status: str
     git_status: str
     digest: str
     commit: Optional[str]
 
 
-@functools.lru_cache(maxsize=None)
-def source_state(root: Path) -> SourceState:
     """Hashed once per process: the source does not change under a running
     server, and every app built in the process shares it."""
     digest = source_digest(root)
@@ -173,7 +160,6 @@ def source_state(root: Path) -> SourceState:
     )
 
 
-def source_headers(state: SourceState, link: str) -> List[Tuple[bytes, bytes]]:
     return [
         (b"source-link", link.encode("latin-1")),
         (b"source-hash-status", state.hash_status.encode()),
@@ -181,7 +167,6 @@ def source_headers(state: SourceState, link: str) -> List[Tuple[bytes, bytes]]:
     ]
 
 
-class SourceHeadersMiddleware:
     """ASGI middleware putting the source headers on every HTTP response.
     ``link`` is read per response, so a changed APP_REPOSITORY shows at once."""
 
@@ -190,13 +175,11 @@ class SourceHeadersMiddleware:
         self.root = root
         self.link = link
 
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         headers = source_headers(source_state(self.root), self.link())
 
-        async def with_source(message: Any) -> None:
             if message["type"] == "http.response.start":
                 message = {
                     **message,

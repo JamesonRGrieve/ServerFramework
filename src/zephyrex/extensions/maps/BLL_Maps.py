@@ -141,7 +141,6 @@ def _places(found: List[Dict[str, Any]]) -> List[Place]:
     return [Place.model_validate(place) for place in found]
 
 
-class MapsManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = MAPS_PREFIX
     tags: ClassVar[Optional[List[str]]] = ["Maps"]
     routes_to_register: ClassVar[Optional[List[Any]]] = []

@@ -56,7 +56,6 @@ from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Environment import env
 
 
-class EXT_ForwardAuthProvider(AbstractStaticExtension):
     name: ClassVar[str] = "forward_auth_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -101,11 +100,6 @@ class EXT_ForwardAuthProvider(AbstractStaticExtension):
         """The rules in force (enabled, not deleted)."""
         return [rule.model_dump(mode="json") for rule in enabled_rules(cls._registry())]
 
-    @classmethod
-    @ability("check_forward_auth_access")
-    async def check_forward_auth_access(
-        cls, user_id: str, host: str, path: str
-    ) -> Dict[str, Any]:
         """Whether the user, signed in, would pass forward auth for
         ``host`` + ``path``, and the rule that decides it."""
         try:

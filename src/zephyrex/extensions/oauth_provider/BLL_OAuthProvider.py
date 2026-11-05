@@ -75,7 +75,6 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def supported_scopes(model_registry: Any) -> Set[str]:
     """The scopes a client may be registered for: OpenID Connect's, and
     every permission a loaded extension declares (a permission is a scope
     of the same name)."""
@@ -91,12 +90,6 @@ def supported_scopes(model_registry: Any) -> Set[str]:
 # ---------------------------------------------------------------------------
 
 
-class OauthClientModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference,
-    metaclass=ModelMeta,
-):
     """An application registered with this authorization server."""
 
     name: str = Field(..., description="Name shown to users on the consent screen")
@@ -134,7 +127,6 @@ class OauthClientModel(
 
     # Registration is POST /v1/oauth2/clients/register, which mints the
     # credentials; these fields are its server-computed output.
-    class Create(BaseModel, UserModel.Reference.ID.Optional):
         name: str
         client_id: str
         client_secret_hash: Optional[str] = None
@@ -147,7 +139,6 @@ class OauthClientModel(
         id_token_signed_response_alg: str = Config.RS256
         is_enabled: bool = True
 
-    class Update(BaseModel):
         name: Optional[str] = None
         redirect_uris: Optional[str] = Field(
             None, description="JSON array of registered redirect URIs"
@@ -165,7 +156,6 @@ class OauthClientModel(
         is_enabled: Optional[bool] = None
 
 
-class ClientRegistration(RouteModel):
     name: str = Field(..., min_length=1, max_length=MAX_CLIENT_NAME)
     redirect_uris: List[str] = Field(..., min_length=1, max_length=MAX_REDIRECT_URIS)
     is_confidential: bool = True
@@ -182,7 +172,6 @@ class ClientRegistration(RouteModel):
     )
 
 
-class ClientRegistered(RouteModel):
     """Returned once. The secret is never shown again."""
 
     id: str
@@ -198,12 +187,10 @@ class ClientRegistered(RouteModel):
     id_token_signed_response_alg: str
 
 
-class ClientSecretRotated(RouteModel):
     client_id: str
     client_secret: str
 
 
-class SecretRotationRequest(RouteModel):
     """No fields: the new secret is minted by the server."""
 
 
@@ -211,7 +198,6 @@ def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=400, detail=detail)
 
 
-def _redirect_uris(raw: Iterable[str], application_type: str) -> List[str]:
     uris = list(raw)
     if not 1 <= len(uris) <= MAX_REDIRECT_URIS:
         raise _bad_request(f"a client registers 1-{MAX_REDIRECT_URIS} redirect URIs")
@@ -221,7 +207,6 @@ def _redirect_uris(raw: Iterable[str], application_type: str) -> List[str]:
         raise _bad_request(str(error)) from None
 
 
-def _scopes(raw: Iterable[str], model_registry: Any) -> List[str]:
     scopes = list(dict.fromkeys(raw))
     unknown = sorted(set(scopes) - supported_scopes(model_registry))
     if unknown:
@@ -229,7 +214,6 @@ def _scopes(raw: Iterable[str], model_registry: Any) -> List[str]:
     return scopes
 
 
-def _resource_uri(raw: Optional[str], requester_id: str) -> Optional[str]:
     if raw is None:
         return None
     if not server_side(requester_id):
@@ -242,7 +226,6 @@ def _resource_uri(raw: Optional[str], requester_id: str) -> Optional[str]:
         raise _bad_request(str(error).replace("redirect URI", "resource URI")) from None
 
 
-class OauthClientManager(AbstractBLLManager, RouterMixin):
     _model = OauthClientModel
 
     prefix: ClassVar[Optional[str]] = "/v1/oauth2/clients"
@@ -265,10 +248,8 @@ class OauthClientManager(AbstractBLLManager, RouterMixin):
     # Not named ``register``: the GraphQL builder reads a manager with a
     # ``register`` method as the self-scoped user manager and exposes all
     # of its CRUD.
-    def register_client(self, request: ClientRegistration) -> ClientRegistered:
         """Register a client owned by the requester, minting its id and (for
         a confidential client) its secret."""
-        requester_id = self.requester.id
         if request.application_type not in APPLICATION_TYPES:
             raise _bad_request("application_type is 'web' or 'native'")
         if request.application_type == APPLICATION_NATIVE and request.is_confidential:
@@ -327,16 +308,13 @@ class OauthClientManager(AbstractBLLManager, RouterMixin):
             id_token_signed_response_alg=client.id_token_signed_response_alg,
         )
 
-    def _resource_taken(self, resource_uri: str) -> bool:
         return bool(
             self.DB.list(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 filters=[self.DB.resource_uri == resource_uri],
             )
         )
 
-    def _owned(self, id: str) -> OauthClientModel:
         """The client, when the requester owns it (or is the operator)."""
         client: OauthClientModel = self.get(id=id)
         if not server_side(self.requester.id) and client.user_id != self.requester.id:
@@ -345,7 +323,6 @@ class OauthClientManager(AbstractBLLManager, RouterMixin):
             )
         return client
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         client = self._owned(id)
         if kwargs.get("redirect_uris") is not None:
             try:
@@ -364,19 +341,16 @@ class OauthClientManager(AbstractBLLManager, RouterMixin):
             revoke_tokens(self.model_registry, client_id=client.client_id)
         return updated
 
-    def delete(self, id: str) -> None:
         client = self._owned(id)
         revoke_tokens(self.model_registry, client_id=client.client_id)
         super().delete(id)
 
-    def rotate_secret(self, id: str) -> ClientSecretRotated:
         """A new secret for a confidential client; the old one stops working."""
         client = self._owned(id)
         if not client.is_confidential:
             raise _bad_request("a public client has no secret")
         raw_secret = mint_secret(CLIENT_SECRET_PREFIX)
         self.DB.update(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=client.id,
             new_properties={"client_secret_hash": digest(raw_secret)},
@@ -419,12 +393,6 @@ class OauthClientManager(AbstractBLLManager, RouterMixin):
 # ---------------------------------------------------------------------------
 
 
-class OauthGrantModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference,
-    metaclass=ModelMeta,
-):
     """A user's consent that a client may hold ``scopes`` on their behalf."""
 
     client_id: str = Field(..., description="The client the consent is for")
@@ -435,12 +403,10 @@ class OauthGrantModel(
 
     table_comment: ClassVar[str] = "Users' consents to OAuth clients"
 
-    class Create(BaseModel, UserModel.Reference.ID.Optional):
         client_id: str
         client_name: str
         scopes: str
 
-    class Update(BaseModel):
         scopes: Optional[str] = None
 
     class Search(
@@ -451,7 +417,6 @@ class OauthGrantModel(
         client_id: Optional[StringSearchModel] = None
 
 
-class OauthGrantManager(AbstractBLLManager, RouterMixin):
     """A user's consents: listed and revoked by that user."""
 
     _model = OauthGrantModel
@@ -471,7 +436,6 @@ class OauthGrantManager(AbstractBLLManager, RouterMixin):
         singly or in a batch."""
         return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
-    def consent(self, client: OauthClientModel, scopes: List[str]) -> OauthGrantModel:
         """Record that the requester consents to ``client`` holding
         ``scopes``, adding to any consent they already gave it."""
         existing: List[OauthGrantModel] = self.list(
@@ -487,7 +451,6 @@ class OauthGrantManager(AbstractBLLManager, RouterMixin):
         )
         return created
 
-    def delete(self, id: str) -> None:
         """Revoke a consent, and with it every token the client holds for
         the user."""
         grant: OauthGrantModel = self.get(id=id)
@@ -504,12 +467,6 @@ class OauthGrantManager(AbstractBLLManager, RouterMixin):
 # ---------------------------------------------------------------------------
 
 
-class OauthAuthorizationRequestModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
     """A validated authorization request waiting for the user's decision."""
 
     client_id: str = Field(...)
@@ -528,22 +485,13 @@ class OauthAuthorizationRequestModel(
 
     table_comment: ClassVar[str] = "Pending OAuth authorization requests"
 
-    class Create(BaseModel):
         pass
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search):
         pass
 
 
-class OauthAuthorizationCodeModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference,
-    metaclass=ModelMeta,
-):
     """A single-use authorization code, bound to its client, redirect URI
     and PKCE challenge. Only its SHA-256 is stored."""
 
@@ -560,13 +508,10 @@ class OauthAuthorizationCodeModel(
 
     table_comment: ClassVar[str] = "OAuth authorization codes (digest only, single-use)"
 
-    class Create(BaseModel):
         pass
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search):
         pass
 
 
@@ -574,12 +519,6 @@ ACCESS_TOKEN = "access_token"
 REFRESH_TOKEN = "refresh_token"
 
 
-class OauthTokenModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference,
-    metaclass=ModelMeta,
-):
     """An access or refresh token (digest only). Tokens issued from one
     authorization code share its ``family_id``: a replayed code or refresh
     token revokes the family."""
@@ -603,13 +542,10 @@ class OauthTokenModel(
 
     table_comment: ClassVar[str] = "OAuth access and refresh tokens (digest only)"
 
-    class Create(BaseModel):
         pass
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search):
         pass
 
 
@@ -618,11 +554,6 @@ KEY_RETIRING = "retiring"
 KEY_RETIRED = "retired"
 
 
-class OauthSigningKeyModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    metaclass=ModelMeta,
-):
     """An ID-token signing key. ``active`` keys sign; ``retiring`` ones are
     still published so tokens they signed verify; ``retired`` ones are
     neither, and their private half is erased."""
@@ -639,17 +570,13 @@ class OauthSigningKeyModel(
 
     table_comment: ClassVar[str] = "OpenID Connect ID token signing keys"
 
-    class Create(BaseModel):
         pass
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search):
         pass
 
 
-def revoke_tokens(model_registry: Any, **match: str) -> int:
     """Revoke every live token whose columns equal ``match``; how many."""
     TokenDB = OauthTokenModel.DB(model_registry.DB.manager.Base)
     filters = [getattr(TokenDB, column) == value for column, value in match.items()]

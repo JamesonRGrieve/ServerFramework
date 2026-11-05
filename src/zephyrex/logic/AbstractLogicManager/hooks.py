@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from zephyrex.logic.AbstractLogicManager.manager import AbstractBLLManager
 
 
-class HookTiming(Enum):
     """Enumeration for hook execution timing."""
 
     BEFORE = "before"
@@ -35,7 +34,6 @@ class HookTiming(Enum):
 # ---------------------------------------------------------------------------
 
 
-class HookOrderingError(Exception):
     """Raised at startup when explicit before/after constraints form a cycle.
 
     The error message names every extension involved in the offending cycle
@@ -55,7 +53,6 @@ _P = ParamSpec("_P")
 _R = _typing.TypeVar("_R")
 
 
-class HookContext(_typing.Generic[_P, _R]):
     """
     Type-safe context object passed to hooks (Item 41).
 
@@ -134,7 +131,6 @@ class HookContext(_typing.Generic[_P, _R]):
         """
         return self.kwargs.get(name, default)
 
-    def arg(self, index: int, default: Any | None = None) -> Any:
         """Typed-accessor sugar: return ``args[index]`` or ``default``."""
         try:
             return self.args[index]
@@ -142,7 +138,6 @@ class HookContext(_typing.Generic[_P, _R]):
             return default
 
 
-class HookRegistry:
     """
     Registry for managing hooks at the class level with inheritance support.
 
@@ -151,7 +146,6 @@ class HookRegistry:
     adding their own.
     """
 
-    def __init__(self, parent_registry: Optional["HookRegistry"] | None = None):
         """
         Initialize hook registry.
 
@@ -212,7 +206,6 @@ class HookRegistry:
         self.hooks.clear()
         self._invalidate()
 
-    def get_hooks(self, method_name: str) -> Dict[str, List[Dict[str, Any]]]:
         """
         Get all hooks for a method, including inherited ones.
 
@@ -252,7 +245,6 @@ class HookRegistry:
         hooks["before"] = _sort_hooks_topologically(hooks["before"])
         hooks["after"] = _sort_hooks_topologically(hooks["after"])
 
-        self._get_hooks_cache[method_name] = (version, hooks)
         return hooks
 
     def register_hook(
@@ -353,7 +345,6 @@ def _emit_non_blocking_failure_metric(
     )
 
 
-def _hook_extension_name(func: Callable) -> str:
     """Best-effort extension name for a hook function.
 
     The convention used across the framework's extensions is to put the
@@ -371,7 +362,6 @@ def _hook_extension_name(func: Callable) -> str:
     return parts[-1] if parts else ""
 
 
-def _sort_hooks_topologically(hooks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Apply the Item 21 four-tier deterministic ordering rule.
 
     Tiers:
@@ -438,15 +428,6 @@ def _sort_hooks_topologically(hooks: List[Dict[str, Any]]) -> List[Dict[str, Any
     return result
 
 
-def hook_bll(
-    target: Union[Type["AbstractBLLManager"], Callable],
-    timing: Union[HookTiming, str] = HookTiming.BEFORE,
-    priority: int = 50,
-    condition: Optional[Callable[[HookContext], bool]] | None = None,
-    before: Optional[List[str]] | None = None,
-    after: Optional[List[str]] | None = None,
-    blocking: Optional[bool] | None = None,
-) -> Callable:
     """
     Enhanced hook decorator for BLL methods.
 
@@ -636,9 +617,6 @@ def hook_bll(
     else:
         timing_enum = timing
 
-    def decorator(
-        hook_func: Callable[[HookContext], Any],
-    ) -> Callable[[HookContext], Any]:
         # Register hook for each method
         for method_name in method_names:
             # Verify method exists on class
@@ -748,7 +726,6 @@ def _register_hook_on_class(
     )
 
 
-def discover_hookable_methods(manager_class: Type["AbstractBLLManager"]) -> List[str]:
     """
     Discover all public instance methods that can be hooked.
 
@@ -773,7 +750,6 @@ def discover_hookable_methods(manager_class: Type["AbstractBLLManager"]) -> List
     return hookable_methods
 
 
-def auto_register_hooks(manager_class: Type["AbstractBLLManager"]) -> None:
     """
     Automatically create hook points for all public methods.
 
@@ -802,7 +778,6 @@ def auto_register_hooks(manager_class: Type["AbstractBLLManager"]) -> None:
     manager_class._hook_registry._invalidate()  # type: ignore[attr-defined]
 
 
-def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> bool:
     """
     Check if hook should execute based on condition.
 
@@ -826,7 +801,6 @@ def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> boo
 
     try:
         return condition(context)  # type: ignore[no-any-return]
-    except Exception as e:
         hook_name = getattr(hook_info.get("func"), "__name__", "<unknown>")
         if _hook_blocking(hook_info, default=context.timing is HookTiming.BEFORE):
             logger.error(
@@ -847,9 +821,6 @@ def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> boo
         return False
 
 
-def wrap_method_with_hooks(
-    manager_class: Type["AbstractBLLManager"], method_name: str
-) -> Callable:
     """
     Wrap a method to support hook execution.
 
@@ -862,7 +833,6 @@ def wrap_method_with_hooks(
     """
     original_method = getattr(manager_class, method_name)
 
-    def wrapped_method(self: "AbstractBLLManager", *args, **kwargs):
         # Auto-populate target_id if present and method uses id
         if hasattr(self, "target_id") and self.target_id and "id" not in kwargs:
             if method_name in ["get", "update", "delete"] and not args:
@@ -883,7 +853,6 @@ def wrap_method_with_hooks(
                     hook_info["func"](context)
                     # Update kwargs with any modifications from the hook
                     kwargs.update(context.kwargs)
-                except Exception as e:
                     # Item 22: BEFORE hooks default blocking=True (security
                     # and validation must fail loudly). Authors that
                     # explicitly opt out via blocking=False get the
@@ -930,7 +899,6 @@ def wrap_method_with_hooks(
                     # Check if hook modified the result
                     if context.modified_result is not None:
                         result = context.modified_result
-                except Exception as e:
                     # Item 22: AFTER hooks default blocking=False; observers
                     # should not break the operation they are observing.
                     # Authors that opt in via blocking=True get the

@@ -78,7 +78,6 @@ def cloud_file(item: dict[str, Any]) -> CloudFile:
     )
 
 
-class PRV_GoogleDrive(AbstractDelegatedCloudProvider):
     name: ClassVar[str] = "google_drive"
     friendly_name: ClassVar[str] = "Google Drive"
     identity_provider: ClassVar[str] = "google"
@@ -94,10 +93,6 @@ class PRV_GoogleDrive(AbstractDelegatedCloudProvider):
     def _auth(access_token: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {access_token}"}
 
-    @classmethod
-    async def list(
-        cls, access_token: str, folder: str, search: str | None
-    ) -> list[CloudFile]:
         found: list[CloudFile] = []
         page_token: str | None = None
         while True:
@@ -117,8 +112,6 @@ class PRV_GoogleDrive(AbstractDelegatedCloudProvider):
             if not page_token:
                 return found
 
-    @classmethod
-    async def read(cls, access_token: str, path: str) -> CloudFileContent:
         file_url = f"{DRIVE_FILES_URL}/{_file_id(path)}"
         headers = cls._auth(access_token)
         described = cloud_file(

@@ -15,7 +15,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 FITBIT_API = "https://api.fitbit.com"
 
 
-class PRV_FitBit_Wearable(AbstractWearableProvider):
     name: ClassVar[str] = "fitbit"
     friendly_name: ClassVar[str] = "Fitbit"
     description: ClassVar[str] = "Fitbit, through the Fitbit Web API"

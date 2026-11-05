@@ -16,7 +16,6 @@ from zephyrex.extensions.oauth_consumer.IdentityProvider import (
 DEFAULT_SCOPES = "openid email profile"
 
 
-class PRV_Forgejo(AbstractOIDCProvider):
     name: ClassVar[str] = "oauth_forgejo"
     public_name: ClassVar[str] = "forgejo"
     friendly_name: ClassVar[str] = "Forgejo"

@@ -66,7 +66,6 @@ class JurisdictionMapping:
     regions: FrozenSet[str]  # e.g. {"eu-west-1", "eu-central-1"}
 
 
-class JurisdictionRegistry:
     """Process-global registry that maps jurisdictions -> regions.
 
     Operators populate this at startup from configuration; the residency

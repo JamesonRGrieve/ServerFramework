@@ -43,7 +43,6 @@ def _module_file(module_name: str) -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
-def _ast_has_symbol(module_name: str, symbol: str) -> bool:
     path = _module_file(module_name)
     if path is None:
         return False
@@ -80,7 +79,6 @@ def _resolve(entry: Dict[str, Any]) -> Tuple[Optional[Any], bool]:
 _MEMADDR_RE = re.compile(r" at 0x[0-9a-fA-F]+")
 
 
-def _signature_text(symbol: Any) -> Optional[str]:
     if not callable(symbol) and not inspect.isclass(symbol):
         return None
     try:
@@ -104,7 +102,6 @@ def _docstring_summary(symbol: Any) -> Optional[str]:
     return None
 
 
-def _format_entry(entry: Dict[str, Any]) -> List[str]:
     symbol, imported = _resolve(entry)
     lines: List[str] = []
     lines.append(f"### `{entry['name']}` ({entry['kind']})")
@@ -160,7 +157,6 @@ def _load_manifest() -> Dict[str, Any]:
     return json.loads(MANIFEST_PATH.read_text())  # type: ignore[no-any-return]
 
 
-def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="build_contracts_md")
     parser.add_argument(
         "--check",

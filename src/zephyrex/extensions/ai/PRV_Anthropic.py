@@ -25,7 +25,6 @@ _FINISH = {
 }
 
 
-def anthropic_image(url: str) -> Dict[str, Any]:
     if not url.startswith("data:"):
         return {"type": "image", "source": {"type": "url", "url": url}}
     header, _, data = url.partition(",")
@@ -45,10 +44,6 @@ def tool_input(arguments: str) -> Any:
         raise InvalidInputExternalError("a tool call's arguments are JSON") from exc
 
 
-def anthropic_request(
-    messages: List[Dict[str, Any]],
-    tools: Optional[List[Dict[str, Any]]],
-) -> Dict[str, Any]:
     """Neutral messages and tools as a Messages API body: system text at
     the top, tool calls as ``tool_use`` blocks, tool results as
     ``tool_result`` blocks in a user turn."""
@@ -101,7 +96,6 @@ def anthropic_request(
     return body
 
 
-def anthropic_answer(answer: Mapping[str, Any], model: str) -> Dict[str, Any]:
     blocks = answer.get("content") or []
     text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
     calls = [

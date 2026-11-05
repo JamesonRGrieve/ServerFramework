@@ -29,7 +29,6 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
-class EXT_WebAuthnConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "webauthn_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = "Sign in with passkeys and security keys (WebAuthn)"
@@ -57,8 +56,6 @@ class EXT_WebAuthnConsumer(AbstractStaticExtension):
         "webauthn_consumer_remove_credential",
     }
 
-    @classmethod
-    def credentials(cls, requester_id: str) -> WebAuthnCredentialManager:
         manager: WebAuthnCredentialManager = cls.as_requester(
             WebAuthnCredentialManager, requester_id
         )

@@ -37,7 +37,6 @@ Operation = Enum("Operation", ["CREATE", "READ", "UPDATE", "DELETE"])
 _WORKER_NOT_INITIALIZED = "Session factory not initialized; call init_worker() first"
 
 
-def _redact_db_uri(uri: Optional[str]) -> str:
     """Strip credentials from a SQLAlchemy URI before it reaches a log line.
 
     Postgres/MySQL/MariaDB/MSSQL URIs embed ``user:password@host``. Logging
@@ -60,19 +59,16 @@ def _redact_db_uri(uri: Optional[str]) -> str:
             userinfo = f"{parsed.username}:***@"
         netloc = f"{userinfo}{host}"
         return urlunparse(parsed._replace(netloc=netloc))
-    except Exception:
         # Defensive: any parser error must not leak the original URI either.
         return "<redacted>"
 
 
-def setup_sqlite_for_regex(engine):
     """
     Register the REGEXP function with SQLite.
     This should be called after creating the SQLite engine.
     """
     import re
 
-    def regexp(expr, item):
         if item is None:
             return False
         if len(expr) > 200:
@@ -106,27 +102,18 @@ def setup_sqlite_for_regex(engine):
         dbapi_connection.create_function("REGEXP", 2, regexp)
 
 
-def setup_sqlite_for_concurrency(engine):
     """
     Configure SQLite for better concurrent access.
     Sets up WAL mode, busy timeout, and other optimizations.
     """
 
-    @event.listens_for(engine, "connect")
-    def do_connect(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         try:
             # Enable WAL mode for better concurrent access
-            cursor.execute("PRAGMA journal_mode=WAL")
             # Set busy timeout to 30 seconds (30000 ms)
-            cursor.execute("PRAGMA busy_timeout=30000")
             # Optimize synchronous mode for WAL
-            cursor.execute("PRAGMA synchronous=NORMAL")
             # Enable foreign key constraints
-            cursor.execute("PRAGMA foreign_keys=ON")
             # Optimize cache size (negative value = KB)
-            cursor.execute("PRAGMA cache_size=-64000")  # 64MB cache
-        except Exception as e:
             logger.warning(f"Failed to set SQLite pragmas: {e}")
         finally:
             cursor.close()
@@ -147,7 +134,6 @@ def setup_sqlite_for_concurrency(engine):
             pass
 
 
-def get_database_info(db_prefix: str = ""):
     """Get database configuration information.
 
     Args:
@@ -223,7 +209,6 @@ def get_database_info(db_prefix: str = ""):
             if not path.exists(db_dir):
                 makedirs(db_dir)
                 logger.info(f"Created directory path: {db_dir}")
-        except Exception as e:
             logger.error(f"Error creating directory path: {e}")
             raise
 
@@ -233,14 +218,12 @@ def get_database_info(db_prefix: str = ""):
                 # Create an empty file
                 open(db_file, "a").close()
                 logger.info(f"Created new SQLite database file: {db_file}")
-            except Exception as e:
                 logger.error(f"Error creating SQLite database file: {e}")
                 raise
 
         return {"type": db_type, "name": db_name, "url": db_url, "file_path": db_file}
 
 
-def _sync_to_async_url(sync_url: str) -> str:
     """Convert a synchronous SQLAlchemy database URL to its async equivalent.
 
     Handles all supported database backends:
@@ -265,7 +248,6 @@ def _sync_to_async_url(sync_url: str) -> str:
     return sync_url
 
 
-class DatabaseManager:
     """
     Thread-safe database manager with parent/worker process separation.
     Engine configuration happens in parent process, sessions in workers.
@@ -275,7 +257,6 @@ class DatabaseManager:
     _instance = None
     _lock = threading.Lock()
 
-    def __init__(self, db_prefix: str = "", test_connection: bool = False):
         # Engine configurations (set in parent process)
         self.engine_config: Optional[dict] = None
         self.async_engine_config: Optional[dict] = None
@@ -320,8 +301,6 @@ class DatabaseManager:
         else:
             self.init_engine_config()
 
-    @classmethod
-    def get_instance(cls, db_prefix: str = "") -> "DatabaseManager":
         """Get or create the singleton instance with thread-safe double-checked locking.
 
         Args:
@@ -332,14 +311,10 @@ class DatabaseManager:
             with cls._lock:
                 if cls._instance is None:
                     # Use test prefix if running in pytest and no prefix provided
-                    if not db_prefix and os.environ.get("PYTEST_CURRENT_TEST"):
                         db_prefix = "test.singleton"
                     cls._instance = cls(db_prefix)
         return cls._instance
 
-    def init_engine_config(
-        self, db_prefix: str = "", test_connection: bool = True
-    ) -> None:
         """Initialize engine configuration in parent process.
 
         Args:
@@ -434,7 +409,6 @@ class DatabaseManager:
                 logger.info(
                     f"Successfully connected to database: {_redact_db_uri(database_uri)}"
                 )
-            except Exception as e:
                 logger.error(
                     f"Error connecting to database "
                     f"({_redact_db_uri(database_uri)}): {e}"
@@ -468,13 +442,11 @@ class DatabaseManager:
         """Get the primary key type for this instance."""
         return self._pk_type
 
-    def get_setup_engine(self) -> Engine:
         """Get the setup engine used for parent process initialization."""
         if not self._setup_engine:
             raise RuntimeError("Setup engine not initialized")
         return self._setup_engine
 
-    def init_worker(self) -> None:
         """Initialize database connections for this worker."""
         if self._worker_initialized:
             return
@@ -544,7 +516,6 @@ class DatabaseManager:
                     expire_on_commit=False,
                     autoflush=False,
                 )
-            except Exception as exc:
                 logger.warning(f"Item 54 replica engine init failed for {url}: {exc}")
 
         # Build the replica pool now that we know which URLs were created.
@@ -556,7 +527,6 @@ class DatabaseManager:
     # Item 54 — replica session selection
     # ------------------------------------------------------------------
 
-    def _select_session_factory(self) -> "sessionmaker":
         """Pick a session factory: replica when @read_only fires AND a
         replica is configured AND no primary write has occurred in this
         request; primary otherwise.
@@ -578,7 +548,6 @@ class DatabaseManager:
             raise RuntimeError(_WORKER_NOT_INITIALIZED)
         return self._session_factory
 
-    def _select_async_session_factory(self) -> "async_sessionmaker":
         """Async counterpart of `_select_session_factory`."""
         if (
             should_route_to_replica()
@@ -592,7 +561,6 @@ class DatabaseManager:
             raise RuntimeError(_WORKER_NOT_INITIALIZED)
         return self._async_session_factory
 
-    async def close_worker(self) -> None:
         """Clean up database connections for this worker."""
         if not self._worker_initialized:
             return
@@ -606,38 +574,32 @@ class DatabaseManager:
         if hasattr(self._thread_local, "session"):
             try:
                 self._thread_local.session.close()
-            except Exception:
                 pass
 
         if hasattr(self._thread_local, "async_session"):
             try:
                 await self._thread_local.async_session.close()
-            except Exception:
                 pass
 
         # Dispose engines
         if self.engine:
             try:
                 self.engine.dispose()
-            except Exception:
                 pass
 
         if self.async_engine:
             try:
                 await self.async_engine.dispose()
-            except Exception:
                 pass
 
         # Item 54 — dispose replica engines
         for engine in self._replica_engines.values():
             try:
                 engine.dispose()
-            except Exception:
                 pass
         for async_engine in self._replica_async_engines.values():
             try:
                 await async_engine.dispose()
-            except Exception:
                 pass
         self._replica_engines.clear()
         self._replica_session_factories.clear()
@@ -649,12 +611,10 @@ class DatabaseManager:
         if self._setup_engine:
             try:
                 self._setup_engine.dispose()
-            except Exception:
                 pass
 
         self._worker_initialized = False
 
-    def _close_all_sessions(self) -> None:
         """Close all tracked active sessions."""
         with self._sessions_lock:
             # Create a copy to avoid modification during iteration
@@ -663,11 +623,9 @@ class DatabaseManager:
                 try:
                     if hasattr(session, "close"):
                         session.close()
-                except Exception as e:
                     logger.warning(f"Error closing session: {e}")
             self._active_sessions.clear()
 
-    def get_session(self) -> Session:
         """Get a database session for this database instance.
 
         WARNING: This method returns a raw session that MUST be manually closed!
@@ -689,7 +647,6 @@ class DatabaseManager:
         factory = self._select_session_factory()
         session = factory()
         # Attach the db_manager instance to the session
-        setattr(session, "_db_manager", self)
 
         # Item 54 — register the primary-write watcher only on primary
         # sessions; replica sessions cannot write so the listener would be
@@ -710,8 +667,6 @@ class DatabaseManager:
 
         return session  # type: ignore[no-any-return]
 
-    @staticmethod
-    def _attach_primary_write_listener(session: Session) -> None:
         """Register a one-shot before-flush hook that calls
         `mark_primary_write_seen()` on the first non-empty flush.
 
@@ -722,16 +677,11 @@ class DatabaseManager:
         new/deleted instances into a flush call.
         """
 
-        def _before_flush(_session, flush_context, instances):
             if _session.new or _session.dirty or _session.deleted:
                 mark_primary_write_seen()
 
         event.listen(session, "before_flush", _before_flush)
 
-    @contextmanager
-    def _get_db_session(
-        self, *, auto_commit: bool = True
-    ) -> Generator[Session, None, None]:
         """
         Internal method for getting a database session.
 
@@ -767,24 +717,16 @@ class DatabaseManager:
         try:
             yield session
             if auto_commit:
-                session.commit()
-        except Exception:
-            session.rollback()
             raise
         finally:
             try:
                 session.close()
-            except Exception as e:
                 logger.warning(f"Error closing session: {e}")
             finally:
                 # Remove from tracking
                 with self._sessions_lock:
                     self._active_sessions.discard(session)
 
-    @asynccontextmanager
-    async def _get_async_db_session(
-        self, *, auto_commit: bool = True
-    ) -> AsyncGenerator[AsyncSession, None]:
         """
         Internal method for getting an async database session.
 
@@ -816,13 +758,8 @@ class DatabaseManager:
             try:
                 yield session
                 if auto_commit:
-                    await session.commit()
-            except Exception:
-                await session.rollback()
                 raise
 
-    @staticmethod
-    def _attach_primary_write_listener_async(session: AsyncSession) -> None:
         """Async counterpart of `_attach_primary_write_listener`.
 
         SA's async session exposes a `sync_session` proxy whose `before_flush`
@@ -832,13 +769,11 @@ class DatabaseManager:
         if sync_proxy is None:
             return
 
-        def _before_flush(_session, flush_context, instances):
             if _session.new or _session.dirty or _session.deleted:
                 mark_primary_write_seen()
 
         event.listen(sync_proxy, "before_flush", _before_flush)
 
-    def get_db(self, auto_commit: bool = True) -> Generator[Session, None, None]:
         """
         FastAPI dependency for getting a database session.
         Args:
@@ -861,9 +796,6 @@ class DatabaseManager:
         with self._get_db_session(auto_commit=auto_commit) as session:
             yield session
 
-    async def get_async_db(
-        self, auto_commit: bool = True
-    ) -> AsyncGenerator[AsyncSession, None]:
         """
         FastAPI dependency for getting an async database session.
         Args:
@@ -888,16 +820,13 @@ class DatabaseManager:
         async with self._get_async_db_session(auto_commit=auto_commit) as session:
             yield session
 
-    def cleanup_thread(self) -> None:
         """Clean up thread-local resources."""
         if hasattr(self._thread_local, "session"):
             try:
                 self._thread_local.session.close()
-            except Exception:
                 pass  # Session might already be closed
             delattr(self._thread_local, "session")
 
-    def dispose_all(self) -> None:
         """Dispose all engines and clean up resources."""
         # Close all active sessions first
         self._close_all_sessions()
@@ -906,32 +835,25 @@ class DatabaseManager:
         if self._setup_engine:
             try:
                 self._setup_engine.dispose()
-            except Exception:
                 pass
 
         # Dispose worker engines
         if self.engine:
             try:
                 self.engine.dispose()
-            except Exception:
                 pass
 
         if self.async_engine:
             try:
                 # Note: async_engine.dispose() is synchronous
                 self.async_engine.sync_dispose()  # type: ignore[attr-defined]
-            except Exception:
                 pass
 
-    def get_active_session_count(self) -> int:
         """Get the number of currently active sessions (for debugging)."""
         with self._sessions_lock:
             return len(self._active_sessions)
 
 
-def db_name_to_path(
-    db_name: str, base_dir: Optional[str] = None, full_url: bool = False
-):
     """Convert database name to file path or URL.
 
     Args:

@@ -93,7 +93,6 @@ def _text(value: Any, name: str) -> str:
     return value
 
 
-def checked_target_url(url: Any) -> str:
     """An absolute http(s) URL with a host and no credentials, or 422.
     Where it may point is the SSRF guard's call, at every delivery."""
     parts = urlsplit(_text(url, "target_url").strip())
@@ -108,7 +107,6 @@ def checked_target_url(url: Any) -> str:
     return parts.geturl()
 
 
-def checked_event_types(value: Any) -> str:
     """Space- or comma-separated event types (``*`` for all), normalised."""
     names = [
         name
@@ -128,7 +126,6 @@ def checked_event_types(value: Any) -> str:
     return " ".join(dict.fromkeys(names))
 
 
-def checked_secret(secret: Any) -> str:
     text = _text(secret, "secret")
     if len(text) < MIN_SECRET_CHARACTERS:
         raise HTTPException(
@@ -191,7 +188,6 @@ class WebhookSubscriptionModel(
         active: Optional[bool] = None
 
 
-def _checked_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
     """A subscription's fields validated, the secret encrypted."""
     if fields.get("target_url") is not None:
         fields["target_url"] = checked_target_url(fields["target_url"])
@@ -436,9 +432,6 @@ def _failed(model_registry: Any, delivery_id: str, attempts: int, error: str) ->
     )
 
 
-async def deliver(
-    model_registry: Any, delivery: Any, http_post: Optional[HttpPost] = None
-) -> None:
     """Send one claimed delivery and record how it went."""
     attempts = delivery.attempts + 1
     found = _live_subscriptions(model_registry, id=delivery.webhook_subscription_id)
@@ -462,7 +455,6 @@ async def deliver(
         response = await (http_post or _default_http_post)(
             subscription.target_url, content=body, headers=headers
         )
-    except Exception as exc:  # the network, TLS, or the SSRF guard: retried
         _failed(model_registry, delivery.id, attempts, f"{type(exc).__name__}: {exc}")
         return
     status = int(getattr(response, "status_code", 0))

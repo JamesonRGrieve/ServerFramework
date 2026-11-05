@@ -47,7 +47,6 @@ ROLES_TABLE = "roles"
 MEMBERSHIPS_TABLE = "user_teams"
 
 
-def _active(model: Any) -> Any:
     """The predicate for a permission, membership or invitation row that
     still grants access: not expired (no expiry, or one still ahead) and
     not deleted. Encoded once because it is security-critical.
@@ -58,34 +57,23 @@ def _active(model: Any) -> Any:
     would otherwise go on granting access.
     """
     not_expired = or_(model.expires_at.is_(None), model.expires_at > func.now())
-    if hasattr(model, "deleted_at"):
-        return and_(not_expired, model.deleted_at.is_(None))
     return not_expired
 
 
-def is_any_internal_id(user_id: str) -> bool:
     """Check if the user ID is any of the system IDs."""
-    return user_id in (ROOT_ID, SYSTEM_ID, TEMPLATE_ID)
 
 
-def is_root_id(user_id: str) -> bool:
     """Check if the user ID is the ROOT_ID."""
-    return user_id == ROOT_ID
 
 
-def is_system_id(user_id: str) -> bool:
     """Check if the user ID is the SYSTEM_ID."""
-    return user_id == SYSTEM_ID
 
 
-def is_system_user_id(user_id: str) -> bool:
     """Alias of :func:`is_system_id`. Some callers prefer the
     `_user_` form; both names resolve to the same SYSTEM_ID check so
     that authorization helpers do not fork on naming."""
-    return user_id == SYSTEM_ID
 
 
-def referenced_class(db_cls: Any, ref_name: str) -> Optional[Any]:
     """The mapped class ``db_cls`` references as ``ref_name``, found through
     its relationship of that name, else the foreign key on its
     ``<ref_name>_id`` column, else the table the reference names by the
@@ -118,7 +106,6 @@ def referenced_class(db_cls: Any, ref_name: str) -> Optional[Any]:
     return None
 
 
-def declarative_base_of(db_cls: Any) -> Any:
     """The declarative base a mapped class was built on: what the
     permission checks resolve the auth tables (roles, teams) through."""
     for base in db_cls.__mro__:
@@ -132,31 +119,23 @@ def is_template_id(user_id: str) -> bool:
     return user_id == TEMPLATE_ID
 
 
-def inherits_access(db_cls: Any) -> bool:
     """Whether records of ``db_cls`` take their access only from the
     records they reference (its ``permission_references``) and from
     Permission rows. Such a record's own owner, team and creator columns
     grant nothing: a user who wrote a message keeps it only while they can
     see its conversation, and a row planted on someone else's parent is
     not its planter's."""
-    return bool(getattr(db_cls, "permission_references", None))
 
 
-def server_row_modifiable_by(user_id: str, created_by_user_id: Optional[str]) -> bool:
     """Whether ``user_id`` may change a row ``created_by_user_id`` wrote,
     as far as its author goes: what ROOT wrote is ROOT's, and what SYSTEM
     or the template account wrote is ROOT's and SYSTEM's. Anyone may
     change what a user wrote, given access."""
-    if created_by_user_id == ROOT_ID:
         return is_root_id(user_id)
-    if created_by_user_id in (SYSTEM_ID, TEMPLATE_ID):
         return is_root_id(user_id) or is_system_id(user_id)
     return True
 
 
-def can_access_system_record(
-    user_id: str, record_user_id: str, minimum_role: Optional[str] | None = None
-) -> bool:
     """
     Determine if a user can access a system-owned record based on the system ID type.
 
@@ -169,12 +148,8 @@ def can_access_system_record(
         bool: True if access is granted, False otherwise
     """
     # ROOT_ID records are only accessible by ROOT_ID
-    if record_user_id == ROOT_ID:
-        return user_id == ROOT_ID
 
     # SYSTEM_ID records are readable by anyone, but only ROOT_ID and SYSTEM_ID can modify
-    if record_user_id == SYSTEM_ID:
-        if user_id in (ROOT_ID, SYSTEM_ID):
             return True
         # Regular users can only VIEW
         return minimum_role in (None, "user")
@@ -182,7 +157,6 @@ def can_access_system_record(
     # TEMPLATE_ID records are viewable, copyable, shareable and executable by all
     # but only ROOT_ID and SYSTEM_ID can modify (EDIT/DELETE)
     if record_user_id == TEMPLATE_ID:
-        if user_id in (ROOT_ID, SYSTEM_ID, TEMPLATE_ID):
             return True
         # For regular users, allow basic access
         return minimum_role in (None, "user")
@@ -207,7 +181,6 @@ def gen_not_found_msg(classname):
     return _canonical_gen_not_found_msg(classname)
 
 
-def validate_columns(cls, updated=None, **kwargs):
     """
     Validate that the provided column names exist in the model.
 
@@ -235,7 +208,6 @@ def validate_columns(cls, updated=None, **kwargs):
         )
 
 
-def get_referenced_records(record, visited=None):
     """
     Follow all permission_references chains to find the records that hold the actual permissions.
     (Still needed for hybrid permission reference checks if full SQL is too complex, and for create checks)
@@ -270,7 +242,6 @@ def get_referenced_records(record, visited=None):
 
     # Check for both permission_references (plural) and permission_reference (singular)
     has_plural_refs = (
-        hasattr(record, "permission_references") and record.permission_references
     )
     has_singular_ref = (
         hasattr(record, "permission_reference") and record.permission_reference
@@ -284,7 +255,6 @@ def get_referenced_records(record, visited=None):
 
     # Follow each reference in permission_references (plural)
     if has_plural_refs:
-        for ref_name in record.permission_references:
             # Get the reference attribute (relationship)
             ref_attr = getattr(record, ref_name, None)
 
@@ -327,7 +297,6 @@ def get_referenced_records(record, visited=None):
     return result
 
 
-def find_create_permission_reference_chain(cls, db, visited=None):
     """
     Follow create_permission_reference chain to find the class that determines create permissions.
     (Still needed for create checks)
@@ -359,13 +328,9 @@ def find_create_permission_reference_chain(cls, db, visited=None):
     if hasattr(cls, "create_permission_reference") and cls.create_permission_reference:
         create_perm_ref = cls.create_permission_reference
     # If not defined but has exactly one permission_reference, use that
-    elif hasattr(cls, "permission_references") and len(cls.permission_references) == 1:
-        create_perm_ref = cls.permission_references[0]
     # If multiple references and no create_permission_reference, raise error
-    elif hasattr(cls, "permission_references") and len(cls.permission_references) > 1:
         # Log warning but continue to avoid breaking existing code
         logger.warning(
-            f"Multiple permission references in {cls.__name__} but no create_permission_reference defined: {cls.permission_references}"
         )
         # We'll return this class as the final class since we can't determine which reference to follow
         return (cls, None)
@@ -389,7 +354,6 @@ def find_create_permission_reference_chain(cls, db, visited=None):
         )
 
 
-def check_permission_table_access(user_id, cls, db, operation=None, **kwargs):
     """
     Special permission check for the Permission table.
     Users need SHARE permission or admin access to the resource they're trying to manage permissions for.
@@ -417,18 +381,13 @@ def check_permission_table_access(user_id, cls, db, operation=None, **kwargs):
 
     # Special handling for system users
     if is_root_id(user_id):
-        return (True, None)  # ROOT_ID can manage all permissions
 
     if is_system_id(user_id):
-        return (True, None)  # SYSTEM_ID can also manage all permissions
 
     # Check if the user can manage permissions for this resource
     return can_manage_permissions(user_id, resource_type, resource_id, db, operation)
 
 
-def check_access_to_all_referenced_entities(
-    user_id, cls, db, minimum_role=None, **kwargs
-):
     """
     Check if the user has access to all referenced entities specified by foreign keys.
     (Still needed for create checks, uses optimized permission checks internally)
@@ -457,7 +416,6 @@ def check_access_to_all_referenced_entities(
 
     # Get all the foreign key relationships
     # Check if permission_references attribute exists and is not empty/None
-    permission_refs = getattr(cls, "permission_references", None)
     if not permission_refs:
         return (True, None)
 
@@ -516,7 +474,6 @@ def check_access_to_all_referenced_entities(
 _resource_model_map_cache: dict[tuple[str, ...], dict[str, Any]] = {}
 
 
-def _resource_type_model_map(bll_modules: tuple[str, ...]) -> dict[str, Any]:
     """Build (and cache) a ``{__tablename__: SQLAlchemy model}`` map for the given
     BLL modules.
 
@@ -537,7 +494,6 @@ def _resource_type_model_map(bll_modules: tuple[str, ...]) -> dict[str, Any]:
     model_map: dict[str, Any] = {}
     for module_name in bll_modules:
         try:
-            module = importlib.import_module(module_name)
         except (ImportError, ModuleNotFoundError) as e:
             logger.debug(
                 f"Could not import BLL module {module_name} for permission check: {e}"
@@ -557,17 +513,12 @@ def _resource_type_model_map(bll_modules: tuple[str, ...]) -> dict[str, Any]:
                         db_model, "__tablename__"
                     ):
                         model_map.setdefault(db_model.__tablename__, db_model)
-                except Exception as e:
                     logger.debug(f"Error accessing .DB property of {name}: {e}")
                     continue
 
-    _resource_model_map_cache[bll_modules] = model_map
     return model_map
 
 
-def can_manage_permissions(
-    user_id, resource_type, resource_id, db, operation_type=None
-):
     """
     Check if a user can manage permissions for a resource.
     Users need SHARE permission or admin access to manage permissions.
@@ -584,10 +535,8 @@ def can_manage_permissions(
     """
     # Special handling for system users
     if is_root_id(user_id):
-        return (True, None)  # ROOT_ID can manage all permissions
 
     if is_system_id(user_id):
-        return (True, None)  # SYSTEM_ID can also manage all permissions
 
     # Validate resource_type to prevent injection
     if not isinstance(resource_type, str) or not resource_type.isalnum():
@@ -634,7 +583,6 @@ def can_manage_permissions(
         return (False, f"Resource {resource_type} with ID {resource_id} not found")
 
     # Check for deleted records
-    if hasattr(record, "deleted_at") and record.deleted_at is not None:
         return (False, f"Cannot manage permissions for deleted records")
 
     # Check for explicit SHARE permission using check_permission. The
@@ -652,7 +600,6 @@ def can_manage_permissions(
         return (True, None)
 
     # Check if the user has EDIT permission to the resource
-    if user_can_edit(user_id, model_class, resource_id, db, declarative_base=base):
         # For deletion, check if they have DELETE permission as well
         if (
             operation_type == "delete"
@@ -678,7 +625,6 @@ def can_manage_permissions(
     )
 
 
-def user_can_create_referenced_entity(cls, user_id, db, minimum_role=None, **kwargs):
     """
     Check if user can create an entity based on create_permission_reference.
     (Still needed for create checks, uses optimized permission checks internally)
@@ -695,22 +641,16 @@ def user_can_create_referenced_entity(cls, user_id, db, minimum_role=None, **kwa
     """
     # Special handling for system users
     if is_root_id(user_id):
-        return (True, None)  # ROOT_ID can create anything
 
     # If no create_permission_reference, default to standard permission check
     create_perm_ref = None
     if hasattr(cls, "create_permission_reference") and cls.create_permission_reference:
         create_perm_ref = cls.create_permission_reference
-    elif hasattr(cls, "permission_references") and cls.permission_references:
         # Auto-determine the create_permission_reference if not explicitly defined
-        if len(cls.permission_references) == 1:
             # If only one reference, use it automatically
-            create_perm_ref = cls.permission_references[0]
-        elif len(cls.permission_references) > 1:
             # If multiple references but no create_permission_reference, raise error
             return (
                 False,
-                f"Multiple permission references found in {cls.__name__} but no create_permission_reference defined: {cls.permission_references}",
             )
 
     if not create_perm_ref:
@@ -756,7 +696,6 @@ def user_can_create_referenced_entity(cls, user_id, db, minimum_role=None, **kwa
 
         # Check if the user has admin access to the referenced entity
         # Admin access (EDIT permission) is required to create entities that reference this entity
-        if not user_can_edit(
             user_id,
             ref_model,
             ref_id,
@@ -770,12 +709,9 @@ def user_can_create_referenced_entity(cls, user_id, db, minimum_role=None, **kwa
 
         return (True, None)
 
-    except Exception as e:
         return (False, f"Error checking create permissions: {str(e)}")
 
 
-class PermissionType(PyEnum):  # Inherit from Python Enum
-    """Enum representing the type of permission."""
 
     VIEW = "can_view"
     EXECUTE = "can_execute"
@@ -790,8 +726,6 @@ class PermissionType(PyEnum):  # Inherit from Python Enum
 SERVER_ROW_MODIFYING_LEVELS = frozenset({PermissionType.EDIT, PermissionType.DELETE})
 
 
-class PermissionResult(PyEnum):  # Inherit from Python Enum
-    """Enum representing the result of a permission check."""
 
     GRANTED = "granted"
     DENIED = "denied"
@@ -799,16 +733,6 @@ class PermissionResult(PyEnum):  # Inherit from Python Enum
     ERROR = "error"
 
 
-def _granted_by_filter(
-    user_id: str,
-    record_cls: Any,
-    record_db_cls: Any,
-    record_id: str,
-    db: Session,
-    declarative_base: Any,
-    required_level: PermissionType,
-    minimum_role: Optional[str],
-) -> tuple[PermissionResult, Optional[str]]:
     """``check_permission``'s answer from ``generate_permission_filter``
     alone: granted when the record matches it."""
     permission_filter = generate_permission_filter(
@@ -823,16 +747,6 @@ def _granted_by_filter(
     )
 
 
-def check_permission(
-    user_id,
-    record_cls,
-    record_id,
-    db,
-    declarative_base,
-    required_level=None,
-    minimum_role=None,
-    db_manager=None,
-):
     """
     Check if a user has permission to access a record using DB-level filtering logic.
     Determines the required PermissionType based on minimum_role or uses the provided required_level.
@@ -907,7 +821,6 @@ def check_permission(
             )
 
         # Check if the record is deleted - only ROOT_ID can see deleted records
-        if hasattr(record, "deleted_at") and record.deleted_at is not None:
             if not is_root_id(user_id):
                 return (
                     PermissionResult.DENIED,
@@ -962,12 +875,10 @@ def check_permission(
 
         # Check for records created by ROOT_ID - only ROOT_ID can access them
         elif hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
-            "ROOT_ID"
         ):
             if not is_root_id(user_id):
                 return (
                     PermissionResult.DENIED,
-                    f"User {user_id} cannot access records created by ROOT_ID",
                 )
             return (PermissionResult.GRANTED, None)
 
@@ -984,7 +895,6 @@ def check_permission(
         if (
             creator_grants_apply
             and hasattr(record, "created_by_user_id")
-            and record.created_by_user_id == env("SYSTEM_ID")
         ):
             # For view operations, allow access
             if required_level == PermissionType.VIEW:
@@ -993,7 +903,6 @@ def check_permission(
             if not (is_root_id(user_id) or is_system_id(user_id)):
                 return (
                     PermissionResult.DENIED,
-                    f"User {user_id} cannot modify records created by SYSTEM_ID",
                 )
             return (PermissionResult.GRANTED, None)
 
@@ -1056,21 +965,12 @@ def check_permission(
             minimum_role,
         )
 
-    except Exception as e:
         logger.error(
             f"Error checking permission for {record_cls.__name__} {record_id}: {str(e)}"
         )
         return (PermissionResult.ERROR, str(e))
 
 
-def _get_admin_accessible_team_ids_cte(
-    user_id: str,
-    db: Optional[Session],
-    declarative_base,
-    max_depth: int = 5,
-    unique_suffix: str = "",
-    memberships_only: bool = False,
-) -> CTE:
     """
     Generates a recursive CTE to find all team IDs accessible by a user,
     including teams they are directly a member of and parent teams.
@@ -1112,7 +1012,6 @@ def _get_admin_accessible_team_ids_cte(
     # Aliased, so the subquery never correlates to a teams table the
     # enclosing query reads.
     live_team = aliased(team_db_cls, name=f"{cte_name}_live")
-    live_team_ids = select(live_team.id).where(live_team.deleted_at.is_(None))
     membership_select = (
         select(
             user_team_db_cls.team_id.label("id"),
@@ -1144,8 +1043,6 @@ def _get_admin_accessible_team_ids_cte(
             invitation_db_cls.team_id.isnot(None),
             invitation_db_cls.team_id.in_(live_team_ids),
         ]
-        if hasattr(invitation_db_cls, "deleted_at"):
-            invitation_filters.append(invitation_db_cls.deleted_at.is_(None))
         if hasattr(invitation_db_cls, "expires_at"):
             invitation_filters.append(_active(invitation_db_cls))
 
@@ -1170,9 +1067,7 @@ def _get_admin_accessible_team_ids_cte(
         )
         for condition in invitation_filters:
             invitee_invitation_query = invitee_invitation_query.where(condition)
-        if hasattr(invitee_db_cls, "deleted_at"):
             invitee_invitation_query = invitee_invitation_query.where(
-                invitee_db_cls.deleted_at.is_(None)
             )
         invitee_invitation_query = invitee_invitation_query.where(
             invitee_db_cls.declined_at.is_(None)
@@ -1208,7 +1103,6 @@ def _get_admin_accessible_team_ids_cte(
     parent_alias = aliased(team_db_cls, name=f"{cte_name}_parent")
     recursive_term = recursive_term.where(
         team_alias.parent_id.in_(
-            select(parent_alias.id).where(parent_alias.deleted_at.is_(None))
         )
     )
 
@@ -1217,9 +1111,6 @@ def _get_admin_accessible_team_ids_cte(
     return recursive_cte
 
 
-def _live_sub_team_ids_cte(
-    user_id: str, declarative_base: Any, unique_suffix: str
-) -> CTE:
     """A recursive CTE of the teams at or below the user's live memberships:
     each team the user holds an enabled, unexpired, undeleted membership in
     (when that team is not deleted), and every sub-team beneath one at any
@@ -1243,7 +1134,6 @@ def _live_sub_team_ids_cte(
         .where(_active(user_team_db_cls))
         .where(
             user_team_db_cls.team_id.in_(
-                select(live_team.id).where(live_team.deleted_at.is_(None))
             )
         )
     )
@@ -1255,13 +1145,9 @@ def _live_sub_team_ids_cte(
         select(child.id.label("id"))
         .select_from(child)
         .join(reached, child.parent_id == reached.c.id)
-        .where(child.deleted_at.is_(None))
     )
 
 
-def _in_live_team_hierarchy(
-    team_id_column: Any, user_id: str, declarative_base: Any, unique_suffix: str
-) -> Any:
     """Whether ``team_id_column`` names a team the user reaches through their
     live memberships, in either direction: a team they belong to, its live
     parents (up to the depth team-scoped records reach), or its live
@@ -1288,7 +1174,6 @@ def _in_live_team_hierarchy(
     )
 
 
-def admin_role_ids(declarative_base: Any, unique_suffix: str = "") -> CTE:
     """A recursive CTE of the roles that administer a team: the admin role
     (``ADMIN_ROLE_ID``) and every role that extends it, by ``parent_id``
     ancestry by id (superadmin among them). This is the one admin rule:
@@ -1325,22 +1210,13 @@ def admin_role_ids(declarative_base: Any, unique_suffix: str = "") -> CTE:
     )
 
 
-def role_extends_admin(db: Session, declarative_base: Any, role_id: str) -> bool:
     """Whether ``role_id`` is the admin role or extends it (``admin_role_ids``)."""
     admin_roles = admin_role_ids(declarative_base)
-    found = db.execute(
         select(admin_roles.c.id).where(admin_roles.c.id == role_id).limit(1)
     )
     return found.first() is not None
 
 
-def _live_membership_in(
-    team_id_column: Any,
-    user_id: str,
-    declarative_base: Any,
-    unique_suffix: str,
-    role_ids: Optional[CTE] = None,
-) -> Any:
     """Whether ``user_id`` belongs to the team ``team_id_column`` names
     through an enabled, unexpired, undeleted membership, the team itself not
     deleted (TeamAuthority's live membership); held under one of
@@ -1355,16 +1231,12 @@ def _live_membership_in(
         user_team_db_cls.team_id == team_id_column,
         user_team_db_cls.enabled == True,
         _active(user_team_db_cls),
-        team_id_column.in_(select(live_team.id).where(live_team.deleted_at.is_(None))),
     ]
     if role_ids is not None:
         conditions.append(user_team_db_cls.role_id.in_(select(role_ids.c.id)))
     return exists().where(and_(*conditions))
 
 
-def _server_rows_kept(
-    resource_db_cls: Any, required_permission_level: PermissionType
-) -> list[Any]:
     """The restriction that keeps a row the server wrote the server's to
     edit or delete (``server_row_modifiable_by``), for a requester who is
     neither ROOT nor SYSTEM; none at other levels."""
@@ -1377,19 +1249,11 @@ def _server_rows_kept(
         or_(
             resource_db_cls.created_by_user_id.is_(None),
             resource_db_cls.created_by_user_id.notin_(
-                [ROOT_ID, SYSTEM_ID, TEMPLATE_ID]
             ),
         )
     ]
 
 
-def _role_filter(
-    user_id: str,
-    role_db_cls: Any,
-    declarative_base: Any,
-    required_permission_level: PermissionType,
-    unique_suffix: str,
-) -> Any:
     """The rule for roles, for a requester who is neither ROOT nor SYSTEM.
 
     A system role (no team, written by the server: the seeded ones) is
@@ -1408,7 +1272,6 @@ def _role_filter(
                 and_(
                     role_db_cls.team_id.is_(None),
                     role_db_cls.created_by_user_id.in_(
-                        [ROOT_ID, SYSTEM_ID, TEMPLATE_ID]
                     ),
                 ),
                 _live_membership_in(
@@ -1433,10 +1296,8 @@ def _role_filter(
         ]
     else:
         return false()
-    return and_(role_db_cls.deleted_at.is_(None), *conditions)
 
 
-def _resolve_db_class(resource_cls: Type[Any], declarative_base) -> Type[Any]:
     """Resolve a resource class to its SQLAlchemy model class.
 
     Handles three cases:
@@ -1453,14 +1314,6 @@ def _resolve_db_class(resource_cls: Type[Any], declarative_base) -> Type[Any]:
         return resource_cls
 
 
-def _build_direct_permission_filter(
-    user_id: str,
-    resource_cls: Type[Any],
-    accessible_team_ids_cte: CTE,
-    db: Session,
-    required_permission_level: "PermissionType",
-    declarative_base,
-):
     """
     Generates a SQLAlchemy filter expression to check for direct permissions
     assigned via the Permission table (user, team, or role-based).
@@ -1559,18 +1412,6 @@ def _build_direct_permission_filter(
     )
 
 
-def _inherited_permission_filter(
-    user_id: str,
-    resource_cls: Type[Any],
-    resource_db_cls: Type[Any],
-    accessible_team_ids_cte: CTE,
-    db: Session,
-    declarative_base: Any,
-    required_permission_level: PermissionType,
-    visited_classes: set,
-    minimum_role: Optional[str],
-    db_manager: Any,
-) -> Any:
     """The filter for a class that inherits its access (``inherits_access``),
     for a requester who is neither ROOT nor SYSTEM: a record is reachable at
     the level one of its referenced records is (a message, through its
@@ -1588,7 +1429,6 @@ def _inherited_permission_filter(
             declarative_base,
         )
     ]
-    for ref_name in resource_db_cls.permission_references:
         ref_cls = referenced_class(resource_db_cls, ref_name)
         ref_column = getattr(resource_db_cls, f"{ref_name}_id", None)
         if ref_cls is None or ref_column is None:
@@ -1609,23 +1449,11 @@ def _inherited_permission_filter(
         grants.append(ref_column.in_(select(ref_cls.id).where(ref_filter)))
 
     restrictions = []
-    if hasattr(resource_db_cls, "deleted_at"):
-        restrictions.append(resource_db_cls.deleted_at.is_(None))
     # The requester is neither ROOT nor SYSTEM (both returned earlier).
     restrictions.extend(_server_rows_kept(resource_db_cls, required_permission_level))
     return and_(or_(*grants), *restrictions)
 
 
-def generate_permission_filter(
-    user_id: str,
-    resource_cls: Type[Any],
-    db: Session,
-    declarative_base,
-    required_permission_level: "PermissionType" = None,  # type: ignore[assignment]
-    _visited_classes: Optional[set] | None = None,
-    minimum_role: Optional[str] | None = None,
-    db_manager=None,
-):
     """
     Generate a SQLAlchemy filter expression to filter query results based on permissions.
 
@@ -1791,7 +1619,6 @@ def generate_permission_filter(
         "Invitees",
     ]:
         # SYSTEM_ID records viewable by all, but only modifiable by ROOT_ID and SYSTEM_ID
-        if resource_db_cls.user_id == SYSTEM_ID:
             if not (is_root_id(user_id) or is_system_id(user_id)):
                 if required_permission_level != PermissionType.VIEW:
                     return false()
@@ -1815,7 +1642,6 @@ def generate_permission_filter(
         # SYSTEM_ID-created records: viewable by all (grant); EDIT/DELETE restricted
         # to ROOT_ID and SYSTEM_ID via the universal-deny return below.
         if required_permission_level == PermissionType.VIEW:
-            conditions.append(resource_db_cls.created_by_user_id == SYSTEM_ID)
             conditions.append(resource_db_cls.created_by_user_id == TEMPLATE_ID)
         else:
             # For modifying operations, non-system users cannot edit SYSTEM/TEMPLATE
@@ -1864,7 +1690,6 @@ def generate_permission_filter(
         team_conditions.append(parent_team_access)
 
         # Users can see system-created teams
-        team_conditions.append(resource_db_cls.created_by_user_id == SYSTEM_ID)
 
         # Users can see teams they created
         team_conditions.append(resource_db_cls.created_by_user_id == user_id)
@@ -1974,8 +1799,6 @@ def generate_permission_filter(
     # Inequality comparisons against NULL evaluate to NULL (treated as FALSE in
     # WHERE), so the ``ROOT_ID`` denials are wrapped to allow NULL values.
     if not is_root_id(user_id):
-        if hasattr(resource_db_cls, "deleted_at"):
-            final_filter = and_(final_filter, resource_db_cls.deleted_at.is_(None))
         if hasattr(
             resource_db_cls, "user_id"
         ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees"]:
@@ -1983,7 +1806,6 @@ def generate_permission_filter(
                 final_filter,
                 or_(
                     resource_db_cls.user_id.is_(None),
-                    resource_db_cls.user_id != ROOT_ID,
                 ),
             )
         if hasattr(resource_db_cls, "created_by_user_id") and (
@@ -2003,7 +1825,6 @@ def generate_permission_filter(
                 final_filter,
                 or_(
                     resource_db_cls.created_by_user_id.is_(None),
-                    resource_db_cls.created_by_user_id != ROOT_ID,
                     *allow_viewer_owned,
                 ),
             )
@@ -2017,7 +1838,6 @@ def generate_permission_filter(
                     or_(
                         resource_db_cls.created_by_user_id.is_(None),
                         and_(
-                            resource_db_cls.created_by_user_id != SYSTEM_ID,
                             resource_db_cls.created_by_user_id != TEMPLATE_ID,
                         ),
                     ),
@@ -2026,9 +1846,6 @@ def generate_permission_filter(
     return final_filter
 
 
-def live_team_members_filter(
-    requester_id: str, team_id: str, users_db_cls: Any, declarative_base: Any
-) -> Any:
     """A filter on ``users_db_cls`` for the live members of ``team_id`` the
     requester may list: users with an enabled, unexpired, undeleted
     membership in it, when the team is live and the requester holds a live
@@ -2048,7 +1865,6 @@ def live_team_members_filter(
         user_team_db_cls.enabled == True,
         _active(user_team_db_cls),
         user_team_db_cls.team_id.in_(
-            select(live_team.id).where(live_team.deleted_at.is_(None))
         ),
     )
     if is_root_id(requester_id) or is_system_id(requester_id):
@@ -2061,15 +1877,6 @@ def live_team_members_filter(
     )
 
 
-def user_has_permission(
-    user_id,
-    record_cls,
-    record_id,
-    db,
-    permission_type: PermissionType,
-    declarative_base=None,
-    db_manager=None,
-) -> bool:
     """
     Check if a user has a specific permission for a record.
 
@@ -2132,7 +1939,6 @@ def user_can_share(
     )
 
 
-def auto_determine_create_permission_reference(cls):
     """
     Automatically determine and set create_permission_reference for a class
     if it has exactly one permission reference.
@@ -2140,19 +1946,11 @@ def auto_determine_create_permission_reference(cls):
     Args:
         cls: The model class to update
     """
-    if hasattr(cls, "permission_references") and len(cls.permission_references) == 1:
-        cls.create_permission_reference = cls.permission_references[0]
-    elif hasattr(cls, "permission_references") and len(cls.permission_references) > 1:
         logger.warning(
-            f"Multiple permission references in {cls.__name__} but no create_permission_reference defined: {cls.permission_references}"
         )
     return cls
 
 
-@classmethod  # type: ignore[misc]
-def user_has_read_access(
-    cls, user_id, record, db, declarative_base=None, minimum_role=None, referred=False
-):
     """
     Check if a user has read access to a user record.
 
@@ -2191,7 +1989,6 @@ def user_has_read_access(
             return False
 
     # Check for deleted records - only ROOT_ID can see them
-    if hasattr(record, "deleted_at") and record.deleted_at is not None:
         return is_root_id(user_id)
 
     # Users can see their own records

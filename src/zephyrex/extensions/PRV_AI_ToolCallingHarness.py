@@ -75,7 +75,6 @@ from zephyrex.extensions.PRV_Abstract_AI import (
 # ---------------------------------------------------------------------------
 
 
-class FakeToolCallingProvider(AbstractAIProvider):
     """In-process fake `AbstractAIProvider` for the tool-calling harness.
 
     Implements deterministic tool-calling semantics so the harness can be
@@ -193,8 +192,6 @@ class FakeToolCallingProvider(AbstractAIProvider):
     ) -> bytes:
         return b""
 
-    @classmethod
-    def _pre_estimate_tokens(cls, prompt: Any, max_tokens: Optional[int] = None) -> int:
         # Simple input + max ceiling estimator (matches the abstract's
         # description). Concrete providers use a real tokenizer.
         if isinstance(prompt, str):
@@ -218,7 +215,6 @@ class FakeToolCallingProvider(AbstractAIProvider):
 # ---------------------------------------------------------------------------
 
 
-def validate_chat_response_shape(response: Any) -> None:
     """Assert the ``chat()`` response satisfies the abstract contract.
 
     The abstract says ``chat()`` returns a dict with at least ``content``
@@ -246,7 +242,6 @@ def validate_chat_response_shape(response: Any) -> None:
             )
 
 
-def validate_tool_call_payload(call: Any) -> ToolCall:
     """Coerce a provider's tool-call entry into the canonical ToolCall.
 
     Providers translate from upstream wire shapes (OpenAI's
@@ -283,7 +278,6 @@ def validate_tool_call_payload(call: Any) -> ToolCall:
 # ---------------------------------------------------------------------------
 
 
-class AbstractToolCallingHarness:
     """Reusable contract test bundle for `AbstractAIProvider` providers.
 
     Subclasses override the classmethods below to wire in their concrete

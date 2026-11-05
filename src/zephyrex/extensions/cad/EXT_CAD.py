@@ -34,7 +34,6 @@ OPENSCAD = "openscad"
 MAX_PROBLEMS = 20
 
 
-class EXT_CAD(AbstractStaticExtension):
     name: ClassVar[str] = "cad"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

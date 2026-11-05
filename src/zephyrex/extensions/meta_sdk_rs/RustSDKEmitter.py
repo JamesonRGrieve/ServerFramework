@@ -154,7 +154,6 @@ def _body(resource: ResourceDescriptor, operation: Operation) -> Tuple[str, str]
     return "Some(body)", prelude
 
 
-def _render_method(resource: ResourceDescriptor, operation: Operation) -> str:
     args = _arg_list(operation)
     signature_args = f", {args}" if args else ""
     body_expr, prelude = _body(resource, operation)
@@ -223,7 +222,6 @@ def _format_rust_sources(files: List[Path]) -> None:
     )
 
 
-def generate_rust_sdk(*, model_registry: Any) -> None:
     """Emit a Rust client SDK for every manager in the registry.
 
     Self-gates on ``SDK_RS_OUTPUT_DIR``; returns immediately when unset.

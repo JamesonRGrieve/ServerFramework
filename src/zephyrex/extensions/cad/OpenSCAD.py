@@ -70,7 +70,6 @@ def checked_code(code: str) -> str:
     return code
 
 
-def definition(name: str, value: Value) -> str:
     """``name=value`` for ``-D``, the value a literal and nothing more."""
     if not _NAME.match(name):
         raise Refused(f"{name!r} is not a parameter name")

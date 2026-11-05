@@ -45,7 +45,6 @@ def titled(*words: str) -> Callable[[Pod], bool]:
     return lambda pod: any(word in str(pod.get("title", "")).lower() for word in words)
 
 
-class PRV_WolframAlpha_Math(AbstractMathProvider):
     name: ClassVar[str] = "wolfram_alpha"
     friendly_name: ClassVar[str] = "Wolfram|Alpha"
     description: ClassVar[str] = "Wolfram|Alpha computational knowledge engine"
@@ -60,8 +59,6 @@ class PRV_WolframAlpha_Math(AbstractMathProvider):
         ),
     )
 
-    @classmethod
-    async def _pods(cls, instance: ProviderInstanceModel, query: str) -> List[Pod]:
         appid = cls.setting(instance, "api_key")
         if not appid:
             raise TransientExternalError(

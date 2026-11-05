@@ -52,7 +52,6 @@ def chapter_html(chapter: Chapter) -> str:
     return f"<h2>{html.escape(chapter.title)}</h2>\n{_MARKDOWN.render(chapter.content)}"
 
 
-def as_markdown(book: Manuscript) -> Rendered:
     parts = [f"# {book.title}"]
     if book.author:
         parts.append(f"*{book.author}*")
@@ -82,7 +81,6 @@ def as_html(book: Manuscript) -> Rendered:
     )
 
 
-def as_epub(book: Manuscript) -> Rendered:
     from ebooklib import epub
 
     document = epub.EpubBook()

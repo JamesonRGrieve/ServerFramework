@@ -20,7 +20,6 @@ from zephyrex.lib.ProviderHTTPClient import path_segment
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
-class PRV_Facebook_Social(AbstractSocialProvider):
     name: ClassVar[str] = "facebook"
     friendly_name: ClassVar[str] = "Facebook"
     description: ClassVar[str] = "A Facebook Page"
@@ -51,10 +50,6 @@ class PRV_Facebook_Social(AbstractSocialProvider):
         )
         return str(found.get("permalink_url", ""))
 
-    @classmethod
-    async def publish(
-        cls, instance: ProviderInstanceModel, content: str, media_urls: List[str]
-    ) -> Dict[str, Any]:
         if len(media_urls) > 1:
             raise cls.refuse("a Page post here carries at most one photo or video")
         token, page = cls.token(instance), cls._page(instance)

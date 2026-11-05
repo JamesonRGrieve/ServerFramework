@@ -95,7 +95,6 @@ CHALLENGE_BYTES = 32
 _MILLISECONDS_PER_SECOND = 1000
 
 
-class AttestationTrust:
     """How far a credential's attestation was verified."""
 
     NONE = "none"  # the authenticator conveyed none
@@ -112,7 +111,6 @@ def _words(value: str) -> List[str]:
     return [word for word in value.replace(",", " ").split() if word]
 
 
-def _not_configured(problem: str) -> HTTPException:
     logger.error("webauthn_consumer is misconfigured: %s", problem)
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -120,7 +118,6 @@ def _not_configured(problem: str) -> HTTPException:
     )
 
 
-def config_issues() -> List[str]:
     """What stops the Relying Party from running, in words; empty when it
     can run."""
     issues: List[str] = []
@@ -154,12 +151,10 @@ def config_issues() -> List[str]:
     return issues
 
 
-def _trust_anchors(path: str) -> Tuple[bytes, ...]:
     certificates = x509.load_pem_x509_certificates(Path(path).read_bytes())
     return tuple(cert.public_bytes(Encoding.PEM) for cert in certificates)
 
 
-def _refused(ceremony: str, err: Exception) -> HTTPException:
     """A response the authenticator or browser sent that does not verify.
     The library's reason names the failed check, never a secret."""
     code = (
@@ -170,14 +165,11 @@ def _refused(ceremony: str, err: Exception) -> HTTPException:
     return HTTPException(status_code=code, detail=f"WebAuthn {ceremony} refused: {err}")
 
 
-@dataclass(frozen=True)
-class Descriptor:
     """A credential named in options: its id, and how it can be reached."""
 
     credential_id: bytes
     transports: Tuple[str, ...] = ()
 
-    def to_webauthn(self) -> PublicKeyCredentialDescriptor:
         known = {member.value for member in AuthenticatorTransport}
         return PublicKeyCredentialDescriptor(
             id=self.credential_id,
@@ -188,8 +180,6 @@ class Descriptor:
         )
 
 
-@dataclass(frozen=True)
-class RegisteredCredential:
     """A credential whose registration verified, ready to store."""
 
     credential_id: str
@@ -204,8 +194,6 @@ class RegisteredCredential:
     backed_up: bool
 
 
-@dataclass(frozen=True)
-class Assertion:
     """An authentication response, parsed but not yet verified."""
 
     credential_id: str
@@ -213,14 +201,11 @@ class Assertion:
     parsed: AuthenticationCredential
 
 
-@dataclass(frozen=True)
-class VerifiedAssertion:
     new_sign_count: int
     backed_up: bool
     user_verified: bool
 
 
-class CounterRegression(Exception):
     """A verified assertion whose signature counter did not advance: the
     credential's key exists in two places."""
 
@@ -230,8 +215,6 @@ class CounterRegression(Exception):
         self.received = received
 
 
-@dataclass(frozen=True)
-class RelyingPartyPolicy:
     rp_id: str
     rp_name: str
     origins: Tuple[str, ...]
@@ -242,8 +225,6 @@ class RelyingPartyPolicy:
     resident_key: ResidentKeyRequirement
     timeout_ms: int
 
-    @classmethod
-    def from_env(cls) -> "RelyingPartyPolicy":
         """The policy configured now; 503 when it cannot run."""
         rp_id = _setting("WEBAUTHN_CONSUMER_RP_ID")
         origins = tuple(_words(_setting("WEBAUTHN_CONSUMER_ORIGINS")))
@@ -284,16 +265,6 @@ class RelyingPartyPolicy:
 
     # -- Options ------------------------------------------------------------
 
-    def registration_options(
-        self,
-        *,
-        challenge: bytes,
-        user_handle: bytes,
-        user_name: str,
-        display_name: str,
-        exclude: Sequence[Descriptor],
-        attachment: Optional[AuthenticatorAttachment],
-    ) -> Dict[str, Any]:
         options = generate_registration_options(
             rp_id=self.rp_id,
             rp_name=self.rp_name,
@@ -343,9 +314,6 @@ class RelyingPartyPolicy:
                 ceremony, ValueError("the ceremony ran in a cross-origin frame")
             )
 
-    def verify_registration(
-        self, credential: Dict[str, Any], challenge: bytes
-    ) -> RegisteredCredential:
         """The credential the response registers; 400 when it fails any
         check or the attestation policy."""
         try:
@@ -398,7 +366,6 @@ class RelyingPartyPolicy:
             backed_up=verified.credential_backed_up,
         )
 
-    def _attestation_trust(self, fmt: AttestationFormat, has_chain: bool) -> str:
         if fmt == AttestationFormat.NONE:
             return AttestationTrust.NONE
         if not has_chain:
@@ -410,8 +377,6 @@ class RelyingPartyPolicy:
             else AttestationTrust.UNVERIFIED
         )
 
-    @staticmethod
-    def parse_assertion(credential: Dict[str, Any]) -> Assertion:
         try:
             parsed = parse_authentication_credential_json(credential)
         except WebAuthnException as err:
@@ -422,15 +387,6 @@ class RelyingPartyPolicy:
             parsed=parsed,
         )
 
-    def verify_assertion(
-        self,
-        assertion: Assertion,
-        *,
-        challenge: bytes,
-        public_key: bytes,
-        stored_sign_count: int,
-        require_user_verification: bool,
-    ) -> VerifiedAssertion:
         """The verified assertion; 401 when it fails a check, and
         :class:`CounterRegression` when it verifies but its counter did not
         advance."""
@@ -461,7 +417,6 @@ class RelyingPartyPolicy:
         )
 
 
-def _reports_discoverable(credential: Dict[str, Any]) -> bool:
     """The credProps client extension's answer; False when absent."""
     results = credential.get("clientExtensionResults")
     if not isinstance(results, dict):

@@ -46,7 +46,6 @@ from zephyrex.lib.RequestContext import (
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
 
-def parse_extension_csv(csv: str) -> list[str]:
     """Split a comma-separated extensions string into a trimmed, non-empty list.
 
     Extension names must be valid Python identifiers (alphanumeric + underscore).
@@ -64,9 +63,6 @@ def parse_extension_csv(csv: str) -> list[str]:
     return validated
 
 
-def _install_extension_deps(
-    extensions_str: str,
-) -> tuple[list[str], list[str]]:
     """Install extension dependencies and return ``(failed, successful)`` lists."""
     from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
 
@@ -90,7 +86,6 @@ def _install_extension_deps(
     return failed, successful
 
 
-def setup_extension_dependencies():
     """Install PIP dependencies for all configured extensions using ExtensionRegistry"""
     from zephyrex.lib.Environment import env
     from zephyrex.lib.Logging import logger
@@ -112,7 +107,6 @@ def setup_extension_dependencies():
         logger.info("Extension dependency installation completed")
         return True
 
-    except Exception as e:
         logger.error(f"Error installing extension dependencies: {e}")
         return False
 
@@ -129,7 +123,6 @@ import re as _re_module
 _STRICT_TRACE_ID_RE = _re_module.compile(r"^[0-9a-f]{32}$")
 
 
-def install_extension_dependencies_with_restart(extensions_str: str):
     """Install extension dependencies and restart if needed.
 
     Opt-in via INSTALL_EXTENSION_DEPS=true. Production deployments
@@ -140,14 +133,12 @@ def install_extension_dependencies_with_restart(extensions_str: str):
     if not extensions_str:
         return
 
-    if os.environ.get("INSTALL_EXTENSION_DEPS", "false").lower() not in (
         "true",
         "1",
         "yes",
     ):
         return
 
-    restart_flag = os.environ.get("_APP_DEPENDENCY_RESTART", "0")
     if restart_flag == "1":
         logger.debug(
             "Skipping dependency installation - already restarted for dependencies"
@@ -172,17 +163,14 @@ def install_extension_dependencies_with_restart(extensions_str: str):
             logger.info(
                 "Restarting application to ensure dependencies are properly loaded..."
             )
-            os.environ["_APP_DEPENDENCY_RESTART"] = "1"
             os.execl(sys.executable, sys.executable, *sys.argv)
 
-    except Exception as e:
         logger.error(f"Error installing extension dependencies: {e}")
         from zephyrex import ExtensionLoadError
 
         raise ExtensionLoadError(f"Failed to setup extension dependencies: {e}")
 
 
-def create_registry_with_db_manager(db_manager, extensions_list: Optional[str] = None):
     """Create a ModelRegistry with the proper DatabaseManager attached.
 
     Sentinel: ``extensions_list=None`` means "fall back to APP_EXTENSIONS";
@@ -231,21 +219,17 @@ def create_registry_with_db_manager(db_manager, extensions_list: Optional[str] =
     return registry
 
 
-@contextmanager
-def environment_overrides(overrides: Dict[str, Any]):
     """Context manager for temporarily overriding environment variables."""
     if overrides:
         from unittest.mock import patch
 
         from zephyrex.lib.Environment import settings
 
-        with patch.dict(os.environ, overrides), patch.multiple(settings, **overrides):
             yield
     else:
         yield
 
 
-def prepare_overrides(db_prefix: str, extensions: Optional[str]) -> Dict[str, str]:
     """Prepare environment variable overrides based on parameters."""
     overrides = {}
 
@@ -260,11 +244,6 @@ def prepare_overrides(db_prefix: str, extensions: Optional[str]) -> Dict[str, st
     return overrides
 
 
-def instance(
-    db_prefix: str = "",
-    extensions: Optional[str] = None,
-    extensions_path: Optional[str] = None,
-):
     """
     Create a FastAPI application instance with database prefix and extension configuration.
 
@@ -290,10 +269,8 @@ def instance(
         from zephyrex.lib.Paths import set_extensions_root
 
         set_extensions_root(extensions_path)
-    elif os.environ.get("EXTENSIONS_PATH"):
         from zephyrex.lib.Paths import set_extensions_root
 
-        set_extensions_root(os.environ["EXTENSIONS_PATH"])
 
     if extensions is None:
         extensions = env("APP_EXTENSIONS")
@@ -310,8 +287,6 @@ def instance(
             DatabaseManager(db_prefix), extensions
         )
         try:
-            instance_model_registry.commit()
-        except Exception as e:
             logger.error(f"Error booting {env('APP_NAME')} instance: {e}")
             from zephyrex import StartupError
 
@@ -324,7 +299,6 @@ def instance(
 SIGHUP_RESTART_EXIT_CODE = 75
 
 
-def install_sighup_handler(app: FastAPI) -> None:
     """Register a SIGHUP handler that performs a clean graceful restart.
 
     Item 20 refinement: in-process rebind of FastAPI routers, hooks, and
@@ -347,7 +321,6 @@ def install_sighup_handler(app: FastAPI) -> None:
         # blue-green deployment instead.
         return
 
-    def _handle_sighup(signum, frame):  # pragma: no cover -- signal path
         from zephyrex.extensions.HotReload import rebuild_registry
         from zephyrex.lib.Logging import logger
 
@@ -367,13 +340,11 @@ def install_sighup_handler(app: FastAPI) -> None:
             else:
                 _, diff = rebuild_registry(ext_registry, run_migrations=True)
                 logger.info(f"SIGHUP: {diff.summary()}")
-        except Exception as e:
             logger.error(f"SIGHUP diff/migration failed: {e}", exc_info=True)
 
         # Suppress the actual exit when running under pytest so test
         # assertions can verify handler installation without aborting
         # the test runner.
-        if os.environ.get("PYTEST_CURRENT_TEST"):
             return
 
         logger.info(
@@ -394,7 +365,6 @@ def install_sighup_handler(app: FastAPI) -> None:
     # (uvicorn's graceful shutdown), or to the default action if none.
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
-    def _handle_sigterm(signum, frame):
         from zephyrex.lib.Logging import logger
 
         logger.info("SIGTERM received -- draining")
@@ -415,7 +385,6 @@ def install_sighup_handler(app: FastAPI) -> None:
         logger.debug(f"Could not install SIGHUP handler: {e}")
 
 
-def _start_background_services(app) -> list:
     """Start opt-in background services for this worker.
 
     Generic and extension-agnostic: every loaded extension that defines a
@@ -438,7 +407,6 @@ def _start_background_services(app) -> list:
     if extension_registry is None:
         return []
 
-    requester_id = env("ROOT_ID")
     tasks: list = []
     for extension_class in getattr(extension_registry, "extensions", []) or []:
         register = getattr(extension_class, "register_services", None)
@@ -446,9 +414,7 @@ def _start_background_services(app) -> list:
             continue
         try:
             services = register(
-                model_registry=model_registry, requester_id=requester_id
             )
-        except Exception as exc:
             logger.error(
                 f"Extension "
                 f"{getattr(extension_class, 'name', extension_class)} "
@@ -466,7 +432,6 @@ def _start_background_services(app) -> list:
     return tasks
 
 
-def build_app(model_registry: ModelRegistry):
     """
     FastAPI application factory function with ModelRegistry.
     Returns a configured FastAPI application instance.
@@ -477,8 +442,6 @@ def build_app(model_registry: ModelRegistry):
     from zephyrex.lib.Environment import env
     from zephyrex.lib.Logging import logger
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
         """Handles startup and shutdown events for each worker"""
         db_mgr = getattr(app.state, "DB", None)
         if db_mgr is None:
@@ -486,7 +449,6 @@ def build_app(model_registry: ModelRegistry):
 
             db_prefix = (
                 "test.lifespan_fallback"
-                if os.environ.get("PYTEST_CURRENT_TEST")
                 else ""
             )
             db_mgr = DatabaseManager(db_prefix)
@@ -524,7 +486,6 @@ def build_app(model_registry: ModelRegistry):
                     "Falling back to in-memory backends."
                 )
                 valkey_client = None
-            except Exception as exc:
                 logger.warning(
                     "Valkey connection failed (%s); falling back to in-memory backends",
                     exc,
@@ -532,7 +493,6 @@ def build_app(model_registry: ModelRegistry):
                 valkey_client = None
 
         if valkey_client is None:
-            workers = int(os.environ.get("UVICORN_WORKERS", "1"))
             if workers > 1:
                 logger.warning(
                     "UVICORN_WORKERS=%d but VALKEY_URI is not set — "
@@ -558,7 +518,6 @@ def build_app(model_registry: ModelRegistry):
         if (env("RUN_BACKGROUND_SERVICES") or "").strip().lower() == "true":
             try:
                 background_tasks = _start_background_services(app)
-            except Exception as exc:  # never let a service break worker startup
                 logger.error(f"Failed to start background services: {exc}")
 
         try:
@@ -577,7 +536,6 @@ def build_app(model_registry: ModelRegistry):
 
                     _stub = ValkeyConnectionStub(api_key=valkey_uri)
                     await PRV_Valkey.close(_stub)
-                except Exception as exc:
                     logger.debug("Valkey close error: %s", exc)
             await db_mgr.close_worker()
 
@@ -700,13 +658,11 @@ def build_app(model_registry: ModelRegistry):
     app.add_middleware(JSONDepthMiddleware)
     app.add_middleware(ETagMiddleware)
 
-    class DrainingMiddleware:
         """Returns 503 when the app is draining (SIGHUP graceful shutdown)."""
 
         def __init__(self, asgi_app):
             self.app = asgi_app
 
-        async def __call__(self, scope, receive, send):
             if scope.get("type") == "http" and getattr(app.state, "draining", False):
                 body = json.dumps(
                     {"detail": "Service unavailable — shutting down"}
@@ -743,8 +699,6 @@ def build_app(model_registry: ModelRegistry):
     # identity for rate limiting (InboundSecurity), tenancy filters, and
     # downstream BLL authorization. It MUST only be populated from a
     # signature-verified token, otherwise this is a global auth bypass.
-    @app.middleware("http")
-    async def extract_jwt_context(request: Request, call_next):
         """Extract JWT token data and set request context"""
         clear_request_context()  # Clear any previous context
 
@@ -781,7 +735,6 @@ def build_app(model_registry: ModelRegistry):
                     "timezone": payload.get("timezone", "UTC"),
                 }
                 set_request_user(user_info)
-            except Exception:
                 # Verification failed — leave context empty; downstream auth
                 # dependencies will produce the 401.
                 pass
@@ -876,7 +829,6 @@ def build_app(model_registry: ModelRegistry):
                     response.headers["Deprecation"] = str(deprecated_in)
                 if sunset_in:
                     response.headers["Sunset"] = str(sunset_in)
-        except Exception:
             # Header injection is best-effort; never break the response.
             pass
 
@@ -912,8 +864,6 @@ def build_app(model_registry: ModelRegistry):
     try:
         from zephyrex.extensions.quota.BLL_Quota import QuotaExhaustedError
 
-        @app.exception_handler(QuotaExhaustedError)
-        async def quota_exhausted_handler(request: Request, exc: QuotaExhaustedError):
             return JSONResponse(
                 status_code=507,
                 content={
@@ -930,7 +880,6 @@ def build_app(model_registry: ModelRegistry):
     except ImportError:
         pass
 
-    def make_json_serializable(obj):
         """Recursively convert objects to JSON-serializable format.
 
         M-6 — secret types (Pydantic ``SecretStr``, framework ``SecretValue``,
@@ -964,7 +913,6 @@ def build_app(model_registry: ModelRegistry):
             # Pydantic model
             try:
                 return obj.model_dump(mode="json")
-            except Exception:
                 logger.warning(
                     "make_json_serializable: model_dump failed; "
                     "falling back to str()",
@@ -988,7 +936,6 @@ def build_app(model_registry: ModelRegistry):
                 else:
                     # Last resort - convert to string
                     return str(obj)
-            except Exception:
                 logger.warning(
                     "make_json_serializable: dict-style coercion failed; "
                     "falling back to str()",
@@ -1026,8 +973,6 @@ def build_app(model_registry: ModelRegistry):
     # 500 — handlers above (HTTPException, RequestValidationError,
     # JSONDecodeError) own the structured-error responses for the
     # framework's typed failure modes.
-    @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception):
         from zephyrex.lib.Logging import get_error_reporter
 
         logger.error(
@@ -1039,7 +984,6 @@ def build_app(model_registry: ModelRegistry):
                 exc,
                 {"path": request.url.path, "method": request.method},
             )
-        except Exception as reporter_error:
             logger.warning(
                 "ErrorReporter.report raised; swallowing to avoid masking "
                 f"the original exception. ({reporter_error})"
@@ -1054,10 +998,6 @@ def build_app(model_registry: ModelRegistry):
         )
 
     # Add exception handler for request validation errors that might include JSON parsing issues
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(
-        request: Request, exc: RequestValidationError
-    ):
         # Get the actual error details from the exception
         if hasattr(exc, "errors"):
             error_list = exc.errors()
@@ -1134,7 +1074,6 @@ def build_app(model_registry: ModelRegistry):
         for manager_name, router in model_registry.ep_routers.items():
             try:
                 app.include_router(router)
-            except Exception as e:
                 logger.error(f"CRITICAL: Failed to include router {manager_name}: {e}")
                 from zephyrex import RouterRegistrationError
 
@@ -1146,8 +1085,6 @@ def build_app(model_registry: ModelRegistry):
         async def health():
             return {"status": "UP"}
 
-        @app.get("/source", tags=["Meta"])
-        async def source() -> Dict[str, Any]:
             """Where to get this server's source (AGPL-3.0 section 13), and
             whether the running source is what was published, for the
             framework and each loaded extension. A deployment running
@@ -1165,14 +1102,11 @@ def build_app(model_registry: ModelRegistry):
 
         from zephyrex.endpoints.Operations import create_operations_router
 
-        def _db_health_check() -> bool:
             try:
                 from sqlalchemy import text
 
                 with model_registry.DB.manager._get_db_session() as session:
-                    session.execute(text("SELECT 1"))
                 return True
-            except Exception:
                 return False
 
         ops_router = create_operations_router(db_check=_db_health_check)
@@ -1199,8 +1133,6 @@ def build_app(model_registry: ModelRegistry):
         # backend exposes an exposition — the observability extension's
         # PrometheusMetricsBackend does when METRICS_BACKEND=prometheus; a 404
         # otherwise. Not docs-gated: scrapers need it on every deployment.
-        @app.get("/metrics", tags=["Meta"])
-        async def prometheus_metrics():
             from fastapi import HTTPException, Response
 
             from zephyrex.extensions.observability.EXT_Observability import (
@@ -1215,8 +1147,6 @@ def build_app(model_registry: ModelRegistry):
             payload, content_type = exposition
             return Response(content=payload, media_type=content_type)
 
-        @app.get("/v1", tags=["Authentication"], status_code=204)
-        async def verify_jwt(request: Request):
             """Verify JWT token and return 204 if valid, 401 if invalid"""
             from fastapi import HTTPException, Response
 
@@ -1249,7 +1179,6 @@ def build_app(model_registry: ModelRegistry):
 
             except HTTPException:
                 raise
-            except Exception as e:
                 logger.error(f"JWT verification error: {e}")
                 raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -1259,7 +1188,6 @@ def build_app(model_registry: ModelRegistry):
             from starlette.requests import Request as StarletteRequest
             from strawberry.fastapi import GraphQLRouter
 
-            def get_context(request: StarletteRequest):
                 """Context getter for GraphQL that provides authentication context"""
                 from zephyrex.lib.Logging import logger
 
@@ -1320,7 +1248,6 @@ def build_app(model_registry: ModelRegistry):
                                 logger.debug(
                                     f"GraphQL context: JWT authentication failed, user={user}"
                                 )
-                    except Exception as e:
                         logger.error(
                             f"Failed to authenticate user from GraphQL context: {e}"
                         )
@@ -1362,7 +1289,6 @@ def build_app(model_registry: ModelRegistry):
         for router in federation_report.rest_routers:
             try:
                 app.include_router(router)
-            except Exception as exc:
                 logger.warning("Failed to mount federation REST router: %s", exc)
 
     if env("MCP").strip().lower() == "true":
@@ -1382,8 +1308,6 @@ def build_app(model_registry: ModelRegistry):
         if _valkey_importable:
             app.state._valkey_uri = valkey_uri
 
-            @app.get("/health/valkey", tags=["Health"])
-            async def valkey_health():
                 client = getattr(app.state, "valkey", None)
                 if client is None:
                     return {"status": "DISABLED"}
@@ -1394,16 +1318,11 @@ def build_app(model_registry: ModelRegistry):
                         "status": "UP",
                         "version": info.get("redis_version", "unknown"),
                     }
-                except Exception as exc:
                     return JSONResponse(
                         status_code=503,
                         content={"status": "DOWN", "error": str(exc)},
                     )
 
-            @app.middleware("http")
-            async def invalidate_response_cache_on_mutation(
-                request: Request, call_next
-            ):
                 response = await call_next(request)
                 if request.method in ("POST", "PUT", "PATCH", "DELETE"):
                     try:
@@ -1413,7 +1332,6 @@ def build_app(model_registry: ModelRegistry):
                         if rcache is not None and response.status_code < 400:
                             path_prefix = "/".join(request.url.path.split("/")[:4])
                             await rcache.invalidate_prefix(path_prefix)
-                    except Exception:
                         pass
                 return response
 
@@ -1479,7 +1397,6 @@ def build_app(model_registry: ModelRegistry):
         "/manager/html",
     ]
 
-    async def _honeypot_response(request: Request):
         logger.warning(
             "Honeypot probe: %s %s from %s",
             request.method,
@@ -1505,7 +1422,6 @@ def build_app(model_registry: ModelRegistry):
         )
 
     # Test all models for PydanticUndefinedType before OpenAPI generation
-    def test_all_models_for_undefined_types():
         from zephyrex.lib.Logging import logger
 
         logger.debug("Testing all models for PydanticUndefinedType...")
@@ -1531,7 +1447,6 @@ def build_app(model_registry: ModelRegistry):
                                 logger.debug(
                                     f"  ✓ {model_class.__name__} serializes OK"
                                 )
-                            except Exception as e:
                                 if "PydanticUndefinedType" in str(e):
                                     logger.error(
                                         f"  ✗ UNDEFINED TYPE ERROR in {model_class.__name__}: {e}"
@@ -1556,7 +1471,6 @@ def build_app(model_registry: ModelRegistry):
                                     logger.debug(
                                         f"  - {model_class.__name__} has other error: {e}"
                                     )
-                    except Exception as e:
                         logger.debug(f"  Error testing {model_class}: {e}")
 
         if problematic_models:
@@ -1573,7 +1487,6 @@ def build_app(model_registry: ModelRegistry):
         return problematic_models
 
     # Override openapi to catch PydanticUndefinedType errors
-    def custom_openapi():
         if app.openapi_schema:
             return app.openapi_schema
         try:
@@ -1613,7 +1526,6 @@ def build_app(model_registry: ModelRegistry):
                 app.openapi_schema = openapi_schema
                 return app.openapi_schema
 
-            except Exception as step_error:
                 logger.error(f"OpenAPI generation failed at step: {step_error}")
                 if "PydanticUndefinedType" in str(step_error):
                     logger.error(
@@ -1639,7 +1551,6 @@ def build_app(model_registry: ModelRegistry):
                                     )
                                     # Try to serialize it
                                     jsonable_encoder(test_schema)
-                            except Exception as route_error:
                                 if "PydanticUndefinedType" in str(route_error):
                                     logger.error(
                                         f"PROBLEMATIC ROUTE FOUND: {route.path} - {route.methods}"
@@ -1658,12 +1569,10 @@ def build_app(model_registry: ModelRegistry):
                                             logger.error(
                                                 f"Annotations: {endpoint.__annotations__}"
                                             )
-                    except Exception as comp_error:
                         logger.error(f"Error testing components: {comp_error}")
 
                 raise step_error
 
-        except Exception as e:
             if "PydanticUndefinedType" in str(e):
                 from zephyrex.lib.Logging import logger
 
@@ -1693,7 +1602,6 @@ def build_app(model_registry: ModelRegistry):
         registered = discover_rate_limited_routes(app)
         if registered:
             logger.info(f"Item 71 rate-limit: registered {registered} route policies")
-    except Exception as exc:
         logger.warning(f"Item 71 rate-limit registry population failed: {exc}")
 
     return app

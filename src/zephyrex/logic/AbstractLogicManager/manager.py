@@ -51,7 +51,6 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 T = TypeVar("T")
 
 
-class Requester(Protocol):
     """The authenticated user a manager acts for.
 
     At runtime this is either the ORM ``User`` row or a ``CachedRequester``.
@@ -64,7 +63,6 @@ class Requester(Protocol):
     def email(self) -> Optional[str]: ...
 
 
-class CachedRequester(BaseModel):
     """A requester rebuilt from the entity cache. Every cached user field is
     kept (``extra="allow"``); ``id`` is required so a malformed cache entry
     fails validation and falls through to the database lookup."""
@@ -102,10 +100,8 @@ def _cached_type_hints(cls: type) -> Dict[str, Any]:
     return hints
 
 
-class _BoundModelDescriptor:
     """Descriptor providing registry-aware model access for BLL managers."""
 
-    def __get__(self, instance, owner):
         if owner is None:
             return self
 
@@ -135,7 +131,6 @@ def get_entity_cache():
     return _entity_cache
 
 
-def _cache_sync_run(coro, timeout: float | None = 2):
     """Drive an async coroutine to completion from synchronous code.
 
     Shared source of truth for the sync->async bridge used across the
@@ -162,7 +157,6 @@ def _cache_sync_run(coro, timeout: float | None = 2):
     return asyncio.run(coro)
 
 
-def _fire_and_forget(coro) -> None:
     """Run an async coroutine to completion in a background daemon thread,
     WITHOUT waiting for the result — the fire-and-forget counterpart to
     :func:`_cache_sync_run`. Shared so callers (non-blocking hook dispatch and
@@ -184,7 +178,6 @@ def _fire_and_forget(coro) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
-class AbstractBLLManager(ABC, Generic[ModelT]):
     _model: ClassVar[Optional[Type[BaseModel]]] = None
     _requester: Optional[Requester] = None
 
@@ -216,8 +209,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     # while class-level access returns the raw model for validation helpers (e.g., Model.Create).
     Model = _BoundModelDescriptor()
 
-    @property
-    def _caches_entities(self) -> bool:
         """Whether entities go through the entity cache: unless the manager
         opts out, or its model has write-only fields (``Field(exclude=True)``)
         — a cached dump omits them, so a cache hit would return an entity
@@ -226,8 +217,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             field.exclude for field in self.Model.model_fields.values()
         )
 
-    @property
-    def requester(self) -> Requester:
         """The authenticated requester. Raises ``AttributeError`` when the
         manager was built without one (minimal-registry or external managers),
         so ``getattr(manager, "requester", None)`` still reads as absent."""
@@ -282,14 +271,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 wrapped = wrap_method_with_hooks(cls, method_name)
                 setattr(cls, method_name, wrapped)
 
-    def __init__(
-        self,
-        model_registry=None,
-        requester_id: Optional[str] | None = None,
-        target_id: Optional[str] | None = None,
-        target_team_id: Optional[str] | None = None,
-        parent: Optional[Any] | None = None,
-    ):
         """
         Initialize the BLL manager.
 
@@ -301,7 +282,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             model_registry: ModelRegistry instance for accessing registry-bound models (required)
         """
         self.model_registry = model_registry
-        self.requester_id = requester_id
         self.target_id: Optional[str] = target_id
         self.target_team_id: Optional[str] = target_team_id
         self._target_user = None
@@ -342,7 +322,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     self.requester = CachedRequester.model_validate(cached_user)
                     self._register_search_transformers()
                     return
-            except Exception:
                 pass
 
         User = UserModel.DB(self.model_registry.DB.manager.Base)
@@ -353,7 +332,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         finally:
             try:
                 session.close()
-            except Exception as exc:
                 logger.debug(
                     "Failed to close requester lookup session in %s: %s",
                     self.__class__.__name__,
@@ -381,12 +359,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                         {f: dto_dict.get(f) for f in ("email",) if dto_dict.get(f)},
                     )
                 )
-            except Exception:
                 pass
         # Initialize any search transformers
         self._register_search_transformers()
 
-    def _update_models_from_registry(self):
         """
         Update the class Model attributes to use registry-bound models with extensions.
 
@@ -438,7 +414,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                         logger.debug(
                             f"Updated {manager_name}.NetworkModel to use resolved {model_name}.NetworkModel"
                         )
-                    except Exception as e:
                         logger.warning(
                             f"Failed to resolve NetworkModel for {model_name}: {e}, keeping function reference"
                         )
@@ -457,7 +432,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 resolved_network = self.__class__.NetworkModel(self.model_registry)
                 self.__class__.NetworkModel = resolved_network
                 logger.debug(f"Resolved callable NetworkModel for {manager_name}")
-            except Exception as e:
                 logger.warning(
                     f"Failed to resolve callable NetworkModel for {manager_name}: {e}"
                 )
@@ -477,8 +451,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     exc,
                 )
 
-    @property
-    def target(self) -> Any:
         """
         Lazy-loaded target record.
 
@@ -490,8 +462,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             self._target_loaded = True
         return self._target
 
-    @target.setter
-    def target(self, value: Any) -> None:
         """
         Set target record and mark as loaded.
 
@@ -544,7 +514,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """
         self.search_transformers[field_name] = transformer
 
-    def get_field_types(self):
         """Analyzes the Model class to categorize fields by type."""
         string_fields = []
         numeric_fields = []
@@ -571,10 +540,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return string_fields, numeric_fields, date_fields, boolean_fields
 
-    def build_search_filters(
-        self,
-        search_params: Dict[str, Any],
-    ) -> List:
         """Build SQLAlchemy filters from search parameters."""
         filters = []
         string_fields, numeric_fields, date_fields, boolean_fields = (
@@ -663,7 +628,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             elif field_name in date_fields and isinstance(value, dict):
                 conditions = []
 
-                def _parse_date_value(v):
                     if isinstance(v, (datetime, date)):
                         return v
                     if isinstance(v, str):
@@ -815,7 +779,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return filters
 
-    def _parse_includes(self, include: Union[List[str], str]) -> List[str]:
         """Parse includes parameter into a list of relationship names.
 
         Args:
@@ -848,7 +811,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return validated_includes
 
-    def _parse_fields(self, fields: Union[List[str], str]) -> List[str]:
         """Parse fields parameter into a list of field names.
 
         Args:
@@ -879,9 +841,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return validated_fields
 
-    def validate_fields(
-        self, fields: Optional[Union[List[str], str]]
-    ) -> Optional[List[str]]:
         """
         Validate that requested fields exist in the model.
         Returns the processed fields list.
@@ -924,9 +883,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return fields_list
 
-    def validate_includes(
-        self, includes: Optional[Union[List[str], str]]
-    ) -> Optional[List[str]]:
         """
         Validate that requested includes exist as valid relationships for the model.
 
@@ -953,7 +909,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         include_list = self._parse_includes(include) if include else []
         return self.resolve_include_paths(self.DB, include_list)
 
-    def _resolve_load_only_columns(self, fields_list: List[str]) -> List[Any]:
         """Resolve field names to SQLAlchemy load_only compatible attributes."""
         mapper = getattr(self.DB, "__mapper__", None)
         if not mapper:
@@ -967,13 +922,11 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         if hasattr(mapper, "column_attrs"):
             try:
                 column_field_keys = {prop.key for prop in mapper.column_attrs}
-            except Exception:
                 column_field_keys = set()
         relationship_keys: Set[str] = set()
         if hasattr(mapper, "relationships"):
             try:
                 relationship_keys = set(mapper.relationships.keys())
-            except Exception:
                 relationship_keys = set()
 
         if not column_field_keys and mapper_keys:
@@ -1044,10 +997,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return resolved
 
-    @staticmethod
-    def resolve_include_paths(
-        model_class: Any, include_fields: List[str]
-    ) -> List[IncludePath]:
         """Resolve include names (dot notation for nested relationships) to
         the relationship-key paths the database layer loads, each related row
         under the requester's own VIEW rule (``load_visible_includes``).
@@ -1063,7 +1012,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         paths: List[IncludePath] = []
 
         # Helper: resolve a single attribute name to an actual relationship attribute
-        def _resolve_relationship_attribute(cls, name):
             """Try to resolve a relationship attribute on cls for the given include name.
 
             Resolution strategy:
@@ -1080,7 +1028,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                         candidate.property, "mapper"
                     ):
                         return candidate
-            except Exception:
                 # fall through to mapper-based resolution
                 pass
 
@@ -1101,7 +1048,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     for col in getattr(rel, "local_columns", set()):
                         try:
                             col_name = getattr(col, "name", getattr(col, "key", None))
-                        except Exception:
                             col_name = None
                         if col_name == fk_name or col_name == name:
                             return getattr(cls, rel.key)
@@ -1162,15 +1108,11 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                                         foreign_keys=[getattr(cls, fk_name)],
                                         viewonly=True,
                                     )
-                                    setattr(cls, name, rel_attr)
                                     return getattr(cls, name)
-                                except Exception:
                                     # If dynamic relationship creation fails, ignore and continue
                                     pass
-                except Exception:
                     # ignore any errors in dynamic relationship creation
                     pass
-            except Exception:
                 pass
 
             return None
@@ -1226,7 +1168,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     @overload
     def create(self, **kwargs: Any) -> ModelT: ...
 
-    def create(self, **kwargs: Any) -> Union[ModelT, List[ModelT]]:
         """Create one entity, or one per item of ``entities``."""
         # Handle single entity or list of entities
         if "entities" in kwargs and isinstance(kwargs["entities"], list):
@@ -1267,7 +1208,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         for banned in cls._SERVER_CONTROLLED_AUDIT_FIELDS:
             kwargs.pop(banned, None)
 
-    def _enforce_caller_owned_fields(self, kwargs: Dict[str, Any]) -> None:
         """Reject Create/Update calls that try to claim another user's ID.
 
         For each field in ``_CALLER_OWNED_FIELDS``: if the caller supplied
@@ -1281,7 +1221,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         if not self._CALLER_OWNED_FIELDS:
             return
         requester = self.optional_requester
-        requester_id = requester.id if requester is not None else None
         if server_side(requester_id):
             return
         for field in self._CALLER_OWNED_FIELDS:
@@ -1297,7 +1236,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     ),
                 )
 
-    def _create_single_entity(self, **kwargs) -> Any:
         """Create a single entity from the fields its Create model accepts;
         anything else in ``kwargs`` never reaches the row."""
         self._strip_server_controlled_fields(kwargs)
@@ -1319,7 +1257,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             create_args["user_id"] = self.target_id
 
         entity = self.DB.create(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -1346,17 +1283,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                             self.DB.__tablename__, eid, dto_dict, index_vals or None
                         )
                     )
-            except Exception:
                 pass
 
         return entity
 
-    def get(
-        self,
-        include: Optional[Union[List[str], str]] | None = None,
-        fields: Optional[Union[List[str], str]] | None = None,
-        **kwargs,
-    ) -> ModelT:
         """Get an entity with optional included relationships.
 
         Validates fields/includes, generates join options, delegates to
@@ -1406,7 +1336,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                         ModelT,
                         self.model_registry.apply(self.Model).model_validate(cached),
                     )
-            except Exception:
                 pass
 
         options = []
@@ -1423,7 +1352,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         db_kwargs = {k: v for k, v in kwargs.items() if k not in ["hook_processed"]}
 
         result = self.DB.get(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.Model,
@@ -1465,12 +1393,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                         self.DB.__tablename__, entity_id, dto_dict, index_vals or None
                     )
                 )
-            except Exception:
                 pass
 
         return cast(ModelT, result)
 
-    def count(self, **kwargs) -> int:
         """Count entities matching the given filters."""
         kwargs.pop("hook_processed", None)
         simple = {k: v for k, v in kwargs.items() if not isinstance(v, dict)}
@@ -1479,28 +1405,12 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         return cast(
             int,
             self.DB.count(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 filters=filters,
                 **simple,
             ),
         )
 
-    def list(
-        self,
-        include: Optional[Union[List[str], str]] | None = None,
-        fields: Optional[Union[List[str], str]] | None = None,
-        sort_by: Optional[str] | None = None,
-        sort_order: Optional[str] = "asc",
-        filters: Optional[List[Any]] | None = None,
-        limit: Optional[int] | None = None,
-        offset: Optional[int] | None = None,
-        page: Optional[int] | None = None,
-        page_size: Optional[int] | None = None,
-        pageSize: Optional[int] | None = None,
-        return_type: str = "dto",
-        **kwargs,
-    ) -> List[ModelT]:
         """List entities with optional included relationships.
 
         Pagination supports negative page numbers: page=-1 returns the
@@ -1569,7 +1479,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         self.parent_validation(simple_kwargs)
 
         return self.DB.list(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type=return_type,
             override_dto=self.model_registry.apply(self.Model),
@@ -1582,20 +1491,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             **simple_kwargs,  # Pass simple_kwargs for filter_by
         )
 
-    def search(
-        self,
-        include: Optional[Union[List[str], str]] | None = None,
-        fields: Optional[Union[List[str], str]] | None = None,
-        sort_by: Optional[str] | None = None,
-        sort_order: Optional[str] = "asc",
-        filters: Optional[List[Any]] | None = None,
-        limit: Optional[int] | None = None,
-        offset: Optional[int] | None = None,
-        page: Optional[int] | None = None,
-        page_size: Optional[int] | None = None,
-        pageSize: Optional[int] | None = None,
-        **search_params,
-    ) -> List[ModelT]:
         """Search entities with optional included relationships."""
         if pageSize is not None and page_size is None:
             page_size = pageSize
@@ -1653,7 +1548,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         # Pass the converted SQLAlchemy constructs to the DBClass.list method
         # Use combined_filters for the 'filters' arg and simple_kwargs for '**kwargs'
         return self.DB.list(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type=return_type,  # Use the saved value instead of hardcoding "dto"
             options=options,
@@ -1665,7 +1559,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             **simple_kwargs,  # Simple equality kwargs for filter_by
         )
 
-    def _normalize_filters(self, filters: Optional[List[Any]]) -> Optional[List[Any]]:
         if not filters:
             return filters
 
@@ -1674,7 +1567,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             normalized.append(self._resolve_filter_condition(filter_condition))
         return normalized
 
-    def _resolve_filter_condition(self, filter_condition: Any) -> Any:
         if isinstance(filter_condition, FieldComparison):
             column = getattr(self.DB, filter_condition.field_name)
             value = filter_condition.value
@@ -1717,7 +1609,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return filter_condition
 
-    def _visible_payload(self, entity: Any) -> Any:
         """The record as the requester may see it (field ACL applied), as
         JSON-ready data: the ``current`` a 412 answers with."""
         from fastapi.encoders import jsonable_encoder
@@ -1733,12 +1624,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         )
         return jsonable_encoder(visible)
 
-    def visible_current(self, id: str) -> Any:
         """The record as it now stands for the requester, JSON-ready: what a
         412 (``zephyrex.lib.Preconditions``) answers a stale write with."""
         return self._visible_payload(self.get(id=id))
 
-    def _refuse_stale_batch(self, ids: Sequence[str]) -> None:
         """Refuse a whole batch before any write when one of its records is
         stale (412 listing every stale id) or, when If-Match is required,
         names none (428 listing them)."""
@@ -1772,7 +1661,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         if stale:
             raise PreconditionFailed(current, stale_ids=stale)
 
-    def update(self, id: str, **kwargs) -> ModelT:
         """Update an entity by ID.
 
         A request that names the record's version (If-Match, bound by the
@@ -1800,7 +1688,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         entity_before = self.get(id=id)
 
         updated_entity = self.DB.update(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -1834,12 +1721,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                         if f in dto_dict and dto_dict.get(f)
                     }
                     _cache_sync_run(cache.put(table, id, dto_dict, index_vals or None))
-            except Exception:
                 pass
 
         return cast(ModelT, updated_entity)
 
-    def batch_update(self, items: List[Dict[str, Any]]) -> List[Any]:
         """Update multiple entities in a batch.
 
         Returns successfully updated entities. On partial failure,
@@ -1859,7 +1744,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 update_data = item.get("data", {})
                 updated_entity = self.update(id=item["id"], **update_data)
                 results.append(updated_entity)
-            except Exception as e:
                 errors.append({"id": entity_id, "error": str(e)})
 
         if errors:
@@ -1876,7 +1760,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return results
 
-    def delete(self, id: str) -> None:
         """Delete an entity by ID (held, like ``update``, to the request's
         If-Match)."""
         cache = _entity_cache
@@ -1893,19 +1776,15 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                         {k: v for k, v in old_index_vals.items() if v} or None,
                     )
                 )
-            except Exception:
                 try:
                     _cache_sync_run(cache.invalidate(self.DB.__tablename__, id))
-                except Exception:
                     pass
 
         self.DB.delete(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=id,
         )
 
-    def batch_delete(self, ids: List[str]) -> None:
         """Delete multiple entities in a batch.
 
         On partial failure, raises HTTPException 207 with per-item
@@ -1919,7 +1798,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             try:
                 self.delete(id=entity_id)
                 successful += 1
-            except Exception as e:
                 errors.append({"id": entity_id, "error": str(e)})
 
         if errors:
@@ -1934,7 +1812,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             )
 
     # checks if parent exists by reference_id
-    def parent_validation(self, args):
         """Override this method to add validation logic for parent entities."""
         if self._parent:
             ref_model = self._parent.Model.Reference

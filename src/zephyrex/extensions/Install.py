@@ -71,12 +71,6 @@ def _is_url(source: str) -> bool:
     return parsed.scheme in {"http", "https", "file"}
 
 
-def _download_to_tempfile(
-    url: str,
-    *,
-    max_bytes: int,
-    timeout: float,
-) -> Path:
     """Stream ``url`` into a temp file. Aborts if the body exceeds ``max_bytes``."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https", "file"}:
@@ -106,7 +100,6 @@ def _download_to_tempfile(
                         )
                     out.write(chunk)
         return tmp
-    except Exception:
         tmp.unlink(missing_ok=True)
         raise
 
@@ -114,7 +107,6 @@ def _download_to_tempfile(
 _MAX_EXTRACT_BYTES = 500 * 1024 * 1024
 
 
-def _safe_extract_tar(archive: Path, dest: Path) -> None:
     """Extract a tar archive, refusing entries that escape ``dest``."""
     dest_resolved = dest.resolve()
     with tarfile.open(archive, "r:*") as tf:
@@ -138,7 +130,6 @@ def _safe_extract_tar(archive: Path, dest: Path) -> None:
         tf.extractall(dest)  # noqa: S202 -- members validated above
 
 
-def _safe_extract_zip(archive: Path, dest: Path) -> None:
     dest_resolved = dest.resolve()
     with zipfile.ZipFile(archive, "r") as zf:
         total_size = 0
@@ -162,7 +153,6 @@ def _is_archive(path: Path) -> bool:
     return suffixes.endswith((".tar.gz", ".tgz", ".tar", ".zip"))
 
 
-def _extract_archive(archive: Path, dest: Path) -> Path:
     """Extract ``archive`` into ``dest`` and return the extracted root.
 
     If the archive contains a single top-level directory that itself
@@ -186,14 +176,6 @@ def _extract_archive(archive: Path, dest: Path) -> Path:
     return dest
 
 
-@contextmanager
-def _resolved_source(
-    source: Union[str, Path],
-    *,
-    max_bytes: int,
-    timeout: float,
-    expected_sha256: Optional[str] = None,
-) -> Iterator[Path]:
     """Yield a directory on disk that contains the unpacked extension.
 
     Cleans up any temp files / extraction roots on exit.
@@ -305,7 +287,6 @@ def _run_extension_migrations(name: str) -> None:
         )
 
 
-def _verify_archive_digest(archive: Path, expected_sha256: Optional[str]) -> None:
     """L-9 — verify the archive against an expected SHA-256 digest before
     extraction. PyPI installs ride sigstore via SECURITY.md; for ad-hoc HTTP
     installs this is the minimum integrity gate."""
@@ -319,7 +300,6 @@ def _verify_archive_digest(archive: Path, expected_sha256: Optional[str]) -> Non
         for chunk in iter(lambda: fh.read(64 * 1024), b""):
             h.update(chunk)
     actual = h.hexdigest()
-    if not _hmac.compare_digest(
         actual.encode("ascii"), expected_sha256.lower().encode("ascii")
     ):
         raise InstallError(

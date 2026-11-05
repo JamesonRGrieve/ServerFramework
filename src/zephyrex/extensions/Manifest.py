@@ -56,7 +56,6 @@ class ExtensionDependencyDecl(BaseModel):
         return v
 
 
-class ExtensionManifest(BaseModel):
     """Schema for ``manifest.toml`` files shipped alongside extensions."""
 
     name: str
@@ -102,7 +101,6 @@ class ExtensionManifest(BaseModel):
         return v
 
 
-def load_manifest(path: Union[str, Path]) -> ExtensionManifest:
     """Load and validate a ``manifest.toml`` file.
 
     Args:

@@ -23,7 +23,6 @@ from zephyrex.extensions.messaging.EXT_Messaging import AbstractMessagingProvide
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
-class PRV_Signal_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "signal"
     friendly_name: ClassVar[str] = "Signal"
     description: ClassVar[str] = "Signal, through a signal-cli REST API"

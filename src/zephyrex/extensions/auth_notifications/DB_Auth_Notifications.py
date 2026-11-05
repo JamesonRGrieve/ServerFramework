@@ -19,7 +19,6 @@ class Notification(
     reference_id = Column(String, nullable=True, comment="ID of referenced entity")
 
 
-class NotificationReference(Base, BaseMixin, UpdateMixin):
     __tablename__ = "notification_references"
     __table_args__ = {
         "comment": "Links notifications to various entities throughout the system"
@@ -38,7 +37,6 @@ class NotificationReference(Base, BaseMixin, UpdateMixin):
     notification = relationship("Notification", backref="notification_references")
 
 
-class UserNotification(Base, BaseMixin, UserRefMixin):
     __tablename__ = "user_notifications"
     __table_args__ = {
         "comment": "Tracks which users have read or acknowledged which notifications"

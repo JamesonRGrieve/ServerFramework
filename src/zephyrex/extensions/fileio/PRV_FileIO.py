@@ -8,7 +8,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 
 
-class FileIOPermission(Enum):
     """Enumeration of file I/O permissions."""
 
     READ = auto()  # Permission to read files
@@ -19,7 +18,6 @@ class FileIOPermission(Enum):
     EXECUTE = auto()  # Permission to execute files
 
 
-class AbstractFileIOProvider(AbstractProvider):
     """
     Abstract base class for file I/O service extensions.
     This class defines the common interface and functionality that all file I/O providers should implement.
@@ -62,7 +60,6 @@ class AbstractFileIOProvider(AbstractProvider):
         # Setup commands based on permissions
         self._configure_commands()
 
-    def _configure_commands(self) -> None:
         """Configure available commands based on permissions."""
         self.commands = {}
 
@@ -92,9 +89,6 @@ class AbstractFileIOProvider(AbstractProvider):
         if FileIOPermission.EXECUTE in self.allowed_permissions:
             self.commands["Execute File"] = self.execute_file  # type: ignore[assignment]
 
-    def _check_path_permissions(
-        self, path: Union[str, Path], check_exists: bool = True
-    ) -> Tuple[Path, bool]:
         """Resolve ``path`` and decide whether it is reachable.
 
         Containment is enforced via ``Path.is_relative_to`` (Python 3.9+) on

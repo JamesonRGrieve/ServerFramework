@@ -93,7 +93,6 @@ DEFAULT_FORMAT = "json"
 _PASS_THROUGH_PATHS: list[re.Pattern[str]] = []
 
 
-def skip_negotiation(path_pattern: str) -> None:
     """Leave requests to paths matching ``path_pattern`` (a regular
     expression matched against the whole path) out of content negotiation:
     no suffix rewrite, no transcoding, no 406 or 415."""
@@ -105,7 +104,6 @@ def skip_negotiation(path_pattern: str) -> None:
 EVENT_STREAM = "text/event-stream"
 
 
-def asks_for_a_stream(scope: Scope) -> bool:
     """Whether the request is a GET that accepts server-sent events."""
     if scope.get("method", "GET") != "GET":
         return False
@@ -122,7 +120,6 @@ def asks_for_a_stream(scope: Scope) -> bool:
 _FORM_PATHS: list[re.Pattern[str]] = []
 
 
-def accept_form_bodies(path_pattern: str) -> None:
     """Let requests to paths matching ``path_pattern`` (a regular expression
     matched against the whole path) send application/x-www-form-urlencoded
     bodies, read as one string per field."""
@@ -134,7 +131,6 @@ def accept_form_bodies(path_pattern: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def serialize(data: Any, fmt: str) -> tuple[str, str]:
     """Serialize *data* to the format identified by canonical key *fmt*.
 
     Returns ``(body_text, content_type)``.
@@ -160,7 +156,6 @@ def serialize(data: Any, fmt: str) -> tuple[str, str]:
     raise ValueError(f"Unsupported serialization format: {fmt}")
 
 
-def deserialize(body: str | bytes, fmt: str) -> Any:
     """Deserialize *body* from the format identified by canonical key *fmt*.
 
     Returns the parsed Python object (dict / list / scalar).
@@ -186,7 +181,6 @@ def deserialize(body: str | bytes, fmt: str) -> Any:
     raise ValueError(f"Unsupported deserialization format: {fmt}")
 
 
-def _form_to_dict(body: str) -> dict[str, str]:
     """A form body as one string per field. A field given twice is refused
     (RFC 6749 §3.2): which value a reader takes would be ambiguous."""
     fields: dict[str, str] = {}
@@ -217,7 +211,6 @@ def _dict_to_xml(data: Any, root_tag: str = _XML_ROOT_TAG) -> str:
 # well-formed"). Strip them so serialized XML is always well-formed regardless
 # of the underlying data (e.g. a record field holding a control character).
 # Valid: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].
-def _xml_safe(text: str) -> str:
     """Remove XML-1.0-illegal characters so the result always re-parses."""
     return "".join(
         ch
@@ -229,7 +222,6 @@ def _xml_safe(text: str) -> str:
     )
 
 
-def _build_element(tag: str, value: Any) -> Element:
     """Recursively build an ``Element`` tree from *value*."""
     elem = Element(tag)
     if isinstance(value, dict):
@@ -255,7 +247,6 @@ def _xml_to_dict(xml_str: str) -> Any:
     return _parse_element(root)
 
 
-def _parse_element(elem: Element) -> Any:
     """Recursively parse an ``Element`` into a Python object."""
     children = list(elem)
     if not children:
@@ -274,7 +265,6 @@ def _parse_element(elem: Element) -> Any:
     return result
 
 
-def _coerce_text(text: str | None) -> Any:
     """Best-effort coercion of XML text to native Python types."""
     if text is None or text == "":
         return None
@@ -304,7 +294,6 @@ def _is_json_suffix(media_type: str) -> bool:
     return media_type.endswith("+json")
 
 
-def resolve_request_format(content_type: str | None) -> str | None:
     """Return the canonical format key for the given ``Content-Type`` header.
 
     Returns ``"json"`` when the header is absent. Returns ``None`` when the
@@ -323,10 +312,6 @@ def resolve_request_format(content_type: str | None) -> str | None:
     return _MEDIA_TYPE_MAP.get(media_type)
 
 
-def resolve_response_format(
-    accept: str | None,
-    path: str | None = None,
-) -> str | None:
     """Determine the best response format from the ``Accept`` header and URL
     suffix.
 
@@ -377,7 +362,6 @@ def resolve_response_format(
     return best_key
 
 
-def strip_format_suffix(path: str) -> str:
     """Remove a recognized format suffix from *path* so the router can match
     the base route.
     """
@@ -392,7 +376,6 @@ def strip_format_suffix(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class ContentNegotiationMiddleware:
     """Pure ASGI middleware for multi-format content negotiation.
 
     * **Request path**: when ``Content-Type`` indicates a non-JSON format,
@@ -411,7 +394,6 @@ class ContentNegotiationMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (
             scope["type"] != "http"
             or any(
@@ -491,7 +473,6 @@ class ContentNegotiationMiddleware:
             if raw_body:
                 try:
                     parsed = deserialize(raw_body, req_fmt)
-                except Exception:
                     response = Response(
                         content=json.dumps(
                             {"detail": f"Malformed {req_fmt.upper()} request body"}
@@ -507,7 +488,6 @@ class ContentNegotiationMiddleware:
                 # Replace the receive callable so downstream reads JSON.
                 _body_sent = False
 
-                async def _json_receive() -> Message:
                     nonlocal _body_sent
                     if not _body_sent:
                         _body_sent = True
@@ -541,7 +521,6 @@ class ContentNegotiationMiddleware:
         initial_message: dict[str, Any] = {}
         response_body_parts: list[bytes] = []
 
-        async def _capture_send(message: Message) -> None:
             nonlocal response_started, initial_message
             if message["type"] == "http.response.start":
                 response_started = True
@@ -552,7 +531,6 @@ class ContentNegotiationMiddleware:
                     # All body chunks collected -- transcode and send.
                     await _flush_response(send)
 
-        async def _flush_response(real_send: Send) -> None:
             body = b"".join(response_body_parts)
             if not body:
                 await real_send(initial_message)
@@ -573,7 +551,6 @@ class ContentNegotiationMiddleware:
 
             try:
                 serialized, mime = serialize(data, resp_fmt)
-            except Exception:
                 # Serialization failure -- fall back to original JSON.
                 await real_send(initial_message)
                 await real_send(

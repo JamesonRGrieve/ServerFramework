@@ -178,10 +178,6 @@ def get_registered_fields() -> Dict[Tuple[str, str], List[_FieldOrigin]]:
 # ---------------------------------------------------------------------------
 
 
-def detect_extension_field_collisions(
-    merged_models: Optional[Dict[str, Type[Any]]] = None,
-    extension_field_origins: Optional[Dict[Tuple[str, str], List[str]]] = None,
-) -> None:
     """Walk the registry and raise on any conflicting (model, field) pair.
 
     Two arguments are supported for flexibility:

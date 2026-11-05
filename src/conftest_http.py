@@ -16,8 +16,6 @@ import pytest
 Answer = Tuple[int, Mapping[str, str], bytes]
 
 
-@dataclass(frozen=True)
-class ReceivedRequest:
     method: str
     path: str
     headers: Mapping[str, str]
@@ -27,19 +25,14 @@ class ReceivedRequest:
 Route = Union[Answer, Callable[[ReceivedRequest], Answer]]
 
 
-@dataclass(frozen=True)
-class LocalServer:
     base_url: str
     host: str
     requests: List[ReceivedRequest] = field(default_factory=list)
 
 
-def _handler(routes: Mapping[str, Route], received: List[ReceivedRequest]) -> type:
-    class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             self.do_GET()
 
-        def do_GET(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             request = ReceivedRequest(
                 self.command,
@@ -66,10 +59,6 @@ def _handler(routes: Mapping[str, Route], received: List[ReceivedRequest]) -> ty
     return Handler
 
 
-@pytest.fixture
-def local_http_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[Callable[..., LocalServer]]:
     """Start a server answering ``routes``; its host is allowed egress for
     this test. Every server started is stopped afterwards."""
     servers = []

@@ -31,7 +31,6 @@ def graph_birthday(value: Optional[str]) -> Optional[str]:
     return value[:10] if value else None
 
 
-class PRV_Microsoft_Contacts(AbstractContactsProvider):
     name: ClassVar[str] = "microsoft_contacts"
     friendly_name: ClassVar[str] = "Microsoft 365 Contacts"
     description: ClassVar[str] = "Microsoft 365 / Outlook contacts"
@@ -84,8 +83,6 @@ class PRV_Microsoft_Contacts(AbstractContactsProvider):
             notes=str(found.get("personalNotes") or ""),
         )
 
-    @staticmethod
-    def _body(fields: Dict[str, Any]) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
         if "name" in fields:
             body["displayName"] = fields["name"]

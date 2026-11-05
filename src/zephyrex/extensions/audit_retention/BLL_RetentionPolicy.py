@@ -54,7 +54,6 @@ _WINDOW_RE = re.compile(r"^(\d+)(s|m|h|d|w|mo|y)$")
 FOREVER = "forever"
 
 
-def parse_window(window: str) -> Optional[int]:
     """Parse a retention window string to seconds.
 
     Returns:
@@ -102,8 +101,6 @@ def is_archived_target(target: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class RetentionPolicy:
     """Item 56 — per-class retention contract.
 
     Fields:

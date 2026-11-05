@@ -183,8 +183,6 @@ class EXT_DatabaseMemory(AbstractStaticExtension):
 
         return PRV_Valkey
 
-    @classmethod
-    def wire_framework_backends(cls, client: Any) -> None:
         """Auto-wire Valkey-backed backends into every framework consumer.
 
         Called from ``build_app()`` lifespan when ``VALKEY_URI`` is set

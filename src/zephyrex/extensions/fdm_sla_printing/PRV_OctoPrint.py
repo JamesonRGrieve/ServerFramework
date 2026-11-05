@@ -17,7 +17,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 _HEATERS = {"nozzle": ("/api/printer/tool", "tool0"), "bed": ("/api/printer/bed", None)}
 
 
-def octoprint_state(flags: Mapping[str, Any]) -> str:
     if flags.get("error") or flags.get("closedOrError"):
         return "error"
     if flags.get("paused") or flags.get("pausing"):
@@ -49,7 +48,6 @@ def octoprint_report(
     }
 
 
-class PRV_OctoPrint_Printing(AbstractPrinterProvider):
     name: ClassVar[str] = "octoprint"
     friendly_name: ClassVar[str] = "OctoPrint"
     description: ClassVar[str] = "A printer behind OctoPrint"

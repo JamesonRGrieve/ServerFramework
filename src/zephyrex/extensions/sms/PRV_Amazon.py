@@ -36,7 +36,6 @@ _AUTH_ERRORS = {
 _INPUT_ERRORS = {"InvalidParameter", "InvalidParameterValue", "OptedOut"}
 
 
-class PRV_Amazon_SMS(AbstractSMSProvider):
     name: ClassVar[str] = "amazon_sns"
     friendly_name: ClassVar[str] = "Amazon SNS"
     description: ClassVar[str] = "Amazon Simple Notification Service SMS"
@@ -86,8 +85,6 @@ class PRV_Amazon_SMS(AbstractSMSProvider):
         ]
     )
 
-    @classmethod
-    def _client(cls, instance: ProviderInstanceModel) -> Any:
         if not importable("boto3"):
             raise TransientExternalError(
                 "boto3 package not installed", provider=cls.name

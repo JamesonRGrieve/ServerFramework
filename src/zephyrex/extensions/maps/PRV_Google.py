@@ -48,7 +48,6 @@ def seconds(duration: str) -> float:
     return float(duration.rstrip("s") or 0)
 
 
-class PRV_Google_Maps(AbstractMapsProvider):
     name: ClassVar[str] = "google_maps"
     friendly_name: ClassVar[str] = "Google Maps"
     description: ClassVar[str] = "Google Maps Platform geocoding, places and routes"

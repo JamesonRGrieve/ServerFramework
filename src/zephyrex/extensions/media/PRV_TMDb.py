@@ -25,7 +25,6 @@ TMDB_KINDS = ("movie", "tv")
 _JWT_PREFIX = "eyJ"
 
 
-class PRV_TMDb_Media(AbstractMediaProvider):
     name: ClassVar[str] = "tmdb"
     friendly_name: ClassVar[str] = "TMDb"
     description: ClassVar[str] = "The Movie Database: movies and TV"

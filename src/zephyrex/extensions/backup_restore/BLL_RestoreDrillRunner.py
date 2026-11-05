@@ -69,10 +69,8 @@ def _run() -> DrillReport:
     return drill.run_drill()
 
 
-def main() -> int:
     try:
         report = _run()
-    except Exception as exc:  # noqa: BLE001
         Path(REPORT_PATH).write_text(
             json.dumps({"success": False, "error": f"{type(exc).__name__}: {exc}"}),
             encoding="utf-8",

@@ -13,7 +13,6 @@ from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Auth_APIKeys(AbstractStaticExtension):
     name: ClassVar[str] = "auth_api_keys"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (
@@ -31,8 +30,6 @@ class EXT_Auth_APIKeys(AbstractStaticExtension):
     }
     _providers: ClassVar[List] = []
 
-    @classmethod
-    def on_initialize(cls) -> bool:
         from zephyrex.extensions.auth_api_keys.BLL_Auth_APIKeys import (
             register_merge_participation,
         )

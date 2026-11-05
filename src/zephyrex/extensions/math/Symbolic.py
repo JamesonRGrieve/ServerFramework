@@ -86,7 +86,6 @@ def _power(base: Any, exponent: Any) -> Any:
     return base**exponent
 
 
-def _node(node: ast.AST) -> Any:
     if isinstance(node, ast.Constant):
         value = node.value
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -242,7 +241,6 @@ class SymbolicTimeout(Exception):
     """The worker did not answer in time and was killed."""
 
 
-class SymbolicWorker:
     """One worker process (a fresh interpreter, so nothing of this
     process's ``__main__`` runs in it), serving one request at a time."""
 
@@ -271,7 +269,6 @@ class SymbolicWorker:
                     stream.close()
         self._process = None
 
-    def run(self, operation: str, *args: Any) -> Tuple[str, Any]:
         """The worker's reply (see ``answer``); a blocking call."""
         with self._lock:
             process = self._started()

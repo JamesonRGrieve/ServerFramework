@@ -31,7 +31,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 SERVERS_FILE_ENV = "MCP_STDIO_SERVERS_FILE"
 
 
-def declared_server(declared: Any, name: str) -> StdioServerParameters:
     """Entry ``name`` of a servers file's ``mcpServers``, checked."""
     servers = declared.get("mcpServers") if isinstance(declared, Mapping) else None
     if not isinstance(servers, dict):
@@ -71,8 +70,6 @@ class PRV_Stdio_MCPClient(AbstractMCPServerProvider):
         ),
     )
 
-    @classmethod
-    def parameters(cls, instance: ProviderInstanceModel) -> StdioServerParameters:
         name = str(cls.setting(instance, "server") or "").strip()
         path = env(SERVERS_FILE_ENV).strip()
         if not name or not path:

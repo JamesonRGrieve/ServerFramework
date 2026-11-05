@@ -23,7 +23,6 @@ from zephyrex.lib.ReplayCache import ReplayCache
 _logger = logging.getLogger(__name__)
 
 
-class ValkeyReplayCache(ReplayCache):
     """Cross-process replay cache backed by Valkey."""
 
     def __init__(self, client: Any, prefix: str = "replay:") -> None:

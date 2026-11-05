@@ -140,17 +140,14 @@ def _expired(moment: datetime) -> bool:
     return ensure_utc(moment) <= now_utc()
 
 
-def _invalid_grant(description: str) -> OAuthError:
     return OAuthError("invalid_grant", description)
 
 
-def _bearer_refusal(error: str, description: str, status_code: int) -> OAuthError:
     """An RFC 6750 §3 refusal of a bearer token."""
     challenge = f'Bearer error="{error}", error_description="{description}"'
     return OAuthError(error, description, status_code, {"WWW-Authenticate": challenge})
 
 
-class _Rows:
     """The server's own rows of one model, read and written as ROOT: the
     protocol state belongs to the server, and each verb checks the client
     and the user itself."""
@@ -160,18 +157,14 @@ class _Rows:
         self.model = model
         self.db = model.DB(model_registry.DB.manager.Base)
 
-    def create(self, **fields: Any) -> Any:
         return self.db.create(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model,
             **fields,
         )
 
-    def find(self, *filters: Any) -> List[Any]:
         rows: Optional[List[Any]] = self.db.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=list(filters),
             return_type="dto",
@@ -183,22 +176,18 @@ class _Rows:
         rows = self.find(*filters)
         return rows[0] if rows else None
 
-    def update(self, id: str, **properties: Any) -> None:
         self.db.update(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=id,
             new_properties=properties,
         )
 
-    def claim(self, id: str, column: str) -> bool:
         """Set ``column`` to now on row ``id`` while it is still unset, in one
         statement: of two concurrent claims exactly one wins."""
         stamp = getattr(self.db, column)
         with self.model_registry.DB.manager._get_db_session() as session:
             count: int = (
                 session.query(self.db)
-                .filter(self.db.id == id, stamp.is_(None), self.db.deleted_at.is_(None))
                 .update({stamp: now_utc()}, synchronize_session=False)
             )
         return count == 1
@@ -208,7 +197,6 @@ def _unsigned_bytes(value: int, length: Optional[int] = None) -> bytes:
     return value.to_bytes(length or (value.bit_length() + 7) // 8, "big")
 
 
-class SigningKeys:
     """The ID-token signing key set. Each configured algorithm has one
     active key, replaced when older than the rotation period or on demand;
     a replaced key stays published for the retirement period, so tokens it
@@ -226,8 +214,6 @@ class SigningKeys:
             public_exponent=RSA_PUBLIC_EXPONENT, key_size=RSA_KEY_BITS
         )
 
-    @staticmethod
-    def public_jwk(private_key: Any, algorithm: str) -> Dict[str, str]:
         numbers = private_key.public_key().public_numbers()
         if algorithm == Config.ES256:
             jwk = {
@@ -247,7 +233,6 @@ class SigningKeys:
         kid = b64url(hashlib.sha256(members.encode("utf-8")).digest())
         return {**jwk, "kid": kid, "alg": algorithm, "use": "sig"}
 
-    def _create(self, algorithm: str) -> OauthSigningKeyModel:
         private_key = self._generate(algorithm)
         pem = private_key.private_bytes(
             serialization.Encoding.PEM,
@@ -272,13 +257,11 @@ class SigningKeys:
     def _demote(self, key: OauthSigningKeyModel) -> None:
         self.rows.update(key.id, status=KEY_RETIRING, retiring_at=now_utc())
 
-    def _retire_expired(self) -> None:
         cutoff = now_utc() - timedelta(seconds=Config.key_retirement_seconds())
         for key in self.rows.find(self.rows.db.status == KEY_RETIRING):
             if key.retiring_at is None or ensure_utc(key.retiring_at) <= cutoff:
                 self.rows.update(key.id, status=KEY_RETIRED, private_key=None)
 
-    def rotate(self) -> List[str]:
         """A new active key for every configured algorithm; the keys they
         replace start retiring. Returns the new keys' ids."""
         kids = []
@@ -291,7 +274,6 @@ class SigningKeys:
         self._retire_expired()
         return kids
 
-    def active(self, algorithm: str) -> OauthSigningKeyModel:
         """The key that signs with ``algorithm``, made or replaced as the
         rotation period requires."""
         keys = sorted(
@@ -311,7 +293,6 @@ class SigningKeys:
             self._demote(keys[0])
         return self._create(algorithm)
 
-    def sign(self, claims: Dict[str, Any], algorithm: str) -> str:
         key = self.active(algorithm)
         try:
             pem = decrypt_secret(key.private_key)
@@ -332,7 +313,6 @@ class SigningKeys:
             raise HTTPException(
                 status_code=503, detail="The signing key is not RSA or EC"
             )
-        token: str = jwt.encode(
             claims,
             private_key,
             algorithm=algorithm,
@@ -340,7 +320,6 @@ class SigningKeys:
         )
         return token
 
-    def jwks(self) -> Dict[str, List[Dict[str, Any]]]:
         """The published keys: every active and retiring one."""
         self._retire_expired()
         for algorithm in Config.signing_algorithms():
@@ -349,18 +328,14 @@ class SigningKeys:
         return {"keys": [json.loads(key.public_jwk) for key in published]}
 
 
-class SignedInUser:
     """A user signed in to the framework, and when that session began."""
 
-    def __init__(self, user_id: str, auth_time: datetime) -> None:
         self.user_id = user_id
         self.auth_time = auth_time
 
 
-class AuthorizationServer:
     """Every verb of the authorization server, over the app's registry."""
 
-    def __init__(self, model_registry: Any) -> None:
         self.model_registry = model_registry
         self.clients = _Rows(model_registry, OauthClientModel)
         self.requests = _Rows(model_registry, OauthAuthorizationRequestModel)
@@ -371,7 +346,6 @@ class AuthorizationServer:
 
     # -- clients ------------------------------------------------------------
 
-    def client(self, client_id: Optional[str]) -> Optional[OauthClientModel]:
         """The enabled client ``client_id`` names."""
         if not client_id:
             return None
@@ -381,9 +355,6 @@ class AuthorizationServer:
         )
         return found
 
-    def authenticate_client(
-        self, parameters: Mapping[str, str], authorization: Optional[str]
-    ) -> OauthClientModel:
         """The client a token, introspection or revocation request comes
         from, authenticated by the one method it registered (RFC 6749
         §2.3, RFC 9700 §2.5). Anything else is ``invalid_client``."""
@@ -426,13 +397,11 @@ class AuthorizationServer:
 
     # -- users --------------------------------------------------------------
 
-    def user(self, user_id: str) -> Optional[UserModel]:
         """The user, while their account is active."""
         rows = _Rows(self.model_registry, UserModel)
         found: Optional[UserModel] = rows.first(rows.db.id == user_id)
         return found if found is not None and found.active is not False else None
 
-    def signed_in(self, authorization: Optional[str]) -> Optional[SignedInUser]:
         """The framework user a bearer session token names, and when that
         session signed in; None without a live session."""
         from zephyrex.extensions.auth_session.BLL_Session import SessionModel
@@ -456,21 +425,16 @@ class AuthorizationServer:
             return None
         return SignedInUser(user_id, ensure_utc(session.created_at))
 
-    def _grant(self, user_id: str, client_id: str) -> Optional[OauthGrantModel]:
         found: Optional[OauthGrantModel] = self.grants.first(
             self.grants.db.user_id == user_id, self.grants.db.client_id == client_id
         )
         return found
 
-    def _consented(self, user_id: str, client_id: str, scopes: List[str]) -> bool:
         grant = self._grant(user_id, client_id)
         return grant is not None and set(scopes) <= set(grant.scopes.split())
 
     # -- authorization endpoint --------------------------------------------
 
-    def authorize(
-        self, query: Sequence[Tuple[str, str]], authorization: Optional[str]
-    ) -> Response:
         """``GET /authorize`` (RFC 6749 §4.1.1, OIDC Core §3.1.2.1)."""
         seen: Dict[str, str] = {}
         resources: List[str] = []
@@ -528,12 +492,6 @@ class AuthorizationServer:
             headers=dict(NO_STORE_HEADERS),
         )
 
-    def _validated(
-        self,
-        client: OauthClientModel,
-        parameters: Mapping[str, str],
-        resources: List[str],
-    ) -> Dict[str, Any]:
         if "request" in parameters:
             raise OAuthError(
                 "request_not_supported", "request objects are not supported"
@@ -591,13 +549,6 @@ class AuthorizationServer:
             "resources": list(dict.fromkeys(resources)),
         }
 
-    def _silently(
-        self,
-        client: OauthClientModel,
-        redirect_uri: str,
-        request: Dict[str, Any],
-        authorization: Optional[str],
-    ) -> str:
         """``prompt=none``: a code for a signed-in user who already consented,
         else ``login_required`` or ``consent_required`` (OIDC Core §3.1.2.6)."""
         signed_in = self.signed_in(authorization)
@@ -664,18 +615,6 @@ class AuthorizationServer:
         params["iss"] = Config.issuer()
         return with_query(redirect_uri, params)
 
-    def _issue_code(
-        self,
-        *,
-        client_id: str,
-        user_id: str,
-        redirect_uri: str,
-        scopes: List[str],
-        nonce: Optional[str],
-        code_challenge: str,
-        resources: List[str],
-        auth_time: datetime,
-    ) -> str:
         raw = mint_secret(CODE_PREFIX)
         self.codes.create(
             code_hash=digest(raw),
@@ -693,7 +632,6 @@ class AuthorizationServer:
 
     # -- consent (the UI's side of the authorization endpoint) -------------
 
-    def _open_request(self, request_id: str) -> OauthAuthorizationRequestModel:
         found: Optional[OauthAuthorizationRequestModel] = self.requests.first(
             self.requests.db.id == request_id,
             self.requests.db.decided_at.is_(None),
@@ -712,7 +650,6 @@ class AuthorizationServer:
             raise HTTPException(status_code=404, detail="The client is gone")
         return client
 
-    def pending(self, request_id: str, user_id: str) -> Dict[str, Any]:
         """What the consent screen shows for a pending request."""
         request = self._open_request(request_id)
         client = self._request_client(request)
@@ -729,13 +666,6 @@ class AuthorizationServer:
             "expires_at": ensure_utc(request.expires_at),
         }
 
-    def decide(
-        self,
-        request_id: str,
-        signed_in: SignedInUser,
-        approve: bool,
-        scopes: Optional[List[str]],
-    ) -> str:
         """Record the signed-in user's decision on a pending request, and
         answer with where to send the browser: the client's redirect URI
         with a code, or with ``access_denied``."""
@@ -770,7 +700,6 @@ class AuthorizationServer:
                 error=OAuthError("access_denied", "the user denied the request"),
             )
         OauthGrantManager(
-            requester_id=signed_in.user_id, model_registry=self.model_registry
         ).consent(client, granted)
         code = self._issue_code(
             client_id=client.client_id,
@@ -788,9 +717,6 @@ class AuthorizationServer:
 
     # -- token endpoint -----------------------------------------------------
 
-    def token(
-        self, raw_parameters: Mapping[str, object], authorization: Optional[str]
-    ) -> Dict[str, Any]:
         """``POST /token`` (RFC 6749 §4.1.3, §6)."""
         parameters = string_parameters(raw_parameters)
         client = self.authenticate_client(parameters, authorization)
@@ -806,9 +732,6 @@ class AuthorizationServer:
             "only authorization_code and refresh_token are offered",
         )
 
-    def _redeem_code(
-        self, client: OauthClientModel, parameters: Mapping[str, str]
-    ) -> Dict[str, Any]:
         raw_code = parameters.get("code")
         redirect_uri = parameters.get("redirect_uri")
         if not raw_code or not redirect_uri:
@@ -846,9 +769,6 @@ class AuthorizationServer:
             refresh_resources=resources,
         )
 
-    def _audience(
-        self, authorized: List[str], parameters: Mapping[str, str]
-    ) -> List[str]:
         """The access token's audience: the resource the client names at the
         token endpoint (RFC 8707 §2.2), among those it was authorized for;
         else all of those; else this issuer."""
@@ -859,17 +779,11 @@ class AuthorizationServer:
             return [requested]
         return authorized or [Config.issuer()]
 
-    def _consenting_user(
-        self, user_id: str, client: OauthClientModel, scopes: List[str]
-    ) -> UserModel:
         user = self.user(user_id)
         if user is None or not self._consented(user_id, client.client_id, scopes):
             raise _invalid_grant("the authorization is no longer in force")
         return user
 
-    def _refresh(
-        self, client: OauthClientModel, parameters: Mapping[str, str]
-    ) -> Dict[str, Any]:
         raw_token = parameters.get("refresh_token")
         if not raw_token:
             raise invalid_request("refresh_token is required")
@@ -906,20 +820,6 @@ class AuthorizationServer:
             refresh_resources=json_list(token.audience),
         )
 
-    def _issue_tokens(
-        self,
-        *,
-        client: OauthClientModel,
-        user: UserModel,
-        scopes: List[str],
-        audience: List[str],
-        family_id: str,
-        auth_time: datetime,
-        nonce: Optional[str],
-        refresh_expires_at: datetime,
-        refresh_scopes: List[str],
-        refresh_resources: List[str],
-    ) -> Dict[str, Any]:
         """A new access token for ``scopes`` and ``audience``, the next
         refresh token of ``family_id`` (which keeps the scope and the
         resources the user authorized, and the family's expiry), and an ID
@@ -964,14 +864,6 @@ class AuthorizationServer:
         )
         return response
 
-    def _id_token(
-        self,
-        client: OauthClientModel,
-        user: UserModel,
-        auth_time: datetime,
-        nonce: Optional[str],
-        access_token: str,
-    ) -> str:
         """OIDC Core §2: the identity claims; the profile and email claims
         are UserInfo's (§5.4)."""
         issued = now_utc()
@@ -990,7 +882,6 @@ class AuthorizationServer:
 
     # -- introspection and revocation --------------------------------------
 
-    def _live_token(self, raw_token: str) -> Optional[OauthTokenModel]:
         token: Optional[OauthTokenModel] = self.tokens.first(
             self.tokens.db.token_hash == digest(raw_token)
         )
@@ -1005,9 +896,6 @@ class AuthorizationServer:
             return None
         return token
 
-    def introspect(
-        self, raw_parameters: Mapping[str, object], authorization: Optional[str]
-    ) -> Dict[str, Any]:
         """``POST /introspect`` (RFC 7662). The caller is a confidential
         client: the token's holder, or (for an access token) the resource
         server the token is for. To anyone else the token is inactive."""
@@ -1047,9 +935,6 @@ class AuthorizationServer:
             answer["token_type"] = TOKEN_TYPE_BEARER
         return answer
 
-    def revoke(
-        self, raw_parameters: Mapping[str, object], authorization: Optional[str]
-    ) -> None:
         """``POST /revoke`` (RFC 7009). A refresh token takes its whole
         family with it (§2.1). A token the client does not hold, or one that
         does not exist, is left alone and answered the same way."""
@@ -1070,7 +955,6 @@ class AuthorizationServer:
 
     # -- UserInfo -----------------------------------------------------------
 
-    def userinfo(self, authorization: Optional[str]) -> Dict[str, Any]:
         """OIDC Core §5.3: the claims the access token's scope grants. The
         token is a bearer access token for this issuer, with ``openid``."""
         scheme, _, raw_token = (authorization or "").partition(" ")
@@ -1098,8 +982,6 @@ class AuthorizationServer:
             raise _bearer_refusal("invalid_token", "the access token is not valid", 401)
         return self.claims(user, scopes)
 
-    @staticmethod
-    def claims(user: UserModel, scopes: List[str]) -> Dict[str, Any]:
         """The standard claims (OIDC Core §5.1) the scopes reach. The
         framework does not record whether an email address was verified, so
         ``email_verified`` is not asserted."""
@@ -1124,7 +1006,6 @@ class AuthorizationServer:
 
     # -- discovery ----------------------------------------------------------
 
-    def metadata(self) -> Dict[str, Any]:
         """OpenID Connect Discovery §3 / RFC 8414 §2 metadata."""
         auth_methods = [AUTH_METHOD_BASIC, AUTH_METHOD_POST]
         return {

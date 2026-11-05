@@ -34,7 +34,6 @@ def climate_temperature(celsius: float) -> float:
     return celsius
 
 
-class AbstractAutomotiveProvider(AbstractStaticProvider):
     """A vehicle platform. Every ability takes the rotated instance (the
     account) and the vehicle it acts on."""
 
@@ -82,7 +81,6 @@ class AbstractAutomotiveProvider(AbstractStaticProvider):
         return ["automotive"]
 
 
-class EXT_Automotive(AbstractStaticExtension):
     name: ClassVar[str] = "automotive"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

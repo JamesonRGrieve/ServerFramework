@@ -24,7 +24,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 
 
-class EXT_ForwardAuthConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "forward_auth_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -63,11 +62,6 @@ class EXT_ForwardAuthConsumer(AbstractStaticExtension):
 
     _abilities: ClassVar[Set[str]] = {"forward_auth_linked_identities"}
 
-    @classmethod
-    @ability("forward_auth_linked_identities")
-    async def forward_auth_linked_identities(
-        cls, requester_id: str
-    ) -> List[Dict[str, Any]]:
         """The forward-auth identities that sign in as ``requester_id``."""
         from zephyrex.extensions.forward_auth_consumer.BLL_ForwardAuthConsumer import (
             ForwardAuthIdentityManager,

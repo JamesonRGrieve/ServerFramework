@@ -130,7 +130,6 @@ DEFAULT_THINKING_TURN_PROMPT = (
 )
 
 
-class TurnContext:
     """What a turn's tools need: the instance, its root activity, the agent,
     who it acts as, and what it may use."""
 
@@ -156,7 +155,6 @@ class TurnContext:
         grant = self.allowed.get(tool or "")
         return grant.ability_id if grant else str(self.root.ability_id)
 
-    def self_ability(self, tool: str) -> Optional[str]:
         """The executor ability ``tool`` names, if it names one."""
         grant = self.allowed.get(tool)
         if grant and grant.extension == EXTENSION_NAME and grant.name in SELF_ABILITIES:
@@ -164,7 +162,6 @@ class TurnContext:
         return None
 
 
-class AgentTurnExecutor:
     """Runs turns as ``requester_id``, who must see the turn's instance."""
 
     def __init__(
@@ -227,12 +224,10 @@ class AgentTurnExecutor:
         )
         return {"status": "failed", "error": reason}
 
-    async def _run_turn(self, instance: Any) -> Dict[str, Any]:
         agent = self._as(AgentManager, self.requester_id).get(id=instance.agent_id)
         acting = agent.user_id or self.requester_id
         allowed = tool_names(self._as(AgentAbilityManager, acting).grants(agent.id))
         invoker = AbilityInvoker(
-            model_registry=self.model_registry, requester_id=acting
         )
         activities = self._as(ActivityManager, acting)
         root = activities.create(
@@ -414,7 +409,6 @@ class AgentTurnExecutor:
         manager: AgentMemoryManager = self._as(AgentMemoryManager, acting)
         return manager
 
-    async def _do_memorize(self, args: Dict[str, Any], turn: TurnContext) -> str:
         """Short-term (keyed working memory) by default; long-term (the
         ai_memories store) when ``long``."""
         key = args.get("key") or None
@@ -447,7 +441,6 @@ class AgentTurnExecutor:
             return "(no matching long-term memories)"
         return "\n".join(f"- {memory.content}" for memory in found)
 
-    def _do_abilities(self, args: Dict[str, Any], turn: TurnContext, tool: str) -> str:
         """The tools the agent may use, optionally those whose name or
         description contains ``search``; what is found is kept (under the
         reserved short-term key) for later turns' prompts."""
@@ -546,9 +539,6 @@ class AgentTurnExecutor:
         substitutions.update(self._sentience_substitutions(agent, instance, acting))
         return self._inject(base or DEFAULT_THINKING_TURN_PROMPT, substitutions)
 
-    def _sentience_substitutions(
-        self, agent: Any, instance: Any, acting: str
-    ) -> Dict[str, Any]:
         """The {{PLACEHOLDER}}s of the sentience-style prompt: timing,
         continuity and memory, from the agent's real turns."""
         ordered = sorted(
@@ -616,8 +606,6 @@ class AgentTurnExecutor:
             "```"
         )
 
-    @staticmethod
-    def _parse_in_band_calls(text: Optional[str]) -> List[ToolCall]:
         """```tool fenced JSON blocks as ``(id, name, args)`` calls, from
         ``{"ability"|"tool": name, "args": {...}}`` or ``{name: {...}}``."""
         calls: List[ToolCall] = []
@@ -695,7 +683,6 @@ class AgentTurnExecutor:
 
         return chat
 
-    def _thinking_rotation(self, agent: Any, acting: str, ability: str) -> Any:
         """What the agent thinks over for ``ability``: its usable pinned
         instances, overriding its rotation, or (pinned to none) its
         rotation. A pinned agent none of whose instances is usable, or an
@@ -712,14 +699,12 @@ class AgentTurnExecutor:
                 )
             return PinnedInstanceRotation(
                 model_registry=self.model_registry,
-                requester_id=acting,
                 agent_id=agent.id,
                 instance_ids=usable,
             )
         if not agent.rotation_id:
             raise PermanentExternalError("the agent has no rotation configured")
         return RotationManager(
-            requester_id=acting,
             target_id=agent.rotation_id,
             model_registry=self.model_registry,
         )

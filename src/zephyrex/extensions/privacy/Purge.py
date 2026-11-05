@@ -50,7 +50,6 @@ def retention_from_setting() -> Optional[timedelta]:
     return timedelta(days=int(value))
 
 
-def _unreferenced(table: Table, metadata: MetaData) -> List[Any]:
     """A condition for each foreign key that points at ``table``: no row
     names this one (a row naming itself, as an account its own creator, does
     not count)."""
@@ -131,7 +130,6 @@ def purge_deleted(
     return purged
 
 
-class PurgeService(AbstractService):
     """Purges, once a day as ROOT, what was deleted more than ``retention`` ago."""
 
     def __init__(
@@ -151,7 +149,6 @@ class PurgeService(AbstractService):
         self.model_registry = model_registry
         self.retention = retention
 
-    def purge(self, now: Optional[datetime] = None) -> Dict[str, int]:
         moment = now or datetime.now(timezone.utc)
         cutoff = moment.astimezone(timezone.utc).replace(tzinfo=None) - self.retention
         session = self.model_registry.DB.session()

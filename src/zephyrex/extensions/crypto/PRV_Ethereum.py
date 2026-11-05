@@ -66,7 +66,6 @@ ERC20_ABI = [
 ]
 
 
-class PRV_Ethereum_Crypto(AbstractCryptoProvider):
     name: ClassVar[str] = "ethereum"
     friendly_name: ClassVar[str] = "Ethereum"
     description: ClassVar[str] = "An Ethereum or EVM-compatible wallet"

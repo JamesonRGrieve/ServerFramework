@@ -22,7 +22,6 @@ MSSQL_DEFAULT_PORT = 1433
 MSSQL_DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
 
 
-class PRV_MSSQL(AbstractDatabaseProvider):
     """Microsoft SQL Server database provider (static, rotation-compatible)."""
 
     name: ClassVar[str] = "MSSQL"
@@ -94,15 +93,12 @@ class PRV_MSSQL(AbstractDatabaseProvider):
         connection = cls._get_connection(cls.bond_instance(instance).config)
         return cls.run_sql(connection, query)
 
-    @classmethod
-    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Introspect table definitions from information_schema."""
         connection = cls._get_connection(cls.bond_instance(instance).config)
         table_columns: Dict[str, List[str]] = {}
         try:
             cursor = connection.cursor()
             try:
-                cursor.execute(
                     "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, "
                     "COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS "
                     "ORDER BY TABLE_NAME, ORDINAL_POSITION;"
@@ -116,7 +112,6 @@ class PRV_MSSQL(AbstractDatabaseProvider):
                     table_columns.setdefault(table_name, []).append(piece)
             finally:
                 cursor.close()
-        except Exception as exc:
             raise cls.query_failed(exc, "schema query") from exc
         finally:
             connection.close()

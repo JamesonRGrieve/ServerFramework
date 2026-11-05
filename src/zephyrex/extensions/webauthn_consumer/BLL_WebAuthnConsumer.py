@@ -86,7 +86,6 @@ MFA_METHOD_TYPE = "webauthn"
 _STAND_IN_CREDENTIAL_BYTES = 16
 
 
-class Ceremony:
     REGISTRATION = "registration"
     SIGN_IN = "sign_in"
     SECOND_FACTOR = "second_factor"
@@ -97,7 +96,6 @@ def user_handle(user_id: str) -> bytes:
     return user_id.encode("utf-8")
 
 
-def _binding(secret: Optional[str]) -> Optional[str]:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest() if secret else None
 
 
@@ -110,12 +108,6 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-class WebAuthnCredentialModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference,
-    metaclass=ModelMeta,
-):
     """A passkey or security key registered to a user."""
 
     credential_id: str = Field(
@@ -147,7 +139,6 @@ class WebAuthnCredentialModel(
 
     table_comment: ClassVar[str] = "WebAuthn credentials registered to users"
 
-    class Create(BaseModel, UserModel.Reference.ID.Optional):
         credential_id: str
         public_key: str
         sign_count: int = 0
@@ -160,7 +151,6 @@ class WebAuthnCredentialModel(
         backup_eligible: bool = False
         backed_up: bool = False
 
-    class Update(BaseModel):
         device_name: Optional[str] = Field(None, max_length=DEVICE_NAME_MAX_LENGTH)
 
     class Search(
@@ -176,12 +166,6 @@ class WebAuthnCredentialModel(
         last_used_at: Optional[DateSearchModel] = None
 
 
-class WebAuthnCeremonyModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
     """A challenge issued for one ceremony. Server-only: read and written as
     ROOT, never routed."""
 
@@ -195,31 +179,23 @@ class WebAuthnCeremonyModel(
 
     table_comment: ClassVar[str] = "WebAuthn ceremony challenges, single use"
 
-    class Create(BaseModel, UserModel.Reference.ID.Optional):
         ceremony: str
         challenge: str
         binding: Optional[str] = None
         expires_at: datetime
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         ceremony: Optional[StringSearchModel] = None
 
 
-def usable_credentials(
-    model_registry: Any, user_id: str
-) -> List[WebAuthnCredentialModel]:
     """``user_id``'s enabled credentials: those an assertion may use."""
     CredentialDB = WebAuthnCredentialModel.DB(model_registry.DB.manager.Base)
     found: List[WebAuthnCredentialModel] = CredentialDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         filters=[
             CredentialDB.user_id == user_id,
             CredentialDB.is_enabled == True,  # noqa: E712
-            CredentialDB.deleted_at.is_(None),
         ],
         return_type="dto",
         override_dto=WebAuthnCredentialModel,
@@ -227,7 +203,6 @@ def usable_credentials(
     return found
 
 
-def _second_factor_methods(user_id: str, model_registry: Any) -> List[Dict[str, str]]:
     """A user's credentials as second factors: password login challenges a
     user who has one, and ``/v1/webauthn/mfa`` answers it. The source table
     is process-global, so this checks that the app bound the extension."""
@@ -249,13 +224,11 @@ register_mfa_source(
 # ---------------------------------------------------------------------------
 
 
-class RegistrationStart(RouteModel):
     authenticator_attachment: Optional[Literal["platform", "cross-platform"]] = Field(
         None, description="Ask for a platform or a roaming authenticator"
     )
 
 
-class CeremonyOptions(RouteModel):
     ceremony_id: str = Field(..., description="Name it when finishing the ceremony")
     public_key: Dict[str, Any] = Field(
         ..., description="The options for navigator.credentials, as JSON"
@@ -263,7 +236,6 @@ class CeremonyOptions(RouteModel):
     expires_at: datetime
 
 
-class RegistrationFinish(RouteModel):
     ceremony_id: str
     credential: Dict[str, Any] = Field(
         ..., description="PublicKeyCredential.toJSON() from create()"
@@ -271,33 +243,27 @@ class RegistrationFinish(RouteModel):
     device_name: Optional[str] = Field(None, max_length=DEVICE_NAME_MAX_LENGTH)
 
 
-class CredentialRegistered(RouteModel):
     credential: WebAuthnCredentialModel
 
 
-class SignInStart(RouteModel):
     email: Optional[str] = Field(
         None,
         description="Email or username; omit for a passkey that names its user",
     )
 
 
-class SignInFinish(RouteModel):
     ceremony_id: str
     credential: Dict[str, Any] = Field(
         ..., description="PublicKeyCredential.toJSON() from get()"
     )
 
 
-class SecondFactorStart(RouteModel):
     challenge_token: str = Field(..., description="From the password login")
 
 
-class SecondFactorFinish(SignInFinish):
     challenge_token: str
 
 
-class LoginResponse(RouteModel):
     """The password login's response, unchanged."""
 
     user: Dict[str, Any]
@@ -312,7 +278,6 @@ class LoginResponse(RouteModel):
 # ---------------------------------------------------------------------------
 
 
-class WebAuthnCredentialManager(AbstractBLLManager, RouterMixin):
     """A user's own credentials: read, rename, remove. Created only by a
     verified registration (WebAuthnCeremonyManager)."""
 
@@ -336,7 +301,6 @@ class WebAuthnCredentialManager(AbstractBLLManager, RouterMixin):
         return super().create(**each_created(kwargs, owned))
 
 
-class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
     """The registration, sign-in and second-factor ceremonies."""
 
     _model = WebAuthnCeremonyModel
@@ -352,13 +316,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
     def _credentials(self) -> Any:
         return WebAuthnCredentialModel.DB(self.model_registry.DB.manager.Base)
 
-    def _open(
-        self,
-        policy: RelyingPartyPolicy,
-        ceremony: str,
-        user_id: Optional[str],
-        binding: Optional[str],
-    ) -> WebAuthnCeremonyModel:
         """Store a fresh challenge for ``ceremony``, and drop expired ones."""
         CeremonyDB = self.DB
         now = _now()
@@ -367,31 +324,24 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
                 CeremonyDB.expires_at < now.replace(tzinfo=None)
             ).delete(synchronize_session=False)
         opened: WebAuthnCeremonyModel = CeremonyDB.create(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=WebAuthnCeremonyModel,
             ceremony=ceremony,
-            challenge=bytes_to_base64url(secrets.token_bytes(CHALLENGE_BYTES)),
             user_id=user_id,
             binding=binding,
             expires_at=now + timedelta(seconds=policy.timeout_seconds),
         )
         return opened
 
-    def _spend(
-        self, ceremony_id: str, ceremony: str, binding: Optional[str]
-    ) -> WebAuthnCeremonyModel:
         """The ceremony's challenge, spent: only its first redemption, within
         its lifetime and from what it is bound to, gets it."""
         CeremonyDB = self.DB
         found: List[WebAuthnCeremonyModel] = CeremonyDB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 CeremonyDB.id == ceremony_id,
                 CeremonyDB.ceremony == ceremony,
-                CeremonyDB.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=WebAuthnCeremonyModel,
@@ -404,7 +354,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
             raise unusable
         opened = found[0]
         bound = opened.binding is None or (
-            binding is not None and secrets.compare_digest(opened.binding, binding)
         )
         if (
             not bound
@@ -428,49 +377,38 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
     def _usable_credentials(self, user_id: str) -> List[WebAuthnCredentialModel]:
         return usable_credentials(self.model_registry, user_id)
 
-    def _credential(self, credential_id: str) -> Optional[WebAuthnCredentialModel]:
         found: List[WebAuthnCredentialModel] = self._credentials.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 self._credentials.credential_id == credential_id,
-                self._credentials.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=WebAuthnCredentialModel,
         )
         return found[0] if found else None
 
-    def _active_user(self, user_id: str) -> Dict[str, Any]:
         """The user as login reads them; 401 when disabled or deleted."""
         users: List[Dict[str, Any]] = UserModel.DB(
             self.model_registry.DB.manager.Base
         ).list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=user_id,
         )
-        if len(users) != 1 or not users[0]["active"] or users[0]["deleted_at"]:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
             )
         return users[0]
 
-    def _user_by_identifier(self, identifier: str) -> Optional[Dict[str, Any]]:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         normalized = UserManager._normalize_identifier(identifier)
         users: List[Dict[str, Any]] = UserDB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
                 (UserDB.email == normalized) | (UserDB.username == normalized),
-                UserDB.deleted_at.is_(None),
             ],
         )
         return users[0] if len(users) == 1 and users[0]["active"] else None
 
-    @staticmethod
-    def _descriptors(credentials: List[WebAuthnCredentialModel]) -> List[Descriptor]:
         return [
             Descriptor(
                 credential_id=base64url_to_bytes(c.credential_id),
@@ -491,14 +429,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
 
     # -- Assertions ---------------------------------------------------------
 
-    def _assert(
-        self,
-        policy: RelyingPartyPolicy,
-        opened: WebAuthnCeremonyModel,
-        credential: Dict[str, Any],
-        *,
-        require_user_verification: bool,
-    ) -> WebAuthnCredentialModel:
         """The stored credential that verifiably made ``credential`` over the
         ceremony's challenge, with its use recorded; 401 otherwise. A
         credential that is not the ceremony's user's is refused, and so is
@@ -513,7 +443,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
             raise refused
         if opened.user_id is not None and stored.user_id != opened.user_id:
             raise refused
-        if assertion.user_handle is not None and not secrets.compare_digest(
             assertion.user_handle, user_handle(stored.user_id)
         ):
             raise refused
@@ -533,7 +462,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
                 "cloned and has been disabled",
             ) from regression
         self._credentials.update(
-            requester_id=stored.user_id,
             model_registry=self.model_registry,
             id=stored.id,
             new_properties={
@@ -544,9 +472,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
         )
         return stored
 
-    def _flag_clone(
-        self, stored: WebAuthnCredentialModel, regression: CounterRegression
-    ) -> None:
         logger.warning(
             "webauthn_consumer: credential %s of user %s presented %s; disabled",
             stored.id,
@@ -554,7 +479,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
             regression,
         )
         self._credentials.update(
-            requester_id=stored.user_id,
             model_registry=self.model_registry,
             id=stored.id,
             new_properties={"is_enabled": False, "clone_detected_at": _now()},
@@ -562,8 +486,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
 
     # -- Registration -------------------------------------------------------
 
-    @staticmethod
-    def _session_binding(request: Request) -> Optional[str]:
         """The signed-in session (its JWT's ``jti``) a registration is bound
         to; None for an API-key requester, which has no session."""
         token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -572,19 +494,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
         except jwt.PyJWTError:
             return None
 
-    @custom_route(
-        method="POST",
-        path="/register/options",
-        input_model=RegistrationStart,
-        output_model=CeremonyOptions,
-        authentication_type="jwt",
-        openapi_tags=("WebAuthn",),
-        expose_in=(ExposeIn.REST,),
-        summary="Begin registering a passkey or security key",
-    )
-    def register_options(
-        self, body: RegistrationStart, request: Request
-    ) -> CeremonyOptions:
         policy = RelyingPartyPolicy.from_env()
         user_id = self.requester.id
         user = self._active_user(user_id)
@@ -608,19 +517,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
             ),
         )
 
-    @custom_route(
-        method="POST",
-        path="/register/verify",
-        input_model=RegistrationFinish,
-        output_model=CredentialRegistered,
-        authentication_type="jwt",
-        openapi_tags=("WebAuthn",),
-        expose_in=(ExposeIn.REST,),
-        summary="Store a verified passkey or security key",
-    )
-    def register_verify(
-        self, body: RegistrationFinish, request: Request
-    ) -> CredentialRegistered:
         policy = RelyingPartyPolicy.from_env()
         user_id = self.requester.id
         opened = self._spend(
@@ -636,7 +532,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
         )
         CredentialDB = self._credentials
         taken = CredentialDB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[CredentialDB.credential_id == registered.credential_id],
         )
@@ -646,7 +541,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
                 detail="This credential is already registered",
             )
         credential = WebAuthnCredentialManager(
-            requester_id=user_id, model_registry=self.model_registry
         ).create(
             credential_id=registered.credential_id,
             public_key=registered.public_key,
@@ -664,18 +558,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
 
     # -- Sign-in ------------------------------------------------------------
 
-    @custom_route(
-        method="POST",
-        path="/authenticate/options",
-        input_model=SignInStart,
-        output_model=CeremonyOptions,
-        authentication_type="none",
-        openapi_tags=("WebAuthn",),
-        expose_in=(ExposeIn.REST,),
-        summary="Begin signing in with a passkey",
-    )
-    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
-    def authenticate_options(self, body: SignInStart) -> CeremonyOptions:
         """Options naming the account's credentials when an email is given,
         none (any passkey) otherwise. An unknown account, or one without
         credentials, is offered a keyed stand-in so the answer looks alike."""
@@ -735,8 +617,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
 
     # -- Second factor ------------------------------------------------------
 
-    @staticmethod
-    def _mfa_claims(challenge_token: str) -> Dict[str, Any]:
         try:
             return read_single_use_token(
                 challenge_token, audience=MFA_CHALLENGE_AUDIENCE
@@ -747,18 +627,6 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
                 detail="Invalid or expired MFA challenge",
             ) from None
 
-    @custom_route(
-        method="POST",
-        path="/mfa/options",
-        input_model=SecondFactorStart,
-        output_model=CeremonyOptions,
-        authentication_type="none",
-        openapi_tags=("WebAuthn",),
-        expose_in=(ExposeIn.REST,),
-        summary="Begin answering an MFA challenge with a security key",
-    )
-    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
-    def mfa_options(self, body: SecondFactorStart) -> CeremonyOptions:
         policy = RelyingPartyPolicy.from_env()
         claims = self._mfa_claims(body.challenge_token)
         user_id = str(claims["sub"])

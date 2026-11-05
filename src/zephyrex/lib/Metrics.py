@@ -62,7 +62,6 @@ _current_span_id_var: ContextVar[Optional[int]] = ContextVar(
 )
 
 
-def _labels_key(labels: Optional[Dict[str, str]]) -> FrozenSet[Tuple[str, str]]:
     """Normalize a labels mapping to a hashable key for dict storage."""
     if not labels:
         return frozenset()
@@ -75,7 +74,6 @@ def _labels_key(labels: Optional[Dict[str, str]]) -> FrozenSet[Tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
-class MetricsBackend(ABC):
     """Pluggable metrics + tracing sink.
 
     Implementations must accept arbitrary label dicts and tag kwargs.
@@ -124,7 +122,6 @@ class MetricsBackend(ABC):
 # ---------------------------------------------------------------------------
 
 
-class _NoopSpan:
     """Minimal context manager for :class:`NoopMetricsBackend`. Tracks
     the active-span contextvar so nesting still resolves correctly
     even when no metrics are recorded — this keeps test fixtures that
@@ -132,15 +129,12 @@ class _NoopSpan:
 
     __slots__ = ("_token",)
 
-    def __enter__(self) -> "_NoopSpan":
         self._token = _current_span_id_var.set(id(self))
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
         _current_span_id_var.reset(self._token)
 
 
-class NoopMetricsBackend(MetricsBackend):
     """Default backend. Every call is a silent no-op so production
     deployments that have not opted into metrics pay nothing."""
 
@@ -177,7 +171,6 @@ class NoopMetricsBackend(MetricsBackend):
 # ---------------------------------------------------------------------------
 
 
-class InMemoryMetricsBackend(MetricsBackend):
     """Stores counters, gauges, histograms, and spans in plain dicts/lists.
 
     Counter / gauge / histogram keys are
@@ -242,8 +235,6 @@ class InMemoryMetricsBackend(MetricsBackend):
 
     # --- spans ------------------------------------------------------------
 
-    @contextmanager
-    def span(self, name: str, **tags: Any) -> Iterator[Dict[str, Any]]:
         """Open a span. Usage::
 
             with backend.span("rotate.attempt", provider="stripe", attempt=0):
@@ -277,14 +268,12 @@ class InMemoryMetricsBackend(MetricsBackend):
 _active_backend: MetricsBackend = NoopMetricsBackend()
 
 
-def set_metrics_backend(backend: MetricsBackend) -> None:
     """Install ``backend`` as the process-wide active metrics backend.
 
     Called once at startup by the deployment wiring. Tests use this to
     swap in :class:`InMemoryMetricsBackend` and restore the prior
     backend on teardown.
     """
-    global _active_backend
     if not isinstance(backend, MetricsBackend):
         raise TypeError(
             f"set_metrics_backend requires a MetricsBackend, got {type(backend).__name__}"
@@ -319,7 +308,6 @@ _HEALTH_GAUGE_VALUES: Dict[str, float] = {
 }
 
 
-def emit_provider_health_gauge(provider_name: str, status: Any) -> None:
     """Emit ``provider_health_status{provider, status}`` as a gauge.
 
     Numeric mapping: OK -> 1.0, DEGRADED -> 0.5, DOWN -> 0.0. The
@@ -337,5 +325,4 @@ def emit_provider_health_gauge(provider_name: str, status: Any) -> None:
             value,
             labels={"provider": str(provider_name), "status": key},
         )
-    except Exception:
         return None

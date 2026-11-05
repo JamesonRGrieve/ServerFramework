@@ -231,7 +231,6 @@ def _not_fully_refunded(payment: Any) -> bool:
         return False
 
 
-def _purchase_plans(user_id: str, model_registry: Any) -> List[Plan]:
     """The plans ``user_id``'s succeeded, not fully refunded product payments buy."""
     try:
         from zephyrex.extensions.payment.BLL_Payment import PaymentModel
@@ -240,13 +239,11 @@ def _purchase_plans(user_id: str, model_registry: Any) -> List[Plan]:
     db = PaymentModel.DB(model_registry.DB.manager.Base)
     found = (
         db.list(
-            requester_id=_root(),
             model_registry=model_registry,
             filters=[
                 db.user_id == user_id,
                 db.status == SUCCEEDED,
                 db.product_id.isnot(None),
-                db.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=PaymentModel,
@@ -277,9 +274,6 @@ def _units_paid(quantity: int, payment: Any) -> int:
     return min(quantity, int(share.to_integral_value(rounding=ROUND_FLOOR)))
 
 
-def units_bought(
-    product_id: str, subject_id: Optional[str], model_registry: Any
-) -> int:
     """The units of ``product_id`` bought for ``subject_id`` (None: bought for
     nothing in particular) that succeeded payments still pay for."""
     try:
@@ -294,12 +288,10 @@ def units_bought(
     )
     purchases = (
         purchases_db.list(
-            requester_id=_root(),
             model_registry=model_registry,
             filters=[
                 purchases_db.product_id == product_id,
                 subject_filter,
-                purchases_db.deleted_at.is_(None),
             ],
             return_type="dto",
             override_dto=EntitlementPurchaseModel,
@@ -313,12 +305,10 @@ def units_bought(
         str(p.id): p
         for p in (
             payments_db.list(
-                requester_id=_root(),
                 model_registry=model_registry,
                 filters=[
                     payments_db.id.in_([p.payment_id for p in purchases]),
                     payments_db.status == SUCCEEDED,
-                    payments_db.deleted_at.is_(None),
                 ],
                 return_type="dto",
                 override_dto=PaymentModel,
@@ -381,7 +371,6 @@ def own_plan(user_id: str, model_registry: Any) -> Plan:
     )
 
 
-def entitlement(user_id: str, model_registry: Any) -> EntitlementResponse:
     """``user_id``'s plan, and where it comes from."""
     plan = own_plan(user_id, model_registry)
     via: Optional[str] = None
@@ -433,7 +422,6 @@ def require_within_limit(
     )
 
 
-class EntitlementSeatManager(AbstractBLLManager, RouterMixin):
     _model = EntitlementSeatModel
     prefix: ClassVar[Optional[str]] = ENTITLEMENT_PREFIX
     tags: ClassVar[Optional[List[str]]] = ["Entitlements"]

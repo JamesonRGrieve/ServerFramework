@@ -153,7 +153,6 @@ def free_slots(
     return slots
 
 
-class AbstractCalendarProvider(AbstractStaticProvider):
     """A calendar service; each instance is one account (one calendar)."""
 
     name: ClassVar[str] = ""
@@ -291,7 +290,6 @@ def event_fields(
     return {key: value for key, value in fields.items() if value is not None}
 
 
-class EXT_Calendar(AbstractStaticExtension):
     name: ClassVar[str] = "calendar"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

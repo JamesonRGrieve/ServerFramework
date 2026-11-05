@@ -40,10 +40,6 @@ class InboundEmail(BaseModel):
     text: str = Field("", description="The plain-text body, else the HTML body")
     headers: Dict[str, str] = Field(default_factory=dict)
 
-    @classmethod
-    def parse(
-        cls, raw: bytes, envelope_recipients: Sequence[str] = ()
-    ) -> "InboundEmail":
         """A raw RFC 5322 message; ``envelope_recipients`` are the SMTP
         ``RCPT TO`` addresses, when the receiver knows them. ValueError for
         one larger than :data:`MAX_INBOUND_EMAIL_BYTES`."""

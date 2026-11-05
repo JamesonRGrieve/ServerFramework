@@ -24,7 +24,6 @@ GOOGLE_ISSUER_HOST = "accounts.google.com"
 DEFAULT_SCOPES = "openid email profile"
 
 
-class PRV_Google(AbstractOIDCProvider):
     name: ClassVar[str] = "oauth_google"
     public_name: ClassVar[str] = "google"
     friendly_name: ClassVar[str] = "Google"

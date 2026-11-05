@@ -11,7 +11,6 @@ import sys
 from typing import Optional, Sequence
 
 
-def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="zephyrex-server")
     sub = parser.add_subparsers(dest="command", metavar="command")
 
@@ -65,7 +64,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
     from zephyrex import run as _run
 
     kwargs = {
@@ -84,28 +82,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_bootstrap(_args: argparse.Namespace) -> int:
     try:
         from zephyrex.bootstrap import run_venv_bootstrap
-    except Exception:
-        import subprocess
         from pathlib import Path
 
         bootstrap_path = (
             Path(__file__).resolve().parent.parent / "zephyrex.bootstrap.py"
         )
-        completed = subprocess.run([sys.executable, str(bootstrap_path)])
         return completed.returncode
     return 0 if run_venv_bootstrap() else 1
 
 
-def _cmd_version(_args: argparse.Namespace) -> int:
     version: str | None = None
     try:
         import zephyrex as _sf
 
         version = getattr(_sf, "__version__", None)
-    except Exception:
         version = None
 
     if not version:
@@ -121,10 +113,8 @@ def _cmd_version(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_migrate(args: argparse.Namespace) -> int:
     import os
 
-    os.environ["RUN_MIGRATIONS"] = "false"
 
     from zephyrex import instance, set_extensions_root
 
@@ -169,7 +159,6 @@ _DISPATCH = {
 }
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
     """Canonical CLI entrypoint. Returns a process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -187,12 +176,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 130
     except SystemExit:
         raise
-    except Exception as exc:
         try:
             from zephyrex.lib.Logging import logger
 
             logger.exception(f"zephyrex-server: command '{args.command}' failed: {exc}")
-        except Exception:
             print(
                 f"zephyrex-server: command '{args.command}' failed: {exc}",
                 file=sys.stderr,

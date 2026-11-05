@@ -108,9 +108,6 @@ def _join(
     return joined
 
 
-def merge(
-    viewer: Tree, load: Callable[[str], Tree], kinds: Iterable[str]
-) -> MergedGraph:
     """The merged graph seen by ``viewer``'s owner, centred on their self
     person. ``load`` reads another account's tree."""
     walked = frozenset(kinds)
@@ -129,7 +126,6 @@ def merge(
     for person in viewer.persons.values():
         mine.setdefault(key_of(person), person)
 
-    def shown(key: str) -> MergedNode:
         if key in mine:
             record = mine[key]
             return MergedNode(
@@ -217,7 +213,6 @@ def _placed(node: MergedNode, distance: int, group: Optional[int]) -> MergedNode
     )
 
 
-def _groups(graph: SocialGraph, center: str, members: Dict[str, int]) -> Dict[str, int]:
     """Each member's polycule: the group it falls in once ``center`` is taken
     out, numbered in the order their nearest members are reached."""
     groups: Dict[str, int] = {}

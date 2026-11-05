@@ -49,7 +49,6 @@ CONTAINER_POLL_SECONDS = 2.0
 CONTAINER_WAIT_SECONDS = 60.0
 
 
-def media_kind(url: str) -> str:
     """``image`` or ``video``, from a public HTTPS media URL's file type."""
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
@@ -64,7 +63,6 @@ def media_kind(url: str) -> str:
     )
 
 
-def checked_media(media_urls: Optional[List[str]]) -> List[str]:
     urls = list(media_urls or [])
     if len(urls) > MAX_MEDIA:
         raise InvalidInputExternalError(f"at most {MAX_MEDIA} media per post")
@@ -84,7 +82,6 @@ def count(value: Any) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-class AbstractSocialProvider(AbstractStaticProvider):
     """A social platform; each instance is one account on it."""
 
     name: ClassVar[str] = ""
@@ -188,7 +185,6 @@ class AbstractSocialProvider(AbstractStaticProvider):
         return ["social_post", "social_read"]
 
 
-class EXT_Social(AbstractStaticExtension):
     name: ClassVar[str] = "social"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

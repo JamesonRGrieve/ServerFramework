@@ -65,7 +65,6 @@ class NotificationModel(
         reference_type: Optional[str] = None
         reference_id: Optional[str] = None
 
-    class Update(BaseModel):
         title: Optional[str] = None
         content: Optional[str] = None
 
@@ -96,7 +95,6 @@ class UserNotificationModel(
 
     table_comment: ClassVar[str] = "Per-user notification delivery state"
 
-    class Create(BaseModel, UserModel.Reference.ID):
         notification_id: str
         read: bool = False
         read_at: Optional[datetime] = None
@@ -105,7 +103,6 @@ class UserNotificationModel(
 
     # Update is intentionally narrow: only the boolean toggles are
     # writable. Timestamps are server-stamped via the convenience routes.
-    class Update(BaseModel):
         read: Optional[bool] = None
         acknowledged: Optional[bool] = None
 
@@ -120,19 +117,16 @@ class UserNotificationModel(
         read_at: Optional[DateSearchModel] = None
 
 
-class MarkReadResponse(BaseModel):
     id: str
     read: bool
     read_at: Optional[datetime] = None
 
 
-class AcknowledgeResponse(BaseModel):
     id: str
     acknowledged: bool
     acknowledged_at: Optional[datetime] = None
 
 
-class _MarkReadRequest(BaseModel):
     """No body required; the route uses ``{id}`` from the path. The
     framework's typed-input contract requires a model regardless, so we
     declare an empty one."""
@@ -140,7 +134,6 @@ class _MarkReadRequest(BaseModel):
     pass
 
 
-class NotificationManager(AbstractBLLManager, RouterMixin):
     _model = NotificationModel
     prefix: ClassVar[Optional[str]] = "/v1/notifications"
     tags: ClassVar[Optional[List[str]]] = ["Notifications"]
@@ -149,7 +142,6 @@ class NotificationManager(AbstractBLLManager, RouterMixin):
     # bypass for system-issued broadcasts.
     _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
-    def create_validation(self, entity: NotificationModel.Create) -> None:
         """A team-scoped notification is broadcast to that team's members, so
         only a member may address one; ROOT/SYSTEM bypass for system-issued
         broadcasts, matching ``_CALLER_OWNED_FIELDS``."""
@@ -160,17 +152,14 @@ class NotificationManager(AbstractBLLManager, RouterMixin):
         require_team_membership(self.requester.id, entity.team_id, self.model_registry)
 
 
-class UserNotificationManager(AbstractBLLManager, RouterMixin):
     _model = UserNotificationModel
     prefix: ClassVar[Optional[str]] = "/v1/user-notifications"
     tags: ClassVar[Optional[List[str]]] = ["Notifications"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
     _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
-    def _assert_owns(self, user_notification_id: str) -> "UserNotificationModel":
         UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
         existing = UNDB.get(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=user_notification_id,
             return_type="dto",
@@ -187,12 +176,10 @@ class UserNotificationManager(AbstractBLLManager, RouterMixin):
             )
         return existing  # type: ignore[no-any-return]
 
-    def mark_as_read(self, notification_id: str) -> UserNotificationModel:
         existing = self._assert_owns(notification_id)
         UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
         now = datetime.now(timezone.utc)
         return UNDB.update(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=existing.id,
             new_properties={"read": True, "read_at": now},
@@ -200,12 +187,10 @@ class UserNotificationManager(AbstractBLLManager, RouterMixin):
             override_dto=UserNotificationModel,
         )
 
-    def acknowledge(self, notification_id: str) -> UserNotificationModel:
         existing = self._assert_owns(notification_id)
         UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
         now = datetime.now(timezone.utc)
         return UNDB.update(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=existing.id,
             new_properties={"acknowledged": True, "acknowledged_at": now},
@@ -254,21 +239,11 @@ NotificationModel.Manager = NotificationManager
 UserNotificationModel.Manager = UserNotificationManager
 
 
-def notify(
-    model_registry,
-    user_id: str,
-    title: str,
-    content: str,
-    reference_type: Optional[str] = None,
-    reference_id: Optional[str] = None,
-) -> str:
     """Send one user a notification, as the system (for extensions that tell
     someone something: a reminder, a notice): the notification and its
     delivery to them. Answers the notification's id."""
-    root = env("ROOT_ID")
     base = model_registry.DB.manager.Base
     made = NotificationModel.DB(base).create(
-        requester_id=root,
         model_registry=model_registry,
         return_type="dto",
         override_dto=NotificationModel,
@@ -279,7 +254,6 @@ def notify(
         reference_id=reference_id,
     )
     UserNotificationModel.DB(base).create(
-        requester_id=root,
         model_registry=model_registry,
         user_id=user_id,
         notification_id=made.id,
@@ -292,7 +266,6 @@ def notify(
 # ---------------------------------------------------------------------------
 
 
-def _merge_handler(ctx) -> None:
     """Re-home target's per-user delivery rows onto the initiating user.
 
     Notification broadcasts (``NotificationModel``) are not migrated:
@@ -305,7 +278,6 @@ def _merge_handler(ctx) -> None:
     UNDB = UserNotificationModel.DB(ctx.model_registry.DB.manager.Base)
     target_rows = (
         UNDB.list(
-            requester_id=_env("ROOT_ID"),
             model_registry=ctx.model_registry,
             filters=[UNDB.user_id == ctx.target_user_id],
             return_type="dto",
@@ -315,14 +287,12 @@ def _merge_handler(ctx) -> None:
     )
     for row in target_rows:
         UNDB.update(
-            requester_id=_env("ROOT_ID"),
             model_registry=ctx.model_registry,
             id=row.id,
             new_properties={"user_id": ctx.initiating_user_id},
         )
 
 
-def register_merge_participation() -> None:
     """Register the auth_notifications merge handler with auth_merge.
 
     Called from ``EXT_Auth_Notifications.on_initialize`` once auth_merge

@@ -78,11 +78,9 @@ class PollResult:
     more_waiting: bool
 
 
-def polled_instances(model_registry: Any) -> Iterator[Tuple[Type[Any], Any]]:
     """(provider class, instance) of every mailbox the poller reads."""
     from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider, EXT_EMail
 
-    root_id = env("ROOT_ID")
     base = model_registry.DB.manager.Base
     provider_db, instance_db = ProviderModel.DB(base), ProviderInstanceModel.DB(base)
     for provider_class in EXT_EMail.providers:
@@ -92,7 +90,6 @@ def polled_instances(model_registry: Any) -> Iterator[Tuple[Type[Any], Any]]:
         ):
             continue
         records = provider_db.list(
-            requester_id=root_id,
             model_registry=model_registry,
             return_type="dto",
             override_dto=ProviderModel,
@@ -100,13 +97,11 @@ def polled_instances(model_registry: Any) -> Iterator[Tuple[Type[Any], Any]]:
         )
         for record in records:
             instances: List[ProviderInstanceModel] = instance_db.list(
-                requester_id=root_id,
                 model_registry=model_registry,
                 return_type="dto",
                 override_dto=ProviderInstanceModel,
                 filters=[
                     instance_db.provider_id == record.id,
-                    instance_db.deleted_at.is_(None),
                 ],
             )
             for instance in instances:
@@ -118,7 +113,6 @@ def polled_instances(model_registry: Any) -> Iterator[Tuple[Type[Any], Any]]:
                     yield provider_class, instance
 
 
-class InboundIMAPService(AbstractService):
     """Polls every configured mailbox when it is due, as ROOT."""
 
     def __init__(
@@ -204,7 +198,6 @@ class InboundIMAPService(AbstractService):
         finally:
             await asyncio.to_thread(mailbox.close)
 
-    async def _deliver_new(self, mailbox: IMAPMailbox, cursor: Any) -> PollResult:
         cursors = root_mailboxes(self.model_registry)
         validity: Optional[str] = cursor.uid_validity
         last_uid = cursor.last_uid

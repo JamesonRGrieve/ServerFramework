@@ -40,10 +40,6 @@ def get_response_cache() -> Any:
     return _response_cache
 
 
-def cached_response(
-    ttl: int = 60,
-    vary_on_user: bool = True,
-) -> Callable:
     """Decorator: cache the full JSON response for GET endpoints.
 
     Args:
@@ -52,9 +48,6 @@ def cached_response(
             authenticated endpoints). False for public endpoints.
     """
 
-    def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
             cache = get_response_cache()
             if cache is None:
                 return await func(*args, **kwargs)
@@ -70,12 +63,10 @@ def cached_response(
             if "no-store" in cc or "no-cache" in cc:
                 return await func(*args, **kwargs)
 
-            requester_id = None
             if vary_on_user:
                 from zephyrex.lib.RequestContext import get_request_user
 
                 user = get_request_user()
-                requester_id = user.get("user_id") if user else None
 
             sorted_query = "&".join(
                 f"{k}={v}" for k, v in sorted(request.query_params.items())
@@ -91,7 +82,6 @@ def cached_response(
 
             try:
                 cached = await cache.get(key)
-            except Exception:
                 cached = None
 
             if cached is not None:
@@ -140,7 +130,6 @@ def cached_response(
             if 200 <= status_code < 300:
                 try:
                     await cache.put(key, status_code, body_str, {}, ttl)
-                except Exception as exc:
                     _logger.debug("Response cache put failed: %s", exc)
 
                 etag = ValkeyResponseCache.etag_for(body_str)
@@ -157,7 +146,6 @@ def cached_response(
     return decorator
 
 
-def _extract_request(args, kwargs):
     """Find the FastAPI Request object from handler args."""
     from fastapi import Request
 

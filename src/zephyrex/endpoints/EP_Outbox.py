@@ -17,7 +17,6 @@ from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.fastapi import AuthType, get_auth_dependency
 
 
-def _resolve_default_store() -> Optional[Any]:
     """Return the default outbox store the route should query.
 
     Looks first at ``RotationManager._outbox_store`` so test fixtures
@@ -31,16 +30,10 @@ def _resolve_default_store() -> Optional[Any]:
         store = getattr(RotationManager, "_outbox_store", None)
         if store is not None:
             return store
-    except Exception:
         pass
     return None
 
 
-def create_outbox_router(
-    *,
-    store_resolver: Optional[Any] = None,
-    require_auth: bool = True,
-) -> APIRouter:
     """Construct the outbox tracking-id ``APIRouter``.
 
     Args:
@@ -61,8 +54,6 @@ def create_outbox_router(
 
     router = APIRouter(tags=["outbox"])
 
-    @router.get("/v1/outbox/{tracking_id}", dependencies=dependencies)
-    def get_outbox_entry(tracking_id: str) -> Dict[str, Any]:
         store = resolver() if callable(resolver) else resolver
         if store is None:
             raise HTTPException(
@@ -75,7 +66,6 @@ def create_outbox_router(
         if callable(getter):
             try:
                 entry = getter(tracking_id)
-            except Exception as exc:
                 logger.debug(f"outbox store.get raised: {exc}")
                 entry = None
 

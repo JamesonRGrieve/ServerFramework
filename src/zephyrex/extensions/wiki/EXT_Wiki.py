@@ -50,7 +50,6 @@ def first_paragraph(text: str) -> str:
     return paragraphs[0] if paragraphs else NO_SUMMARY
 
 
-class AbstractWikiProvider(AbstractStaticProvider):
     """A wiki platform. Every ability takes the rotated instance and reads
     its settings, falling back to the environment."""
 
@@ -94,7 +93,6 @@ class AbstractWikiProvider(AbstractStaticProvider):
         return ["wiki", "knowledge_base"]
 
 
-class EXT_Wiki(AbstractStaticExtension):
     name: ClassVar[str] = "wiki"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

@@ -12,7 +12,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 API_URL = "https://api.elevenlabs.io/v1"
 
 
-class PRV_ElevenLabs_AI(AbstractAIProvider):
     name: ClassVar[str] = "elevenlabs"
     friendly_name: ClassVar[str] = "ElevenLabs"
     description: ClassVar[str] = "ElevenLabs speech and transcription"

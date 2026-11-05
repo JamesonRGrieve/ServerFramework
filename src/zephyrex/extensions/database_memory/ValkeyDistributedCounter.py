@@ -41,7 +41,6 @@ return 1
 _DEFAULT_TTL = 3600
 
 
-class ValkeyDistributedCounter(DistributedCounter):
     """Valkey-backed distributed counter using atomic INCRBY + limit check."""
 
     def __init__(

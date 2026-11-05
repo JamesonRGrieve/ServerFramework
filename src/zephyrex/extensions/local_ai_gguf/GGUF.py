@@ -66,7 +66,6 @@ class DeadlineStop:
         return ended
 
 
-def llama_messages(turns: List[Dict[str, str]]) -> List[ChatCompletionRequestMessage]:
     """Plain ``{role, content}`` turns as llama.cpp's chat messages."""
     found: List[ChatCompletionRequestMessage] = []
     for turn in turns:
@@ -90,7 +89,6 @@ def library_failure(exc: ValueError) -> InvalidInputExternalError:
     return InvalidInputExternalError(f"the model refused the input: {exc}")
 
 
-class AbstractGGUFProvider(AbstractLocalAIProvider):
     """A GGUF model; each instance is one model file (the first ``.gguf``
     of its files: a split model's first part)."""
 

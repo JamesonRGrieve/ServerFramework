@@ -24,7 +24,6 @@ BCRYPT_MAX_BYTES = 72
 _OVERLONG_STAND_IN = b"x"
 
 
-class PasswordPolicy(BaseModel):
     min_length: int
     max_bytes: int
     require_letter: bool
@@ -36,9 +35,6 @@ PASSWORD_POLICY = PasswordPolicy(
 )
 
 
-def failed_rules(
-    password: Optional[object], policy: PasswordPolicy = PASSWORD_POLICY
-) -> List[str]:
     """The names of the rules ``password`` breaks, in policy order."""
     text = password if isinstance(password, str) else ""
     failed = []
@@ -54,7 +50,6 @@ def failed_rules(
     return failed
 
 
-def enforce_password_policy(password: Optional[object]) -> None:
     """Raise 422, naming the broken rules, unless ``password`` meets the policy."""
     failed = failed_rules(password)
     if failed:
@@ -64,7 +59,6 @@ def enforce_password_policy(password: Optional[object]) -> None:
         )
 
 
-def password_matches(password: str, password_hash: str | bytes) -> bool:
     """Whether ``password`` is the one ``password_hash`` was made from.
 
     A password past bcrypt's input limit never matches: bcrypt 5 raises on it
@@ -75,6 +69,4 @@ def password_matches(password: str, password_hash: str | bytes) -> bool:
     hashed = password_hash.encode() if isinstance(password_hash, str) else password_hash
     candidate = password.encode()
     if len(candidate) > BCRYPT_MAX_BYTES:
-        bcrypt.checkpw(_OVERLONG_STAND_IN, hashed)
         return False
-    return bcrypt.checkpw(candidate, hashed)

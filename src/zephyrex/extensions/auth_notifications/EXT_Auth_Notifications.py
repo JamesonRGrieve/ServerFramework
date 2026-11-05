@@ -11,7 +11,6 @@ from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Auth_Notifications(AbstractStaticExtension):
     name: ClassVar[str] = "auth_notifications"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (
@@ -27,8 +26,6 @@ class EXT_Auth_Notifications(AbstractStaticExtension):
     }
     _providers: ClassVar[List] = []
 
-    @classmethod
-    def on_initialize(cls) -> bool:
         from zephyrex.extensions.auth_notifications import (  # noqa: F401
             BLL_Auth_Notifications,
         )

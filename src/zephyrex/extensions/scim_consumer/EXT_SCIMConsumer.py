@@ -32,7 +32,6 @@ def _row(model: Any) -> Dict[str, Any]:
     return dumped
 
 
-class EXT_SCIMConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "scim_consumer"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (

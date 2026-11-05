@@ -5,7 +5,6 @@ from zephyrex.database.Base import Base
 from zephyrex.database.DB_Auth import User
 
 
-class UserMerge(Base, BaseMixin, UpdateMixin):
     __tablename__ = "user_merges"
     __table_args__ = {
         "comment": "Tracks user account merges when a user has multiple accounts that need to be consolidated"

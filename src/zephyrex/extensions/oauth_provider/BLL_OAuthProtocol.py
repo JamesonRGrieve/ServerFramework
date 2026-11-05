@@ -51,18 +51,15 @@ REST = (ExposeIn.REST,)
 PROTOCOL_TAGS = tuple(TAGS)
 
 
-class OAuthParameters(RouteModel):
     """A token, introspection or revocation request's parameters, checked by
     the server itself so a refusal takes the RFC 6749 §5.2 shape."""
 
     model_config = ConfigDict(extra="allow")
 
 
-class NoParameters(RouteModel):
     """A POST that carries nothing in its body."""
 
 
-class PendingAuthorization(RouteModel):
     request_id: str
     client_id: str
     client_name: str
@@ -76,22 +73,18 @@ class PendingAuthorization(RouteModel):
     expires_at: datetime
 
 
-class AuthorizationDecision(RouteModel):
     approve: bool
     scopes: Optional[List[str]] = Field(
         None, description="The requested scopes the user grants (default: all)"
     )
 
 
-class AuthorizationRedirect(RouteModel):
     redirect_to: str = Field(..., description="Where to send the user's browser")
 
 
-class RotatedKeys(RouteModel):
     kids: List[str]
 
 
-def _answer(call: Callable[[], Optional[Dict[str, Any]]]) -> Response:
     """The JSON answer of a protocol verb, or its OAuth error, uncached."""
     try:
         body = call()
@@ -104,7 +97,6 @@ def _answer(call: Callable[[], Optional[Dict[str, Any]]]) -> Response:
     return JSONResponse(body or {}, headers=dict(NO_STORE_HEADERS))
 
 
-class OauthProtocolManager(AbstractBLLManager, RouterMixin):
     """Custom routes only; the protocol state is the server's."""
 
     prefix: ClassVar[Optional[str]] = "/v1/oauth2"
@@ -116,7 +108,6 @@ class OauthProtocolManager(AbstractBLLManager, RouterMixin):
     def server(self) -> AuthorizationServer:
         return AuthorizationServer(self.model_registry)
 
-    def _signed_in(self, request: Request) -> SignedInUser:
         """The requester's own signed-in session: consent is never given
         with an API key or another user's token."""
         signed_in = self.server.signed_in(request.headers.get("authorization"))
@@ -294,7 +285,6 @@ class OauthProtocolManager(AbstractBLLManager, RouterMixin):
         return RotatedKeys(kids=self.server.keys.rotate())
 
 
-class OauthDiscoveryManager(AbstractBLLManager, RouterMixin):
     """The issuer's metadata at the well-known locations."""
 
     prefix: ClassVar[Optional[str]] = "/.well-known"

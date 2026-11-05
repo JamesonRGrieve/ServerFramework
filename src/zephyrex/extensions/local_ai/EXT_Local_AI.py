@@ -31,7 +31,6 @@ from zephyrex.extensions.local_ai.LocalModels import LOADED_MODELS
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
 
 
-class EXT_Local_AI(AbstractStaticExtension):
     name: ClassVar[str] = "local_ai"
     version: ClassVar[str] = "3.0.0"
     description: ClassVar[str] = (

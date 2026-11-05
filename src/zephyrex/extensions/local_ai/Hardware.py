@@ -15,7 +15,6 @@ BYTES_PER_MIB = 1024 * 1024
 _GPU_FIELDS = "index,name,memory.total,memory.used,memory.free"
 
 
-def parse_nvidia_smi(output: str) -> List[Dict[str, Any]]:
     """``nvidia-smi --query-gpu=<_GPU_FIELDS> --format=csv,noheader,nounits``
     output as one entry per GPU, memory in bytes."""
     gpus = []

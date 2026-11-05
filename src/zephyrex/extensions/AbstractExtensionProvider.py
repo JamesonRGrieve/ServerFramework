@@ -45,7 +45,6 @@ except ImportError:
     select = None  # type: ignore[assignment]
 
 
-def get_session(db_manager: Optional[DatabaseManager] = None):
     """
     Get database session for extension operations.
 
@@ -112,14 +111,8 @@ def ability(name: Optional[str] = None, enabled: bool = True) -> Callable:
     return decorator
 
 
-class ExtensionRegistry(AbstractRegistry):
     """Registry for managing static extension classes and their models."""
 
-    def __init__(
-        self,
-        extensions_csv: str,
-        extensions_path: Optional[str] = None,
-    ):
         import glob
         import inspect
         import os
@@ -215,7 +208,6 @@ class ExtensionRegistry(AbstractRegistry):
                         if extension_class:
                             break
 
-                    except Exception as e:
                         logger.error(f"Error importing {module_name}: {e}")
 
                 if extension_class:
@@ -225,7 +217,6 @@ class ExtensionRegistry(AbstractRegistry):
                     logger.warning(
                         f"Could not find extension class for {extension_name}"
                     )
-            except Exception as e:
                 logger.error(f"Failed to load extension {extension_name}: {e}")
 
         loaded_names = {ext.name for ext in self.extensions if hasattr(ext, "name")}
@@ -249,7 +240,6 @@ class ExtensionRegistry(AbstractRegistry):
         """
         return _resolve_extensions_dir(self.extensions_path)
 
-    def _extension_dir(self, extension_name: str) -> str:
         """Path to a specific extension's directory.
 
         Checks the consumer's extensions_path first; falls back to the
@@ -312,7 +302,6 @@ class ExtensionRegistry(AbstractRegistry):
     # name reaches importlib or the filesystem.
     _SAFE_EXTENSION_NAME = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-    def register_extension(self, extension_class: Type["AbstractStaticExtension"]):
         """Register a static extension class and automatically handle recursive dependencies."""
 
         from zephyrex.lib.Logging import logger
@@ -365,7 +354,6 @@ class ExtensionRegistry(AbstractRegistry):
 
         logger.debug(f"Registered extension: {extension_name} (version: {version})")
 
-    def _register_dependencies(self, extension_class: Type["AbstractStaticExtension"]):
         """Recursively register all dependencies of an extension."""
         import glob
         import inspect
@@ -459,10 +447,8 @@ class ExtensionRegistry(AbstractRegistry):
                         f"Could not find extension class for dependency {dep_name}"
                     )
 
-            except Exception as e:
                 logger.error(f"Failed to load dependency {dep_name}: {e}")
 
-    def discover_extension_models(self, extension_names: List[str]):
         """Discover and register extension models from the specified extensions, filtering by extension type."""
         import glob
         import os
@@ -576,12 +562,10 @@ class ExtensionRegistry(AbstractRegistry):
 
                         except ImportError as import_err:
                             logger.debug(f"Could not import {file_path}: {import_err}")
-                        except Exception as module_err:
                             logger.debug(
                                 f"Error processing module {file_path}: {module_err}"
                             )
 
-            except Exception as e:
                 logger.error(
                     f"Error discovering extension models for {extension_name}: {e}"
                 )
@@ -639,9 +623,6 @@ class ExtensionRegistry(AbstractRegistry):
 
         return True
 
-    def resolve_extension_dependencies(
-        self, available_extensions: Dict[str, Type["AbstractStaticExtension"]]
-    ) -> List[str]:
         """
         Resolve loading order for extensions based on their dependencies using topological sort.
 
@@ -697,9 +678,6 @@ class ExtensionRegistry(AbstractRegistry):
             )
         return result
 
-    def install_extension_dependencies(
-        self, extension_names: List[str]
-    ) -> Dict[str, bool]:
         """
         Install PIP dependencies for the specified extensions.
 
@@ -724,7 +702,6 @@ class ExtensionRegistry(AbstractRegistry):
                 )
 
                 try:
-                    extension_module = importlib.import_module(extension_module_name)
                 except ImportError:
                     logger.debug(
                         f"No EXT module found for {extension_name}, skipping dependency installation"
@@ -751,7 +728,6 @@ class ExtensionRegistry(AbstractRegistry):
                             )
                         break
 
-            except Exception as e:
                 logger.error(
                     f"Error installing dependencies for extension {extension_name}: {e}"
                 )
@@ -759,9 +735,6 @@ class ExtensionRegistry(AbstractRegistry):
 
         return results
 
-    def _discover_extension_abilities(
-        self, extension_class: Type["AbstractStaticExtension"]
-    ):
         """Discover and track abilities from an extension class."""
         import inspect
 
@@ -830,9 +803,6 @@ class ExtensionRegistry(AbstractRegistry):
         self.extension_abilities[extension_name] = abilities
         logger.debug(f"Total abilities for {extension_name}: {len(abilities)}")
 
-    def _discover_extension_providers(
-        self, extension_class: Type["AbstractStaticExtension"]
-    ):
         """Discover and track providers from an extension."""
         import glob
         import inspect
@@ -911,14 +881,12 @@ class ExtensionRegistry(AbstractRegistry):
                                 f"Found provider {attr.__name__} with {len(provider_abilities)} abilities"
                             )
 
-            except Exception as e:
                 logger.error(f"Error importing provider module {prv_file}: {e}")
 
         self.extension_providers[extension_name] = providers
         logger.debug(f"Total providers for {extension_name}: {len(providers)}")
 
 
-class AbstractStaticExtensionSystemComponent(ABC):
     name: ClassVar[str] = "abstract"
     description: ClassVar[str] = "Abstract extension base class"
     # Environment variables that this extension needs
@@ -971,7 +939,6 @@ class AbstractStaticExtensionSystemComponent(ABC):
         """Check whether this extension/provider has a specific ability."""
         return ability in cls.get_abilities()
 
-    def __init_subclass__(cls, **kwargs):
         """Automatically register abilities when extension class is defined."""
         super().__init_subclass__(**kwargs)
 
@@ -1055,8 +1022,6 @@ class AbstractStaticExtensionSystemComponent(ABC):
                 f"{method.__name__} (meta={is_meta}, abstract={is_abstract})"
             )
 
-    @classmethod
-    def _register_env_vars(cls) -> None:
         """Register environment variables based on detected extension type."""
         # Get extension types - use extension.types for providers, cls.types for extensions
         if hasattr(cls, "extension") and cls.extension:
@@ -1117,7 +1082,6 @@ class InstanceSetting:
     multiline: bool = False
 
 
-class AbstractProviderInstance(ABC):
     """Item 26 — typed contract for bonded provider instances.
 
     Concrete subclasses MUST accept a `ProviderInstanceModel` in their
@@ -1199,7 +1163,6 @@ class HealthReport:
         )
 
 
-class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     """
     Base class for all service providers.
     All providers should be static/abstract - no instantiation required.
@@ -1469,9 +1432,6 @@ class AbstractStaticExtensionMeta(ABCMeta):
         return cls
 
 
-class AbstractStaticExtension(
-    AbstractStaticExtensionSystemComponent, metaclass=AbstractStaticExtensionMeta
-):
     """
     Abstract base class for all AGInfrastructure extensions.
 
@@ -1582,8 +1542,6 @@ class AbstractStaticExtension(
             return str(defined_in.parent)
         return _resolve_extensions_dir()
 
-    @classmethod
-    def _load_component_modules(cls, prefix: str) -> Tuple[List[ModuleType], bool]:
         """Load this extension's ``{prefix}*.py`` modules (tests excluded).
 
         Returns the modules and whether the scan is partial: a module still
@@ -1606,7 +1564,6 @@ class AbstractStaticExtension(
             module_name = os.path.basename(path)[: -len(".py")]
             try:
                 module = load_extension_module(extensions_root, cls.name, module_name)
-            except Exception as e:
                 logger.error(f"Failed to import extension module {module_name}: {e}")
                 continue
             spec = getattr(module, "__spec__", None)
@@ -1713,8 +1670,6 @@ class AbstractStaticExtension(
                         f"Inherited abilities from {base.__name__}: {base._abilities}"
                     )
 
-    @classmethod
-    def _inherit_parent_hooks(cls) -> None:
         """Inherit hooks from parent classes."""
         # Prevent infinite recursion by checking if we're already inheriting
         if hasattr(cls, "_inheriting_hooks"):
@@ -1775,9 +1730,6 @@ class AbstractStaticExtension(
 
     _types_cache: ClassVar[Optional[Set[ExtensionType]]] = None
 
-    @classproperty
-    @classmethod
-    def types(cls) -> Set[ExtensionType]:
         """
         Get the types of this extension based on its components.
         Cached after first access.
@@ -1865,9 +1817,6 @@ class AbstractStaticExtension(
 
     _models_cache: ClassVar[Optional[Set[Type]]] = None
 
-    @classproperty
-    @classmethod
-    def models(cls) -> Set[Type]:
         """The models this extension contributes: the tables its BLL_ modules
         define and the external models its PRV_ modules define. Cached after
         the first complete scan."""
@@ -2163,8 +2112,6 @@ class AbstractStaticExtension(
                 )
         return found
 
-    @classmethod
-    def get_rotation_provider_instances_seed_data(cls) -> List[Dict[str, Any]]:
         """Seed rows linking this extension's root rotation to every instance
         of its providers.
 
@@ -2191,13 +2138,11 @@ class AbstractStaticExtension(
 
         session = registry.DB.session()
         try:
-            extension_record = session.execute(
                 select(Extension).where(Extension.name == cls.name)
             ).scalar_one_or_none()
             if extension_record is None:
                 return []
 
-            root_rotation = session.execute(
                 select(Rotation).where(
                     Rotation.extension_id == extension_record.id,
                     Rotation.name == root_rotation_name(cls.name),
@@ -2210,7 +2155,6 @@ class AbstractStaticExtension(
                 ProviderExtension.extension_id == extension_record.id
             )
             instances = (
-                session.execute(
                     select(ProviderInstance).where(
                         ProviderInstance.provider_id.in_(provider_ids)
                     )

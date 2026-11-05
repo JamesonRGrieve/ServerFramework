@@ -57,11 +57,6 @@ def _get_namespace() -> Optional[str]:
     return ns if ns else None
 
 
-def _build_client(
-    addr: str,
-    token: Optional[str] = None,
-    namespace: Optional[str] = None,
-) -> Any:
     """Build an hvac Client. Authenticate via token or AppRole."""
     if not _hvac_available:
         raise RuntimeError("hvac library not installed")
@@ -118,7 +113,6 @@ def _is_auth_error(exc: BaseException) -> bool:
     return isinstance(exc, (hvac_exceptions.Forbidden, hvac_exceptions.Unauthorized))
 
 
-class OpenBaoProvider(AbstractSecretVaultProvider):
     """OpenBao/Vault KV v2 secret vault provider."""
 
     name: ClassVar[str] = "openbao"
@@ -159,8 +153,6 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
     def get_platform_name(cls) -> str:
         return "OpenBao"
 
-    @classmethod
-    def validate_config(cls, instance=None) -> bool:
         if not _hvac_available:
             logger.error("hvac library not installed")
             return False
@@ -177,8 +169,6 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
             return False
         return True
 
-    @classmethod
-    def health_check(cls) -> HealthReport:
         addr = _get_addr()
         if not addr:
             return HealthReport(HealthStatus.DOWN, detail="OPENBAO_ADDR not set")
@@ -200,11 +190,8 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
             if 200 <= status < 300:
                 return HealthReport(HealthStatus.OK, detail=f"status {status}")
             return HealthReport(HealthStatus.DEGRADED, detail=f"status {status}")
-        except Exception as exc:
             return HealthReport(HealthStatus.DOWN, detail=f"connection error: {exc}")
 
-    @classmethod
-    def bond_instance(cls, instance) -> Optional[AbstractProviderInstance_SDK]:
         if not _hvac_available:
             logger.error("hvac library not installed")
             return None
@@ -232,7 +219,6 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
             bonded = AbstractProviderInstance_SDK(sdk)
             _BONDED_CLIENTS[key] = bonded
             return bonded
-        except Exception as e:
             logger.error(f"Failed to bond OpenBao instance: {e}")
             return None
 

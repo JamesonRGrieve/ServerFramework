@@ -57,7 +57,6 @@ from pydantic import BaseModel, ConfigDict, Field
 # ---------------------------------------------------------------------------
 
 
-class OutboxEntry(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -74,7 +73,6 @@ class OutboxEntry(BaseModel):
     last_error: Optional[str] = None
 
 
-class DLQEntry(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str
@@ -93,7 +91,6 @@ class DLQEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class OutboxStore(ABC):
     """Abstract storage for outbox + dead-letter-queue entries."""
 
     @abstractmethod
@@ -126,7 +123,6 @@ class OutboxStore(ABC):
 # ---------------------------------------------------------------------------
 
 
-class InMemoryOutboxStore(OutboxStore):
     """A thread-safe in-memory outbox store, suitable for tests and dev.
 
     Not durable; everything is lost on process exit.
@@ -138,7 +134,6 @@ class InMemoryOutboxStore(OutboxStore):
         self._by_key: Dict[str, str] = {}  # idempotency_key -> entry id
         self._lock = threading.RLock()
 
-    def enqueue(self, entry: OutboxEntry) -> str:
         with self._lock:
             existing_id = self._by_key.get(entry.idempotency_key)
             if existing_id is not None:
@@ -148,7 +143,6 @@ class InMemoryOutboxStore(OutboxStore):
             self._by_key[entry.idempotency_key] = entry.id
             return entry.id
 
-    def claim_pending(self, limit: int = 10) -> List[OutboxEntry]:
         with self._lock:
             claimed: List[OutboxEntry] = []
             # Sort to give deterministic FIFO behavior.
@@ -162,14 +156,12 @@ class InMemoryOutboxStore(OutboxStore):
                 claimed.append(entry)
             return claimed
 
-    def mark_complete(self, id: str) -> None:
         with self._lock:
             entry = self._entries.get(id)
             if entry is None:
                 return
             entry.status = "complete"
 
-    def mark_failed(self, id: str, error: BaseException, max_retries: int = 5) -> None:
         with self._lock:
             entry = self._entries.get(id)
             if entry is None:
@@ -192,14 +184,12 @@ class InMemoryOutboxStore(OutboxStore):
                 # Return to pending for the drain service to pick up again.
                 entry.status = "pending"
 
-    def find_by_idempotency_key(self, key: str) -> Optional[OutboxEntry]:
         with self._lock:
             entry_id = self._by_key.get(key)
             if entry_id is None:
                 return None
             return self._entries.get(entry_id)
 
-    def list_dlq(self, limit: int = 100) -> List[DLQEntry]:
         with self._lock:
             ordered = sorted(self._dlq.values(), key=lambda e: e.moved_at, reverse=True)
             return ordered[:limit]
@@ -210,7 +200,6 @@ class InMemoryOutboxStore(OutboxStore):
 # ---------------------------------------------------------------------------
 
 
-class OutboxDrainService:
     """Background drain for the outbox.
 
     Built on top of :class:`logic.AbstractService.QueueConsumerService`. The
@@ -220,24 +209,15 @@ class OutboxDrainService:
     need the model + store types (e.g. BLL writers enrolling rows).
     """
 
-    def __init__(
-        self,
-        store: OutboxStore,
-        executor: "Optional[OutboxOperationExecutor]" = None,  # type: ignore[valid-type]
-        max_retries: int = 5,
-        **service_kwargs,
-    ) -> None:
         # Lazy import to avoid module-load cycle.
         from zephyrex.logic.AbstractService import QueueConsumerService, QueueSource
 
-        class _OutboxQueueSource(QueueSource):
             """Adapter that exposes ``OutboxStore`` as a ``QueueSource``."""
 
             def __init__(self, store: OutboxStore) -> None:
                 self._store = store
                 self._claimed: List[OutboxEntry] = []
 
-            async def pull_one(self) -> Optional[dict]:
                 if not self._claimed:
                     self._claimed = list(self._store.claim_pending(limit=10))
                 if not self._claimed:
@@ -245,7 +225,6 @@ class OutboxDrainService:
                 entry = self._claimed.pop(0)
                 return entry.model_dump() | {"_outbox_id": entry.id}
 
-            async def ack(self, item: dict) -> None:
                 eid = item.get("_outbox_id") or item.get("id")
                 if eid:
                     self._store.mark_complete(str(eid))
@@ -256,27 +235,23 @@ class OutboxDrainService:
                 # store remains the single source of truth.
                 return None
 
-            async def move_to_dlq(self, item: dict, reason: str) -> None:
                 eid = item.get("_outbox_id") or item.get("id")
                 if eid:
                     self._store.mark_failed(
                         str(eid), RuntimeError(reason), max_retries=0
                     )
 
-        class _DrainConsumer(QueueConsumerService):
             def __init__(self, *args, executor=None, store=None, **kwargs):
                 super().__init__(*args, **kwargs)
                 self._executor = executor
                 self._store = store
 
-            async def process(self, item: dict) -> None:
                 eid = item.get("_outbox_id") or item.get("id")
                 if self._executor is None:
                     # No executor wired -- treat the entry as delivered.
                     return None
                 try:
                     await self._executor(item)
-                except Exception as e:
                     if eid is not None:
                         self._store.mark_failed(
                             str(eid), e, max_retries=self.max_retries

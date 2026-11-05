@@ -51,18 +51,11 @@ from __future__ import annotations
 from typing import Callable, Iterable, Optional
 
 
-class CycleGuardError(Exception):
     """Raised when a mutation would close a cycle, or when a walk
     exceeds ``max_iterations`` (indicating either pre-existing
     corruption or a malicious / extreme structure)."""
 
 
-def would_create_tree_cycle(
-    node_id: str,
-    candidate_parent_id: Optional[str],
-    get_parent_id: Callable[[str], Optional[str]],
-    max_iterations: int = 256,
-) -> bool:
     """Return True if setting ``node_id``'s parent to
     ``candidate_parent_id`` would close a cycle.
 
@@ -104,12 +97,6 @@ def would_create_tree_cycle(
     return False
 
 
-def would_create_dag_cycle(
-    new_parent_id: str,
-    new_child_id: str,
-    get_parents: Callable[[str], Iterable[str]],
-    max_iterations: int = 1024,
-) -> bool:
     """Return True if adding the directed edge
     ``new_parent_id → new_child_id`` would close a cycle in the DAG.
 
@@ -149,11 +136,6 @@ def would_create_dag_cycle(
     return False
 
 
-def detect_existing_tree_cycle(
-    start_id: str,
-    get_parent_id: Callable[[str], Optional[str]],
-    max_iterations: int = 256,
-) -> bool:
     """Return True if walking up from ``start_id`` reaches ``start_id``
     again — i.e. an already-corrupt parent chain. Diagnostic-only."""
     visited = set()

@@ -35,7 +35,6 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
 
-class ReplayCache(ABC):
     """Contract: mark a key, then check whether it has been marked."""
 
     @abstractmethod
@@ -44,7 +43,6 @@ class ReplayCache(ABC):
     @abstractmethod
     def is_used(self, key: str) -> bool: ...
 
-    def mark_if_unused(self, key: str, ttl_seconds: int) -> bool:
         """Atomic compare-and-set: mark ``key`` only if it is not already
         marked. Returns True iff this caller is the one that set it.
 
@@ -62,7 +60,6 @@ class ReplayCache(ABC):
         return True
 
 
-class InMemoryReplayCache(ReplayCache):
     """Process-local replay cache.
 
     Honours the per-call ``ttl_seconds`` argument: each entry stores a
@@ -76,29 +73,22 @@ class InMemoryReplayCache(ReplayCache):
         self._max_entries = max_entries
         self._impl: dict = {}
 
-    def mark_used(self, key: str, ttl_seconds: int) -> None:
-        deadline = time.time() + ttl_seconds
         with self._lock:
             self._impl[key] = deadline
             if len(self._impl) > self._max_entries:
-                now = time.time()
                 expired = [k for k, d in self._impl.items() if d < now]
                 for k in expired:
                     self._impl.pop(k, None)
 
-    def is_used(self, key: str) -> bool:
         with self._lock:
             entry = self._impl.get(key)
             if entry is None:
                 return False
-            if entry < time.time():
                 self._impl.pop(key, None)
                 return False
             return True
 
-    def mark_if_unused(self, key: str, ttl_seconds: int) -> bool:
         """Atomic CAS within a single process via the cache lock."""
-        now = time.time()
         deadline = now + ttl_seconds
         with self._lock:
             existing = self._impl.get(key)
@@ -122,12 +112,10 @@ def set_replay_cache(cache: ReplayCache) -> None:
     _GLOBAL_REPLAY_CACHE = cache
 
 
-def get_replay_cache() -> ReplayCache:
     """Return the active replay cache, creating an in-memory default on
     first use. The default is correct only for single-process deployments;
     multi-worker setups must call :func:`set_replay_cache` with a shared
     backend (Redis/Valkey/Postgres-backed) before serving traffic."""
-    global _GLOBAL_REPLAY_CACHE
     if _GLOBAL_REPLAY_CACHE is None:
         _GLOBAL_REPLAY_CACHE = InMemoryReplayCache()
         workers_raw = env("UVICORN_WORKERS") or ""

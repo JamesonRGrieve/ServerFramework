@@ -37,20 +37,16 @@ class FailedLoginAttemptModel(
         "Records of failed login attempts for security monitoring and lockout enforcement"
     )
 
-    class Create(BaseModel, UserModel.Reference.ID):
         ip_address: Optional[str] = Field(
             None, description="IP address of the failed login attempt"
         )
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
         ip_address: Optional[StringSearchModel] = None
         created_at: Optional[DateSearchModel] = None
 
 
-class FailedLoginAttemptManager(AbstractBLLManager, RouterMixin):
     _model = FailedLoginAttemptModel
     prefix: ClassVar[Optional[str]] = "/v1/admin/failed-logins"
     tags: ClassVar[Optional[List[str]]] = ["Account Lockout"]
@@ -63,7 +59,6 @@ class FailedLoginAttemptManager(AbstractBLLManager, RouterMixin):
     def _register_search_transformers(self):
         self.register_search_transformer("recent", self._transform_recent_search)
 
-    def _transform_recent_search(self, hours):
         if not hours or not isinstance(hours, int):
             hours = 1
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -72,10 +67,8 @@ class FailedLoginAttemptManager(AbstractBLLManager, RouterMixin):
             >= cutoff_time
         ]
 
-    def count_recent(self, user_id: str, hours: int = 1) -> int:
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         return FailedLoginAttemptModel.DB(self.model_registry.DB.manager.Base).count(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             user_id=user_id,
             filters=[
@@ -86,11 +79,9 @@ class FailedLoginAttemptManager(AbstractBLLManager, RouterMixin):
             ],
         )
 
-    def assert_user_within_threshold(self, user_id: str, model_registry) -> None:
         """Called from `UserManager.login` (via the registered hook) to gate
         further work on the per-user threshold."""
         count = FailedLoginAttemptModel.DB(model_registry.DB.manager.Base).count(
-            requester_id=user_id,
             model_registry=model_registry,
             user_id=user_id,
             filters=[
@@ -123,20 +114,16 @@ FailedLoginAttemptModel.Manager = FailedLoginAttemptManager
 # ---------------------------------------------------------------------------
 
 
-def _assert_within_threshold(user_id, model_registry):
     from zephyrex.lib.Environment import env
 
     mgr = FailedLoginAttemptManager(
-        requester_id=env("ROOT_ID"), model_registry=model_registry
     )
     mgr.assert_user_within_threshold(user_id, model_registry)
 
 
-def _record_failure(user_id, ip_address, model_registry):
     from zephyrex.lib.Environment import env
 
     mgr = FailedLoginAttemptManager(
-        requester_id=env("ROOT_ID"), model_registry=model_registry
     )
     mgr.record_failure(user_id, ip_address, model_registry)
 

@@ -38,7 +38,6 @@ VIDEO_FIELDS = "id,title,video_description,create_time,share_url"
 _AUTH_ERRORS = {"access_token_invalid", "scope_not_authorized", "token_expired"}
 
 
-class PRV_TikTok_Social(AbstractSocialProvider):
     name: ClassVar[str] = "tiktok"
     friendly_name: ClassVar[str] = "TikTok"
     description: ClassVar[str] = "TikTok"
@@ -105,10 +104,6 @@ class PRV_TikTok_Social(AbstractSocialProvider):
             )
         return level
 
-    @classmethod
-    async def publish(
-        cls, instance: ProviderInstanceModel, content: str, media_urls: List[str]
-    ) -> Dict[str, Any]:
         kinds = {media_kind(url) for url in media_urls}
         if not media_urls:
             raise cls.refuse("every post needs one video or photos")

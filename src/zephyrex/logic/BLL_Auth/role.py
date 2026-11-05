@@ -23,14 +23,6 @@ from zephyrex.logic.BLL_Auth.team import TeamModel
 from zephyrex.logic.BLL_Auth.team_authority import TeamAuthority
 
 
-class RoleModel(
-    ApplicationModel,
-    ParentMixinModel,
-    NameMixinModel,
-    UpdateMixinModel,
-    TeamModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
     Manager: ClassVar[Type["RoleManager"]] = None  # type: ignore[assignment]
     friendly_name: Optional[str] = Field(None, description="Human-readable role name")
     mfa_count: int = Field(1, description="Number of MFA verifications required")
@@ -82,7 +74,6 @@ class RoleModel(
             365, description="How often password must be changed"
         )
 
-    class Update(BaseModel):  # Removed mixins to make all fields truly optional
         name: Optional[str] = Field(None, description="Role name")
         friendly_name: Optional[str] = Field(
             None, description="Human-readable role name"
@@ -105,7 +96,6 @@ class RoleModel(
         mfa_count: Optional[NumericalSearchModel] | None = None
 
 
-class RoleManager(AbstractBLLManager, RouterMixin):
     _model = RoleModel
     _entity_label: ClassVar[Optional[str]] = "Role"
 
@@ -116,7 +106,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
     # routes_to_register defaults to None, which includes all routes
     auth_dependency: ClassVar[Optional[str]] = "get_role_manager"
 
-    def delete(self, id: str) -> None:
         """Delete a role and reparent its UserTeam assignments.
 
         Without this override, deleting a role would orphan every
@@ -132,7 +121,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
             authorized users keep their tokens but lose all permissions.
         """
         role = self.DB.get(
-            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=id,
             return_type="dto",
@@ -148,10 +136,8 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         ut_db = UserTeamModel.DB(self.model_registry.DB.manager.Base)
         # Deleted memberships orphan nothing, and cannot be updated.
         affected = ut_db.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             role_id=id,
-            filters=[ut_db.deleted_at.is_(None)],
             return_type="dto",
             override_dto=UserTeamModel,
         )
@@ -168,7 +154,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
                     ),
                 )
             ut_manager = UserTeamManager(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
             )
             for ut in affected:
@@ -176,7 +161,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
 
         super().delete(id=id)
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         """A role's parent sets what everyone holding it may do, so moving
         it is a grant of its new rank to all of them: only someone who may
         grant that rank in the role's team may (TeamAuthority). Without
@@ -193,7 +177,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
     def _register_search_transformers(self):
         self.register_search_transformer("is_system", self._transform_is_system_search)
 
-    def _transform_is_system_search(self, value):
         """Transform is_system search to filter system roles (team_id is NULL)"""
         if value:
             return [RoleModel.DB(self.model_registry.DB.manager.Base).team_id == None]
@@ -203,7 +186,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
     # which every read path asks: a team's role answers to the team's live
     # members only, its creator included, and a system role to everyone.
 
-    def create_validation(self, entity):
         """Validate role creation."""
         # First, validate that team_id is provided (required for user-created roles)
         # System roles with team_id=None can only be created through seeding, not the API
@@ -218,7 +200,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         # not for teams the user can't access (which should return 403 later)
         if entity.team_id:
             team = TeamModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.team_id,
             )
@@ -229,7 +210,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         if entity.parent_id:
             try:
                 parent_role = self.DB.get(
-                    requester_id=self.requester.id,
                     model_registry=self.model_registry,
                     id=entity.parent_id,
                 )
@@ -245,7 +225,6 @@ class RoleManager(AbstractBLLManager, RouterMixin):
             self.requester.id, entity.team_id, self.model_registry
         ).assert_may_create_role(entity.parent_id)
 
-    def search_validation(self, params):
         """Validate search parameters for business logic rules"""
         if "team_id" in params:
             if params["team_id"] in [None, "", "None"]:

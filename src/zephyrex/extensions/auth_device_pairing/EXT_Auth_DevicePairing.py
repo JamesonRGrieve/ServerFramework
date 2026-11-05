@@ -7,7 +7,6 @@ from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Auth_DevicePairing(AbstractStaticExtension):
     """QR-code cross-device pairing authentication extension.
 
     Implements the Steam Guard / Discord-style flow: an unauthenticated

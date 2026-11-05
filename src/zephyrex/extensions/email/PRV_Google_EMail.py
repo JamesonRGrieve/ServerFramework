@@ -44,7 +44,6 @@ except ImportError:  # pragma: no cover - optional driver
     _google_available = False
 
 
-class GoogleProvider(AbstractEmailProvider):
     """Gmail email provider over the Gmail REST API (OAuth access token)."""
 
     name: ClassVar[str] = "google"

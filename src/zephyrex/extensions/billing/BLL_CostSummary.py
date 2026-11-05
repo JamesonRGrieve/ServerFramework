@@ -26,7 +26,6 @@ from zephyrex.logic.AbstractLogicManager import (
 PeriodLiteral = Literal["day", "week", "month", "year"]
 
 
-class CostSummaryModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
     """Aggregated per-tenant / per-provider / per-ability spend for a period."""
 
     tenant_id: str = Field(
@@ -50,7 +49,6 @@ class CostSummaryModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
         "Daily/weekly/monthly cost roll-up (Item 84 cost observability)"
     )
 
-    def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return (
             f"CostSummaryModel(tenant_id={self.tenant_id!r}, "
             f"provider={self.provider!r}, ability={self.ability!r}, "
@@ -58,7 +56,6 @@ class CostSummaryModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
             f"total_cost_usd={self.total_cost_usd}, call_count={self.call_count})"
         )
 
-    class Create(BaseModel):
         tenant_id: str
         provider: str
         ability: str
@@ -67,11 +64,9 @@ class CostSummaryModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
         total_cost_usd: Decimal
         call_count: int = 0
 
-    class Update(BaseModel):
         total_cost_usd: Optional[Decimal] = None
         call_count: Optional[int] = None
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         tenant_id: Optional[StringSearchModel] = None
         provider: Optional[StringSearchModel] = None
         ability: Optional[StringSearchModel] = None
@@ -82,13 +77,10 @@ class CostSummaryModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
         created_at: Optional[DateSearchModel] = None
 
 
-@dataclass
-class _Bucket:
     cost: Decimal = Decimal("0")
     count: int = 0
 
 
-class CostRollupAggregator:
     """Pure aggregator. Accumulates ``(tenant, provider, ability) -> (cost, count)``
     and emits one ``CostSummaryModel.Create`` per unique key."""
 

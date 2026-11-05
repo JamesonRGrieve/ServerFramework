@@ -100,11 +100,9 @@ IDENTITY_ATTRIBUTES: Tuple[str, ...] = (
 DEFAULT_IDENTITY_ATTRIBUTE = "subject:CN"
 
 
-class CertificateEncodingError(ValueError):
     """The presented value is not a certificate (chain): the client's error."""
 
 
-class CertificateRefusedError(Exception):
     """The certificate does not sign anyone in. ``reason`` is a stable code."""
 
     def __init__(self, reason: str, message: str) -> None:
@@ -112,14 +110,11 @@ class CertificateRefusedError(Exception):
         self.reason = reason
 
 
-class RevocationStatus(enum.Enum):
     GOOD = "good"
     REVOKED = "revoked"
     UNKNOWN = "unknown"
 
 
-@dataclass(frozen=True)
-class TrustAnchor:
     """One configured trust anchor and how certificates under it are read."""
 
     id: str
@@ -135,7 +130,6 @@ class TrustAnchor:
 # -- parsing ------------------------------------------------------------------
 
 
-def load_ca_certificate(pem: str) -> x509.Certificate:
     """The one CA certificate of ``pem``; refused when it is not exactly one
     certificate, or not a CA that may sign certificates."""
     certificates = _pem_certificates(pem)
@@ -166,7 +160,6 @@ def fingerprint_sha256(certificate: x509.Certificate) -> str:
     return certificate.fingerprint(hashes.SHA256()).hex()
 
 
-def parse_forwarded_chain(value: str) -> List[x509.Certificate]:
     """The chain a TLS terminator forwarded in a header, leaf first.
 
     Accepts a URL-encoded PEM (nginx ``$ssl_client_escaped_cert``), a PEM
@@ -184,7 +177,6 @@ def parse_forwarded_chain(value: str) -> List[x509.Certificate]:
     return _bounded(certificates)
 
 
-def parse_tls_extension_chain(chain: Iterable[str]) -> List[x509.Certificate]:
     """The ASGI TLS extension's ``client_cert_chain``: PEM strings, leaf first."""
     certificates: List[x509.Certificate] = []
     for pem in chain:
@@ -192,7 +184,6 @@ def parse_tls_extension_chain(chain: Iterable[str]) -> List[x509.Certificate]:
     return _bounded(certificates)
 
 
-def _bounded(certificates: List[x509.Certificate]) -> List[x509.Certificate]:
     if not certificates:
         raise CertificateEncodingError("No certificate was presented")
     if len(certificates) > MAX_PRESENTED_CERTIFICATES:
@@ -200,7 +191,6 @@ def _bounded(certificates: List[x509.Certificate]) -> List[x509.Certificate]:
     return certificates
 
 
-def _pem_certificates(text: str) -> List[x509.Certificate]:
     blocks = _PEM_CERTIFICATE.findall(text)
     if not blocks:
         raise CertificateEncodingError("No PEM certificate found")
@@ -251,14 +241,10 @@ def _require_client_auth(
         raise ValueError("extendedKeyUsage does not include clientAuth")
 
 
-def _require_digital_signature(
-    policy: Policy, certificate: x509.Certificate, usage: Optional[x509.KeyUsage]
-) -> None:
     if usage is not None and not usage.digital_signature:
         raise ValueError("keyUsage does not include digitalSignature")
 
 
-def _client_ee_policy() -> ExtensionPolicy:
     """The web PKI's end-entity rules, but: an extendedKeyUsage naming
     clientAuth is required (the default lets a certificate without one
     act for any purpose); a keyUsage, when present, must allow signing; and
@@ -274,7 +260,6 @@ def _client_ee_policy() -> ExtensionPolicy:
     )
 
 
-def check_leaf(leaf: x509.Certificate, now: datetime) -> None:
     """What the leaf alone must satisfy, refused with a reason of its own
     before any path is built (the path validation enforces it again)."""
     if now < leaf.not_valid_before_utc:
@@ -333,7 +318,6 @@ def _san(certificate: x509.Certificate) -> Optional[x509.SubjectAlternativeName]
         return None
 
 
-def _der_utf8_string(der: bytes) -> str:
     """The text of a DER UTF8String (how a UPN otherName is encoded)."""
     if len(der) < 2 or der[0] != _DER_UTF8_STRING:
         raise CertificateRefusedError("no_identity", "The UPN is not a UTF8String")
@@ -349,7 +333,6 @@ def _der_utf8_string(der: bytes) -> str:
         raise CertificateRefusedError("no_identity", "The UPN is not UTF-8") from None
 
 
-def _san_values(certificate: x509.Certificate, kind: str) -> List[str]:
     san = _san(certificate)
     if san is None:
         return []
@@ -375,7 +358,6 @@ def _subject_values(certificate: x509.Certificate, name: str) -> List[str]:
     ]
 
 
-def validate_identity_attribute(attribute: str) -> str:
     if attribute not in IDENTITY_ATTRIBUTES:
         raise CertificateEncodingError(
             f"identity_attribute must be one of {', '.join(IDENTITY_ATTRIBUTES)}"
@@ -383,7 +365,6 @@ def validate_identity_attribute(attribute: str) -> str:
     return attribute
 
 
-def identity_of(certificate: x509.Certificate, attribute: str) -> str:
     """The one value of ``attribute`` in ``certificate``: refused when it is
     absent, or present more than once (which of them would be the user?)."""
     if attribute == WHOLE_SUBJECT:
@@ -411,7 +392,6 @@ def identity_of(certificate: x509.Certificate, attribute: str) -> str:
     return distinct[0]
 
 
-def email_of(certificate: x509.Certificate) -> Optional[str]:
     """The certificate's one email (subjectAltName, else the subject's
     emailAddress), lower-cased; None when it has none or several."""
     values = _san_values(certificate, "email") or _subject_values(
@@ -424,13 +404,9 @@ def email_of(certificate: x509.Certificate) -> Optional[str]:
 # -- revocation ---------------------------------------------------------------
 
 
-def _http_urls(urls: Iterable[str]) -> List[str]:
     return [url for url in urls if url.lower().startswith(_HTTP_SCHEMES)]
 
 
-def crl_urls(
-    certificate: x509.Certificate, issuer: x509.Certificate, anchor: TrustAnchor
-) -> List[str]:
     """Where ``certificate``'s CRL is: the anchor's configured CRL for the
     certificates it issued itself, then the certificate's own distribution
     points (HTTP ones; LDAP is not fetched)."""
@@ -450,9 +426,6 @@ def crl_urls(
     return _http_urls(urls)
 
 
-def ocsp_urls(
-    certificate: x509.Certificate, issuer: x509.Certificate, anchor: TrustAnchor
-) -> List[str]:
     """Where to ask about ``certificate``: the anchor's configured responder
     for the certificates it issued itself, then the certificate's AIA."""
     urls: List[str] = []
@@ -472,7 +445,6 @@ def ocsp_urls(
     return _http_urls(urls)
 
 
-def _load_crl(body: bytes) -> Optional[x509.CertificateRevocationList]:
     for loader in (x509.load_der_x509_crl, x509.load_pem_x509_crl):
         try:
             return loader(body)
@@ -481,9 +453,6 @@ def _load_crl(body: bytes) -> Optional[x509.CertificateRevocationList]:
     return None
 
 
-def _crl_covers(
-    crl: x509.CertificateRevocationList, certificate: x509.Certificate
-) -> bool:
     """A complete CRL whose scope includes ``certificate``: no delta CRL,
     no indirect or reason-partitioned one, and no CA-only CRL for a leaf
     (or user-only CRL for a CA)."""
@@ -513,12 +482,6 @@ def _crl_covers(
     )
 
 
-def crl_status(
-    crl: x509.CertificateRevocationList,
-    certificate: x509.Certificate,
-    issuer: x509.Certificate,
-    now: datetime,
-) -> RevocationStatus:
     """``certificate``'s status by ``crl``, UNKNOWN unless the CRL is the
     issuer's, signed by it, current at ``now`` and covers the certificate."""
     usage = _key_usage(issuer)
@@ -544,12 +507,6 @@ def crl_status(
     return RevocationStatus.GOOD
 
 
-def _signature_valid(
-    certificate: x509.Certificate,
-    signature: bytes,
-    data: bytes,
-    algorithm: Optional[hashes.HashAlgorithm],
-) -> bool:
     key = certificate.public_key()
     try:
         if isinstance(key, rsa.RSAPublicKey) and algorithm is not None:
@@ -570,13 +527,9 @@ def _key_hash(certificate: x509.Certificate) -> bytes:
     return x509.SubjectKeyIdentifier.from_public_key(certificate.public_key()).digest
 
 
-def _ocsp_signer(
-    response: ocsp.OCSPResponse, issuer: x509.Certificate, now: datetime
-) -> Optional[x509.Certificate]:
     """Who may have signed ``response``: the issuer itself, or a responder
     the issuer delegated to (issued by it, for OCSPSigning, valid now)."""
 
-    def named(certificate: x509.Certificate) -> bool:
         if response.responder_key_hash is not None:
             return _key_hash(certificate) == response.responder_key_hash
         return certificate.subject == response.responder_name
@@ -603,12 +556,6 @@ def _ocsp_signer(
     return None
 
 
-def ocsp_status(
-    body: bytes,
-    request: ocsp.OCSPRequest,
-    issuer: x509.Certificate,
-    now: datetime,
-) -> RevocationStatus:
     """The status an OCSP response ``body`` gives for ``request``'s
     certificate; UNKNOWN unless it is a successful, authorized, current
     answer about that very certificate."""
@@ -649,7 +596,6 @@ def ocsp_status(
     return RevocationStatus.UNKNOWN
 
 
-class RevocationChecker:
     """Fetches CRLs and asks OCSP responders, over the framework's guarded
     HTTP client (SSRF guard: an internal CA's endpoints must be listed in
     ``EGRESS_ALLOWED_HOSTS``)."""
@@ -657,13 +603,6 @@ class RevocationChecker:
     def __init__(self) -> None:
         self.http = ProviderHTTPClient(provider_name=HTTP_SOURCE)
 
-    async def by_crl(
-        self,
-        certificate: x509.Certificate,
-        issuer: x509.Certificate,
-        anchor: TrustAnchor,
-        now: datetime,
-    ) -> RevocationStatus:
         for url in crl_urls(certificate, issuer, anchor):
             try:
                 fetched = await self.http.fetch(url, max_bytes=MAX_CRL_BYTES)
@@ -680,13 +619,6 @@ class RevocationChecker:
             logger.warning("x509_consumer: CRL %s is not usable", url)
         return RevocationStatus.UNKNOWN
 
-    async def by_ocsp(
-        self,
-        certificate: x509.Certificate,
-        issuer: x509.Certificate,
-        anchor: TrustAnchor,
-        now: datetime,
-    ) -> RevocationStatus:
         request = (
             ocsp.OCSPRequestBuilder()
             # SHA-1 CertIDs are what responders universally accept; the hash
@@ -733,9 +665,6 @@ class RevocationChecker:
                 return found
         return await self.by_crl(certificate, issuer, anchor, now)
 
-    async def check_chain(
-        self, chain: Sequence[x509.Certificate], anchor: TrustAnchor, now: datetime
-    ) -> None:
         """Refuse when any certificate of the validated ``chain`` below the
         anchor is revoked, or when its status is unknown and the anchor
         requires one."""

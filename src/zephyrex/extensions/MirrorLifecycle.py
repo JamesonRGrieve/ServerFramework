@@ -84,7 +84,6 @@ def _attach_spec(manager_cls: type, spec: MirrorSpec) -> None:
     manager_cls._mirror_specs.append(spec)  # type: ignore[attr-defined]
 
 
-def _register_hook(manager_cls: type, spec: MirrorSpec) -> None:
     """Register a BEFORE-COMMIT hook on the manager for this spec.
 
     Imports `hook_bll` lazily to avoid a circular dependency with
@@ -100,7 +99,6 @@ def _register_hook(manager_cls: type, spec: MirrorSpec) -> None:
             HookTiming,
             hook_bll,
         )
-    except Exception as exc:  # pragma: no cover - import-time integration
         logger.warning(
             "Mirror hook registration deferred for %s: cannot import hook_bll (%s).",
             manager_cls.__name__,

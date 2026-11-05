@@ -28,7 +28,6 @@ AMAZON_API = "https://api.amazon.com"
 DEFAULT_SCOPES = "profile"
 
 
-class PRV_Amazon(AbstractIdentityProvider):
     name: ClassVar[str] = "oauth_amazon"
     public_name: ClassVar[str] = "amazon"
     friendly_name: ClassVar[str] = "Amazon"
@@ -42,8 +41,6 @@ class PRV_Amazon(AbstractIdentityProvider):
         InstanceSetting("api_url", "The token and profile API", default=AMAZON_API),
     )
 
-    @classmethod
-    async def endpoints(cls, instance: ProviderInstanceModel) -> Endpoints:
         api = (cls.setting(instance, "api_url") or AMAZON_API).rstrip("/")
         return Endpoints(
             authorize=cls.setting(instance, "authorize_url") or AMAZON_AUTHORIZE,
@@ -51,31 +48,18 @@ class PRV_Amazon(AbstractIdentityProvider):
             userinfo=f"{api}/user/profile",
         )
 
-    @classmethod
-    async def identity(
-        cls,
-        instance: ProviderInstanceModel,
-        endpoints: Endpoints,
-        tokens: TokenSet,
-        nonce: str,
-    ) -> Identity:
         url = endpoints.userinfo or f"{AMAZON_API}/user/profile"
         profile: Dict[str, Any] = await cls.api_json(
             url, tokens.access_token, "profile API"
         )
-        subject = text(profile.get("user_id")) if isinstance(profile, dict) else None
         if subject is None:
             raise InvalidInputExternalError(
                 "Amazon: the profile API named no account", provider=cls.name
             )
-        email = text(profile.get("email"))
-        name = text(profile.get("name"))
         first, _, last = (name or "").partition(" ")
         return Identity(
             subject=subject,
             email=email.strip().lower() if email else None,
             email_verified=False,
-            first_name=text(first),
-            last_name=text(last),
             display_name=name,
         )

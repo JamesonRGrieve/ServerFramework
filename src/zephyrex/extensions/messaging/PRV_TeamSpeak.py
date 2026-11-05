@@ -31,7 +31,6 @@ _QUERY_AUTH_ERRORS = {
 }
 
 
-class PRV_TeamSpeak_Messaging(AbstractMessagingProvider):
     name: ClassVar[str] = "teamspeak"
     friendly_name: ClassVar[str] = "TeamSpeak"
     description: ClassVar[str] = "TeamSpeak 3, through WebQuery"
@@ -73,10 +72,6 @@ class PRV_TeamSpeak_Messaging(AbstractMessagingProvider):
             )
         return mode, target or "0"
 
-    @classmethod
-    async def send_message(
-        cls, instance: ProviderInstanceModel, recipient: str, text: str
-    ) -> Dict[str, Any]:
         mode, target = cls._target(recipient)
         url = cls.setting(instance, "api_url")
         key = cls.setting(instance, "api_key")

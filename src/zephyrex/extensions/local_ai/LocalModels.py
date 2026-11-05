@@ -89,7 +89,6 @@ def misconfigured(what: str, provider: str) -> PermanentExternalError:
     return PermanentExternalError(f"model misconfigured: {what}", provider=provider)
 
 
-def checked_relative_path(path: str, provider: str) -> str:
     """``path`` as a file inside a model's directory, or refused."""
     segments = path.split("/")
     if len(segments) > _MAX_SEGMENTS or not all(_SEGMENT.match(s) for s in segments):
@@ -111,8 +110,6 @@ class ModelFile:
     sha256: str
 
 
-@dataclass(frozen=True)
-class ModelSpec:
     """A model's files: where they come from and what they must hash to."""
 
     source: str
@@ -132,13 +129,6 @@ class ModelSpec:
         return f"{self.source}/{self.repo}/resolve/{self.revision}/{quote(file.path)}"
 
 
-def model_spec(
-    source: Optional[str],
-    repo: Optional[str],
-    revision: Optional[str],
-    files: Optional[str],
-    provider: str,
-) -> ModelSpec:
     """A model's declaration from its settings, checked: an allowed source,
     an ``owner/name`` repository, a pinned commit, and plain relative file
     paths each with a SHA-256.
@@ -174,7 +164,6 @@ def model_spec(
     return ModelSpec(chosen, repo, revision, tuple(checked))
 
 
-def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(HASH_CHUNK_BYTES), b""):
@@ -188,7 +177,6 @@ _verified: Dict[Tuple[str, int, int], str] = {}
 _verified_lock = threading.Lock()
 
 
-def holds(path: Path, sha256: str) -> bool:
     """Whether ``path`` exists and hashes to ``sha256``."""
     try:
         stat = path.stat()
@@ -201,7 +189,6 @@ def holds(path: Path, sha256: str) -> bool:
         known = file_sha256(path)
         with _verified_lock:
             _verified[key] = known
-    return hmac.compare_digest(known, sha256)
 
 
 def _status_error(status: int, where: str, provider: str) -> BaseExternalError:
@@ -220,15 +207,6 @@ def _status_error(status: int, where: str, provider: str) -> BaseExternalError:
     )
 
 
-async def download_verified(
-    url: str,
-    target: Path,
-    sha256: str,
-    *,
-    provider: str,
-    token: Optional[str] = None,
-    max_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
-) -> None:
     """Stream ``url`` to ``target``, keeping it only when it hashes to
     ``sha256``. Each redirect is checked by the SSRF guard as the first
     address is; the bearer ``token`` goes to the first address only."""
@@ -271,7 +249,6 @@ async def download_verified(
                 f"{url} redirected more than {MAX_DOWNLOAD_REDIRECTS} times",
                 provider=provider,
             )
-        if not hmac.compare_digest(digest.hexdigest(), sha256):
             raise PermanentExternalError(
                 f"{target.name} does not match its SHA-256; discarded",
                 provider=provider,
@@ -321,7 +298,6 @@ class LoadedModel:
         }
 
 
-class LoadedModels:
     """The models this process holds in memory, by provider instance id."""
 
     def __init__(self) -> None:
@@ -387,7 +363,6 @@ class LoadedModels:
                     loaded.pins += 1
             return loaded
 
-    def _make_room(self) -> None:
         """Unload least recently used idle models until one more fits: a
         model in use or pinned is never chosen."""
         while True:

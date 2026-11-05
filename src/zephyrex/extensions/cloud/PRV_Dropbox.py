@@ -18,7 +18,6 @@ from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
-class PRV_Dropbox_Cloud(AbstractCloudProvider):
     name: ClassVar[str] = "dropbox"
     friendly_name: ClassVar[str] = "Dropbox"
     description: ClassVar[str] = "A Dropbox account or app folder"

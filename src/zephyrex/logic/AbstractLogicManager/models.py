@@ -18,7 +18,6 @@ from zephyrex.pydantic2.registry import BaseNetworkModel
 from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
 
-class NumericalSearchModel(BaseModel):
     lt: Optional[Any] | None = None
     gt: Optional[Any] | None = None
     lteq: Optional[Any] | None = None
@@ -27,31 +26,26 @@ class NumericalSearchModel(BaseModel):
     eq: Optional[Any] | None = None
 
 
-class StringSearchModel(BaseModel):
     inc: Optional[str] | None = None
     sw: Optional[str] | None = None
     ew: Optional[str] | None = None
     eq: Optional[str] | None = None
 
 
-class DateSearchModel(BaseModel):
     before: Optional[datetime] | None = None
     after: Optional[datetime] | None = None
     on: Optional[date] | None = None
     eq: Optional[datetime] | None = None
 
 
-class BooleanSearchModel(BaseModel):
     eq: Optional[bool] | None = None
 
 
 from pydantic._internal._model_construction import ModelMetaclass
 
 
-class ModelMeta(ModelMetaclass):
     """Metaclass that generates .Reference and .Network nested classes for models."""
 
-    def __getattr__(cls, item: str) -> Any:
         if item.startswith("_"):
             raise AttributeError(item)
         try:
@@ -64,8 +58,6 @@ class ModelMeta(ModelMetaclass):
             return ModelFieldAccessor(cls, item)  # type: ignore[arg-type]
         raise AttributeError(item)
 
-    @staticmethod
-    def _is_schema_generation_context() -> bool:
         frame = sys._getframe(1)
         depth = 0
         while frame and depth < 20:
@@ -78,7 +70,6 @@ class ModelMeta(ModelMetaclass):
             depth += 1
         return False
 
-    def __new__(mcs, name, bases, namespace, **kwargs):
         # Collect annotations from non-BaseModel mixins so Pydantic sees inherited fields
         namespace_annotations = dict(namespace.get("__annotations__", {}))
         merged_annotations = {}
@@ -178,8 +169,6 @@ class ModelMeta(ModelMetaclass):
 
         return cls
 
-    @staticmethod
-    def _create_reference_class(model_cls, model_name):
         """Creates Reference class with dynamically generated ID class"""
         # Strip the 'Model' suffix while preserving CamelCase boundaries so
         # `snakecase` can insert the underscores. The previous form
@@ -196,7 +185,6 @@ class ModelMeta(ModelMetaclass):
         id_field_name = f"{field_name}_id"
 
         # Create ID class with the appropriate field
-        class ID:
             pass
 
         ID.__annotations__ = {
@@ -206,7 +194,6 @@ class ModelMeta(ModelMetaclass):
         }
 
         # Create Optional subclass for ID
-        class IDOptional:
             pass
 
         IDOptional.__annotations__ = {
@@ -217,7 +204,6 @@ class ModelMeta(ModelMetaclass):
         }
 
         # Create Search subclass for ID
-        class IDSearch:
             pass
 
         IDSearch.__annotations__ = {
@@ -232,7 +218,6 @@ class ModelMeta(ModelMetaclass):
         ID.Search = IDSearch
 
         # Create Reference class that includes the model field
-        class Reference(ID):
             def __init_subclass__(cls, **kwargs):
                 super().__init_subclass__(**kwargs)
 
@@ -244,7 +229,6 @@ class ModelMeta(ModelMetaclass):
         ]
 
         # Create Optional subclass for Reference
-        class ReferenceOptional(IDOptional):
             def __init_subclass__(cls, **kwargs):
                 super().__init_subclass__(**kwargs)
 
@@ -264,7 +248,6 @@ class ModelMeta(ModelMetaclass):
         return Reference
 
 
-class FieldComparison:
     """Represents a deferred comparison for later SQLAlchemy translation."""
 
     def __init__(
@@ -276,7 +259,6 @@ class FieldComparison:
         self.value = value
 
 
-class ModelFieldAccessor:
     """Provides comparison operators for class-level field access."""
 
     def __init__(self, model_cls: Type[BaseModel], field_name: str):
@@ -344,7 +326,6 @@ ENCODERS_BY_TYPE.setdefault(
 )
 
 
-class ApplicationModel(BaseModel, DatabaseMixin, metaclass=ModelMeta):
     """Base mixin for all models with common audit fields."""
 
     id: str = Field(..., description="The unique identifier")
@@ -355,27 +336,22 @@ class ApplicationModel(BaseModel, DatabaseMixin, metaclass=ModelMeta):
         ..., description="The ID of the user who performed the creation"
     )
 
-    class Optional(BaseModel, DatabaseMixin, metaclass=ModelMeta):
         id: Optional[str] | None = None
         created_at: Optional[datetime] | None = None
         created_by_user_id: Optional[str] | None = None
 
-    class Search(BaseModel):
         id: Optional[StringSearchModel] | None = None
         created_at: Optional[DateSearchModel] | None = None
         created_by_user_id: Optional[StringSearchModel] | None = None
 
     # ReferenceID classes to enable automatic Reference and Network generation
-    class ReferenceID(BaseModel):
         """Base class for reference models with just the ID field."""
 
         id: str = Field(..., description="The unique identifier")
 
-        class Optional(BaseModel):
             id: Optional[str] | None = None
 
 
-class UpdateMixinModel:
     updated_at: Annotated[
         Optional[datetime],
         Field(description="The time and date at which this was last updated"),
@@ -384,21 +360,17 @@ class UpdateMixinModel:
         Optional[str], Field(description="The ID of the user who made the last update")
     ]
 
-    class Optional:
         updated_at: Annotated[Optional[datetime], Field(default=None)]
         updated_by_user_id: Annotated[Optional[str], Field(default=None)]
 
-    class Search:
         updated_at: Optional[DateSearchModel] | None = None
         updated_by_user_id: Optional[StringSearchModel] | None = None
 
 
-class ParentMixinModel:
     parent_id: Annotated[
         Optional[str], Field(description="The ID of the relevant parent")
     ]
 
-    class Optional:
         parent_id: Annotated[Optional[str], Field(default=None)]
         parent: Annotated[Optional[Any], Field(default=None)]
         children: Annotated[
@@ -406,86 +378,62 @@ class ParentMixinModel:
             Field(default_factory=list),
         ]
 
-    class Search:
         parent_id: Optional[StringSearchModel] | None = None
 
 
-class NameMixinModel:
     name: Annotated[str, Field(description="The name")]
 
-    class Optional:
         name: Annotated[Optional[str], Field(default=None)]
 
-    class Search:
         name: Optional[StringSearchModel] | None = None
 
 
-class DescriptionMixinModel:
     description: Annotated[str, Field(description="The description")]
 
-    class Optional:
         description: Annotated[Optional[str], Field(default=None)]
 
-    class Search:
         description: Optional[StringSearchModel] | None = None
 
 
-class ImageMixinModel:
     image_url: Annotated[str, Field(description="The path to the image")]
 
-    class Optional:
         image_url: Annotated[Optional[str], Field(default=None)]
 
-    class Search:
         image_url: Optional[StringSearchModel] | None = None
 
 
-class TemplateModel(ApplicationModel, NameMixinModel):
-    class Create(BaseModel):
         pass
 
-    class Update(BaseModel):
         pass
 
-    class Search(ApplicationModel.Search):
         pass
 
 
-class TemplateReferenceModel(ApplicationModel):
     template_id: Optional[str] | None = None
     template: Optional[TemplateModel] | None = None
 
 
-class TemplateNetworkModel(BaseModel):
-    class GET(BaseNetworkModel):
         pass
 
-    class LIST(BaseNetworkModel):
         offset: int = Field(0, ge=0)
         limit: int = Field(1000, ge=1, le=1000)
         sort_by: Optional[str] | None = None
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
-    class POST(ApplicationModel):
         template: TemplateModel.Create
 
-    class PUT(ApplicationModel):
         template: TemplateModel.Update
 
-    class SEARCH(ApplicationModel):
         template: TemplateModel.Search
 
-    class ResponseSingle(ApplicationModel):
         template: TemplateModel
 
-    class ResponsePlural(ApplicationModel):
         templates: List[TemplateModel]
 
 
 DtoT = TypeVar("DtoT")
 
 
-class BatchUpdateItem(BaseModel):
     """Model for a single item in a batch update operation.
 
     This should be kept in sync with BatchUpdateItemModel in AbstractEPRouter.py
@@ -495,7 +443,6 @@ class BatchUpdateItem(BaseModel):
     data: Dict[str, Any]
 
 
-class IDModel(ApplicationModel):
     """Model for ID-based operations."""
 
 

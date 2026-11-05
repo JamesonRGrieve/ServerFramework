@@ -38,7 +38,6 @@ def e164(phone_number: str) -> str:
     return number
 
 
-class AbstractSMSProvider(AbstractStaticProvider):
     """An SMS gateway. Every ability takes the rotated instance."""
 
     name: ClassVar[str] = ""
@@ -71,7 +70,6 @@ class AbstractSMSProvider(AbstractStaticProvider):
         return ["sms"]
 
 
-class EXT_SMS(AbstractStaticExtension):
     name: ClassVar[str] = "sms"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = "SMS through Twilio or Amazon SNS"

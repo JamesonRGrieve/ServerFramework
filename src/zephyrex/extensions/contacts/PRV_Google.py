@@ -42,7 +42,6 @@ def google_birthday(found: Mapping[str, Any]) -> Optional[str]:
     return f"{year:04d}-{month_day}" if year else f"--{month_day}"
 
 
-class PRV_Google_Contacts(AbstractContactsProvider):
     name: ClassVar[str] = "google_contacts"
     friendly_name: ClassVar[str] = "Google Contacts"
     description: ClassVar[str] = "Google Contacts"
@@ -76,8 +75,6 @@ class PRV_Google_Contacts(AbstractContactsProvider):
             **kwargs,
         )
 
-    @classmethod
-    def _contact(cls, found: Mapping[str, Any]) -> Dict[str, Any]:
         names = found.get("names") or [{}]
         organizations = found.get("organizations") or [{}]
         biographies = found.get("biographies") or [{}]
@@ -104,8 +101,6 @@ class PRV_Google_Contacts(AbstractContactsProvider):
             ),
         )
 
-    @staticmethod
-    def _body(fields: Dict[str, Any]) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
         if "name" in fields:
             body["names"] = [{"unstructuredName": fields["name"]}]

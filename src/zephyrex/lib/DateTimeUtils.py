@@ -6,7 +6,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 
-def ensure_utc(dt: datetime) -> datetime:
     """Normalise *dt* to a timezone-aware UTC datetime.
 
     * If *dt* is naive (``tzinfo is None``), assume UTC and attach the

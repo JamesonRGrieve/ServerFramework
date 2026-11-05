@@ -47,7 +47,6 @@ _SKIPPED = {"script", "style", "noscript", "template", "svg", "head"}
 _BLOCKS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section"}
 
 
-class PageText(HTMLParser):
     """An HTML page's title, readable text and outgoing links."""
 
     def __init__(self, base_url: str) -> None:
@@ -61,7 +60,6 @@ class PageText(HTMLParser):
         self._anchor: Optional[str] = None
         self._anchor_text: List[str] = []
 
-    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         if tag in _SKIPPED:
             self._skipping += 1
         if tag == "title":
@@ -73,7 +71,6 @@ class PageText(HTMLParser):
             self._anchor = urljoin(self.base_url, href) if href else None
             self._anchor_text = []
 
-    def handle_endtag(self, tag: str) -> None:
         if tag in _SKIPPED and self._skipping:
             self._skipping -= 1
         if tag in _BLOCKS:
@@ -117,9 +114,6 @@ def result_limit(limit: int) -> int:
     return limit
 
 
-def read_page(
-    url: str, content_type: str, body: bytes, max_chars: int, truncated: bool
-) -> Dict[str, Any]:
     """A fetched page's title, text (at most ``max_chars``) and links."""
     media_type = content_type.split(";")[0].strip().lower()
     if media_type not in TEXT_TYPES:
@@ -139,7 +133,6 @@ def read_page(
     if media_type in ("text/html", "application/xhtml+xml"):
         parser = PageText(url)
         parser.feed(decoded)
-        title, text, links = " ".join(parser.title.split()), parser.text(), parser.links
     else:
         text = decoded
     if len(text) > max_chars:
@@ -156,7 +149,6 @@ def read_page(
     }
 
 
-class AbstractWebsearchProvider(AbstractStaticProvider):
     """A web search engine."""
 
     name: ClassVar[str] = ""
@@ -186,7 +178,6 @@ class AbstractWebsearchProvider(AbstractStaticProvider):
         return ["websearch"]
 
 
-class EXT_Websearch(AbstractStaticExtension):
     name: ClassVar[str] = "websearch"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

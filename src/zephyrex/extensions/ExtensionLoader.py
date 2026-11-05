@@ -70,11 +70,6 @@ def _extension_package(extension_name: str, extension_dir: Path) -> ModuleType:
     return package
 
 
-def load_extension_module(
-    extensions_root: Union[str, Path],
-    extension_name: str,
-    file_stem: str,
-) -> ModuleType:
     """Load an extension module via spec_from_file_location.
 
     The module is registered in ``sys.modules`` under both its synthesized
@@ -127,7 +122,6 @@ def load_extension_module(
     # Use the legacy name as the module's __name__ so that ``cls.__module__``
     # comparisons in extension code (which look like
     # ``obj.__module__ == "zephyrex.extensions.payment.BLL_Payment"``) keep working.
-    spec = importlib.util.spec_from_file_location(legacy, str(file_path))
     if spec is None or spec.loader is None:
         raise ImportError(
             f"Could not create import spec for {file_path} "
@@ -135,7 +129,6 @@ def load_extension_module(
         )
 
     package = _extension_package(extension_name, file_path.parent)
-    module = importlib.util.module_from_spec(spec)
     # Register under BOTH names BEFORE exec_module so that any intra-extension
     # import inside the module body resolves against this same instance rather
     # than recursively triggering another spec_from_file_location pass.
@@ -151,7 +144,6 @@ def load_extension_module(
         sys.modules.pop(legacy, None)
         raise
 
-    setattr(package, file_stem, module)
     return module
 
 

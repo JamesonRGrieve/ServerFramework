@@ -35,7 +35,6 @@ return count
 """
 
 
-class ValkeyRateLimitCounter:
     """Cross-process sliding-window rate-limit counter backed by Valkey.
 
     The public API is synchronous (``incr`` / ``reset``) because the

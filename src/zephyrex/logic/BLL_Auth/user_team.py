@@ -52,7 +52,6 @@ class UserTeamModel(
             True, description="Whether this membership is enabled"
         )
 
-    class Update(BaseModel):
         role_id: Optional[str] = Field(
             None, description="Role ID assigned to the user in this team"
         )
@@ -60,7 +59,6 @@ class UserTeamModel(
             None, description="Whether this membership is enabled"
         )
 
-    class Patch(BaseModel):
         role_id: str = Field(  # type: ignore[assignment]
             None, description="Role ID to be assigned to the user in this team"
         )
@@ -73,17 +71,6 @@ class UserTeamModel(
     ):
         enabled: Optional[bool] | None = None
 
-    @classmethod
-    def user_has_read_access(
-        cls,
-        user_id,
-        team_id,
-        db,
-        minimum_role=None,
-        referred=False,
-        db_manager=None,
-        model_registry=None,
-    ):
         """
         Custom read access logic for user team records:
         Users can see user team record if they belong to the team.
@@ -129,7 +116,6 @@ class UserTeamModel(
                 UserTeamDB.user_id == user_id,
                 UserTeamDB.team_id == team_id,
                 UserTeamDB.enabled == True,
-                UserTeamDB.deleted_at.is_(None),
             )
             .all()
         )
@@ -140,16 +126,9 @@ class UserTeamModel(
         )
 
 
-class UserTeamManager(AbstractBLLManager, RouterMixin):
     _model = UserTeamModel
     _entity_label: ClassVar[Optional[str]] = "User Team"
 
-    def get(
-        self,
-        include: Optional[Union[List[str], str]] = None,
-        fields: Optional[Union[List[str], str]] = None,
-        **kwargs,
-    ) -> Any:
         """Get a user-team with optional included relationships."""
         result = super().get(include=include, fields=fields, **kwargs)
 
@@ -192,12 +171,10 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
 
         return self.embed_related(records, {"team", "role"})
 
-    def _related_managers(self) -> Dict[str, Any]:
         from zephyrex.logic.BLL_Auth.user import UserManager
 
         return {"user": UserManager, "team": TeamManager, "role": RoleManager}
 
-    def embed_related(self, records: List[Any], relations: Set[str]) -> List[Any]:
         """Attach each record's ``relations`` (of user, team, role), loaded
         with one ``id IN`` query per relation under the requester's own
         permissions. Unknown relation names are a 400."""
@@ -209,7 +186,6 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
                 detail=f"Cannot include {', '.join(sorted(unknown))}",
             )
 
-        def field(record: Any, name: str) -> Any:
             if isinstance(record, dict):
                 return record.get(name)
             return getattr(record, name, None)
@@ -219,7 +195,6 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
             if not ids:
                 continue
             manager = managers[relation](
-                requester_id=self.requester.id, model_registry=self.model_registry
             )
             by_id = {
                 row.id: row for row in manager.list(filters=[manager.DB.id.in_(ids)])
@@ -231,21 +206,16 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
                 if isinstance(record, dict):
                     record[relation] = related
                 else:
-                    setattr(record, relation, related)
         return records
 
-    def _authority(self, team_id: str) -> TeamAuthority:
         return TeamAuthority(self.requester.id, team_id, self.model_registry)
 
-    def _membership(self, id: str) -> "UserTeamModel":
         """The membership row, read as root: whether the requester may act on
         it is TeamAuthority's decision, not the row filter's."""
         membership = UserTeamModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=id,
             filters=[
-                UserTeamModel.DB(self.model_registry.DB.manager.Base).deleted_at.is_(
                     None
                 )
             ],
@@ -257,13 +227,11 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(status_code=404, detail="Membership not found")
         return membership  # type: ignore[no-any-return]
 
-    def create(self, **kwargs: Any) -> Any:
         """Adding a member grants them ``role_id``: only someone who may grant
         that role in the team (TeamAuthority) may do it."""
         self._authority(kwargs["team_id"]).assert_may_grant(kwargs["role_id"])
         return super().create(**kwargs)
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         """Changing a membership acts on its holder, and a new role is a
         grant: both are TeamAuthority's to allow."""
         membership = self._membership(id)
@@ -288,7 +256,6 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
             )
         return super().update(id, **kwargs)
 
-    def delete(self, id: str) -> None:
         """Removing a member acts on them; a member may always leave. A
         team's last administrator can neither leave nor be removed."""
         membership = self._membership(id)
@@ -302,12 +269,9 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         # TeamAuthority has decided; the row's creator (usually the system
         # or root, when it was granted) is not who may remove it.
         self.DB.delete(
-            requester_id=env("ROOT_ID"), model_registry=self.model_registry, id=id
         )
 
-    def _is_last_administrator(self, membership: "UserTeamModel") -> bool:
         members = UserTeamModel.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             team_id=membership.team_id,
             return_type="dto",
@@ -322,14 +286,11 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         }
         return administrators == {membership.user_id}
 
-    def validate(self, user_id: str, team_id: str, body: Dict[str, str]):
         try:
             UserModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=user_id,
             )
-        except Exception:
             raise HTTPException(
                 status_code=404,
                 detail="Request searched UserModel and could not find the required record.",
@@ -337,11 +298,9 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
 
         try:
             TeamModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=team_id,
             )
-        except Exception:
             raise HTTPException(
                 status_code=404,
                 detail="Request searched TeamModel and could not find the required record.",
@@ -350,17 +309,14 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         role_id = body["user_team"]["role_id"]  # type: ignore[index]
         try:
             RoleModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=role_id,
             )
-        except Exception:
             raise HTTPException(
                 status_code=404,
                 detail="Request searched RoleModel and could not find the required record.",
             )
 
-    def patch_role(self, user_id: str, team_id: str, body: Dict[str, str]):
 
         self.validate(user_id=user_id, team_id=team_id, body=body)
 
@@ -380,16 +336,13 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
 
         return {"message": "Role updated successfully"}
 
-    def remove_member(self, team_id: str, user_id: str) -> None:
         """Take ``user_id`` off the team (or leave it, for the member
         themselves); see ``delete`` for who may."""
         UserTeamDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
         memberships = UserTeamDB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             team_id=team_id,
             user_id=user_id,
-            filters=[UserTeamDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=UserTeamModel,
         )

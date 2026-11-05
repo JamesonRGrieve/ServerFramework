@@ -39,7 +39,6 @@ DEFAULT_TIME_LIMIT_SECONDS = 10
 DEFAULT_MAX_CONNECTIONS = 100
 
 
-class EXT_LDAPProvider(AbstractStaticExtension):
     name: ClassVar[str] = "ldap_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
@@ -83,8 +82,6 @@ class EXT_LDAPProvider(AbstractStaticExtension):
     def _setting(cls, key: str) -> str:
         return str(cls.get_env_value(key) or "").strip()
 
-    @classmethod
-    def _number(cls, key: str, issues: List[str]) -> Optional[int]:
         raw = cls._setting(key)
         if not raw:
             return None
@@ -98,8 +95,6 @@ class EXT_LDAPProvider(AbstractStaticExtension):
             return None
         return value
 
-    @classmethod
-    def directory_config(cls, issues: List[str]) -> Optional[DirectoryConfig]:
         """The directory's configuration, or None with ``issues`` saying
         what is wrong."""
         base_dn = cls._setting("LDAP_PROVIDER_BASE_DN")
@@ -122,8 +117,6 @@ class EXT_LDAPProvider(AbstractStaticExtension):
             time_limit_seconds=float(time_limit or DEFAULT_TIME_LIMIT_SECONDS),
         )
 
-    @classmethod
-    def listener_config(cls, issues: List[str]) -> Optional[ListenerConfig]:
         """The listeners' configuration, or None with ``issues`` saying what
         is wrong."""
         found: List[str] = []
@@ -162,8 +155,6 @@ class EXT_LDAPProvider(AbstractStaticExtension):
         cls.listener_config(issues)
         return issues
 
-    @classmethod
-    def on_start(cls) -> None:
         from zephyrex.pydantic2.registry import ModelRegistry
 
         cls.on_stop()

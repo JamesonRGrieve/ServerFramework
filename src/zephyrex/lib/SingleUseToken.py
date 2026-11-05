@@ -26,22 +26,12 @@ _CLOCK_SKEW_SECONDS = 30
 _REQUIRED_CLAIMS = ["sub", "aud", "exp", "iat", "jti"]
 
 
-def issue_single_use_token(
-    *,
-    audience: str,
-    subject: str,
-    ttl_seconds: int,
-    claims: Optional[Dict[str, Any]] = None,
-) -> str:
-    now = int(time.time())
-    token: str = jwt.encode(
         {
             **(claims or {}),
             "sub": subject,
             "aud": audience,
             "iat": now,
             "exp": now + ttl_seconds,
-            "jti": secrets.token_urlsafe(24),
         },
         env("JWT_SECRET"),
         algorithm=_ALGORITHM,
@@ -49,10 +39,8 @@ def issue_single_use_token(
     return token
 
 
-def read_single_use_token(token: str, *, audience: str) -> Dict[str, Any]:
     """The claims of a genuine, unexpired token for ``audience``. Raises
     ``jwt.InvalidTokenError`` otherwise; says nothing about prior use."""
-    claims: Dict[str, Any] = jwt.decode(
         token,
         env("JWT_SECRET"),
         algorithms=[_ALGORITHM],
@@ -63,10 +51,8 @@ def read_single_use_token(token: str, *, audience: str) -> Dict[str, Any]:
     return claims
 
 
-def redeem_single_use_token(claims: Dict[str, Any]) -> bool:
     """Spend a token read by :func:`read_single_use_token`. True for the
     first caller only; the mark outlives the token's own expiry."""
-    remaining = int(claims["exp"]) - int(time.time())
     return get_replay_cache().mark_if_unused(
         f"single_use_token:{claims['aud']}:{claims['jti']}",
         max(remaining, 0) + 2 * _CLOCK_SKEW_SECONDS,

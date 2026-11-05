@@ -81,8 +81,6 @@ class PermissionModel(
         can_delete: Optional[bool] = Field(False)
         can_share: Optional[bool] = Field(False)
 
-        @model_validator(mode="after")
-        def validate_permission_combination(self) -> Self:
             # Case 1: User-specific permission (user_id only)
             if self.user_id and not self.team_id and not self.role_id:
                 return self
@@ -105,7 +103,6 @@ class PermissionModel(
                 )
             raise ValueError("Invalid permission combination")
 
-    class Update(BaseModel, RoleModel.Reference.ID.Optional):
         can_view: Optional[bool] = Field(None)
         can_execute: Optional[bool] = Field(None)
         can_copy: Optional[bool] = Field(None)
@@ -129,10 +126,8 @@ class PermissionModel(
         can_share: Optional[bool] = None
 
 
-class PermissionManager(AbstractBLLManager, RouterMixin):
     _model = PermissionModel
 
-    def create_validation(self, entity):
         if entity.user_id:
             # A grant may name only a user the granter can see (a shared live
             # team hierarchy or an explicit grant on that user; ROOT and SYSTEM
@@ -141,7 +136,6 @@ class PermissionManager(AbstractBLLManager, RouterMixin):
             # the server makes on its own account (a conversation adding a
             # participant) runs as ROOT.
             user = UserModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=entity.user_id,
                 allow_nonexistent=True,
@@ -151,7 +145,6 @@ class PermissionManager(AbstractBLLManager, RouterMixin):
 
         if entity.team_id:
             team = TeamModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=entity.team_id,
             )
@@ -161,7 +154,6 @@ class PermissionManager(AbstractBLLManager, RouterMixin):
         role = None
         if entity.role_id:
             role = RoleModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 id=entity.role_id,
             )

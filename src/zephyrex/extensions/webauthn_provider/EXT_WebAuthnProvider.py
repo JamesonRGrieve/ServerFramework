@@ -17,7 +17,6 @@ from typing import ClassVar
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
 
 
-class EXT_WebAuthnProvider(AbstractStaticExtension):
     name: ClassVar[str] = "webauthn_provider"
     version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (

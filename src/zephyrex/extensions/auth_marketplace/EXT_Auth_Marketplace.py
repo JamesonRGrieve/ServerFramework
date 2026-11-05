@@ -12,7 +12,6 @@ from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Auth_Marketplace(AbstractStaticExtension):
     name: ClassVar[str] = "auth_marketplace"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (
@@ -37,8 +36,6 @@ class EXT_Auth_Marketplace(AbstractStaticExtension):
     }
     _providers: ClassVar[List] = []
 
-    @classmethod
-    def on_initialize(cls) -> bool:
         from zephyrex.extensions.auth_marketplace import (  # noqa: F401
             BLL_Auth_Marketplace,
         )

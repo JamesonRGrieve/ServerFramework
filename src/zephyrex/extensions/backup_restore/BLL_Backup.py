@@ -119,7 +119,6 @@ def _set_metric(name: str, value: float) -> None:
 # ---------------------------------------------------------------------------
 
 
-class BackupTarget(ABC):
     """Abstract destination for a backup artifact.
 
     Implementations stream the backup payload up/down without buffering the
@@ -145,7 +144,6 @@ class BackupTarget(ABC):
         """Remove ``key`` from the target."""
 
 
-class LocalFilesystemBackupTarget(BackupTarget):
     """Reference :class:`BackupTarget` that writes to a local directory.
 
     Suitable for self-hosted deployments and the reference restore drill in
@@ -193,7 +191,6 @@ class LocalFilesystemBackupTarget(BackupTarget):
             target.unlink()
 
 
-class S3BackupTarget(BackupTarget):
     """Stub that defers to Item 43's object-storage abstract.
 
     This class exists so callers can declare their intent today, but every
@@ -231,7 +228,6 @@ class S3BackupTarget(BackupTarget):
 # ---------------------------------------------------------------------------
 
 
-class BackupCommand(ABC):
     """Engine-specific dump/restore primitive."""
 
     @abstractmethod
@@ -257,7 +253,6 @@ class BackupCommand(ABC):
         """Run a minimal post-restore query. Return True on success."""
 
 
-class PgDumpBackupCommand(BackupCommand):
     """Postgres reference implementation using ``pg_dump`` / ``pg_restore``.
 
     Builds an in-process subprocess invocation. The DB connection details
@@ -285,11 +280,7 @@ class PgDumpBackupCommand(BackupCommand):
         )
         return result.stdout
 
-    @contextmanager
-    def dump_stream(self) -> Iterator[IO[bytes]]:
         cmd = [self.pg_dump_path, self.database_url]
-        proc = subprocess.Popen(  # noqa: S603 - explicit args, no shell
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         assert proc.stdout is not None
         try:
@@ -301,7 +292,6 @@ class PgDumpBackupCommand(BackupCommand):
                 proc.stderr.close()
             rc = proc.wait()
             if rc != 0:
-                raise subprocess.CalledProcessError(rc, cmd, stderr=stderr)
 
     def restore(self, artifact: bytes, target_db: str) -> None:
         subprocess.run(  # noqa: S603
@@ -320,7 +310,6 @@ class PgDumpBackupCommand(BackupCommand):
         return result.returncode == 0
 
 
-class SqliteBackupCommand(BackupCommand):
     """SQLite reference implementation using ``sqlite3 .dump``.
 
     The dump is text-mode SQL; restore re-executes the SQL into a fresh
@@ -340,11 +329,7 @@ class SqliteBackupCommand(BackupCommand):
         )
         return result.stdout
 
-    @contextmanager
-    def dump_stream(self) -> Iterator[IO[bytes]]:
         cmd = [self.sqlite3_path, self.db_path, ".dump"]
-        proc = subprocess.Popen(  # noqa: S603
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         assert proc.stdout is not None
         try:
@@ -356,7 +341,6 @@ class SqliteBackupCommand(BackupCommand):
                 proc.stderr.close()
             rc = proc.wait()
             if rc != 0:
-                raise subprocess.CalledProcessError(rc, cmd, stderr=stderr)
 
     def restore(self, artifact: bytes, target_db: str) -> None:
         # Ensure target is empty.
@@ -526,7 +510,6 @@ class RestoreDrillService(_BackupServiceBase):  # type: ignore[misc, valid-type]
         keys = target.list_keys(prefix=self.key_prefix)
         return keys[-1] if keys else None
 
-    def run_drill(self, target: Optional[BackupTarget] = None) -> DrillReport:
         """Run a single drill against ``target``. Returns a :class:`DrillReport`."""
         active_target = target if target is not None else self.target
         if active_target is None:
@@ -554,14 +537,12 @@ class RestoreDrillService(_BackupServiceBase):  # type: ignore[misc, valid-type]
             report.smoke_test_pass = smoke
             report.success = bool(smoke)
             report.restored_key = key
-        except Exception as e:  # noqa: BLE001
             report.error = f"{type(e).__name__}: {e}"
         finally:
             report.duration_seconds = time.monotonic() - started
             try:
                 if self._cleanup is not None:
                     self._cleanup(self.scratch_db)
-            except Exception as e:  # noqa: BLE001
                 logger.warning(f"RestoreDrillService cleanup failed: {e}")
             now = datetime.now(timezone.utc)
             self.last_drill_at = now

@@ -194,7 +194,6 @@ def step(instruction: str, distance_m: float, duration_s: float) -> Dict[str, An
     }
 
 
-class AbstractMapsProvider(AbstractStaticProvider):
     """A mapping service. ``modes`` maps each travel mode it can route to
     its own name for it; a mode it lacks is refused."""
 
@@ -295,7 +294,6 @@ class AbstractMapsProvider(AbstractStaticProvider):
         return ["maps", "geocoding", "routing"]
 
 
-class EXT_Maps(AbstractStaticExtension):
     name: ClassVar[str] = "maps"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

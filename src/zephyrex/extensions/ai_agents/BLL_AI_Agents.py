@@ -242,7 +242,6 @@ class AbilityGrant:
     extension: str
 
 
-def tool_names(grants: List[AbilityGrant]) -> Dict[str, AbilityGrant]:
     """Each grant under the name the agent's model calls it by: its ability
     name, or ``<extension>__<name>`` where two extensions' abilities share
     a name."""
@@ -410,7 +409,6 @@ def first_fire(fields: Dict[str, Any]) -> Optional[datetime]:
     return due
 
 
-def check_trigger(fields: Dict[str, Any]) -> None:
     """422 unless ``fields`` describe a trigger that can fire."""
 
     def refuse(detail: str) -> None:
@@ -432,7 +430,6 @@ def check_trigger(fields: Dict[str, Any]) -> None:
             email_filter(fields.get("event_filter"))
 
 
-def email_filter(text: Optional[str]) -> Dict[str, str]:
     """An email trigger's ``event_filter``: a JSON object whose ``from`` (an
     address, or ``@domain``) and ``subject`` (a phrase it contains) a
     message must match. 422 for anything else."""
@@ -483,7 +480,6 @@ class WebhookFired(RouteModel):
     status: str = Field(description="How the turn ended")
 
 
-class WebhookSecret(RouteModel):
     trigger_id: str
     secret: str = Field(
         description="Shown once: signs every call to the trigger's webhook"
@@ -492,7 +488,6 @@ class WebhookSecret(RouteModel):
     signature_header: str
 
 
-class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
     _model = InvocationTriggerModel
 
     prefix: ClassVar[Optional[str]] = "/v1/invocation-trigger"
@@ -516,7 +511,6 @@ class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
 
         return super().create(**each_created(kwargs, prepare))
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         """Owner, team and agent stay; bookkeeping is the monitor's (ROOT);
         a new ``due_at`` or schedule moves the next firing; a trigger turned
         to email gets its address. The webhook secret is written only by
@@ -538,7 +532,6 @@ class InvocationTriggerManager(AbstractBLLManager, RouterMixin):
                 kwargs["email_address"] = email_trigger_address()
         return super().update(id, **kwargs)
 
-    def rotate_webhook_secret(self, id: str) -> WebhookSecret:
         """A new signing secret for a webhook trigger, which only someone
         who may edit it gets; the old one stops working. It is kept
         encrypted and never shown again."""
@@ -694,14 +687,12 @@ class InvocationInstanceModel(
         trigger_message_id: Optional[StringSearchModel] = None
 
 
-class InvocationInstanceManager(AbstractBLLManager, RouterMixin):
     _model = InvocationInstanceModel
 
     prefix: ClassVar[Optional[str]] = "/v1/invocation-instance"
     tags: ClassVar[Optional[List[str]]] = ["Agent Invocation Instance Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def create_validation(self, entity: Any) -> None:
         if entity.invocation_trigger_id:
             trigger = _visible(
                 _as(InvocationTriggerManager, self),
@@ -743,25 +734,21 @@ class TurnRequest(RouteModel):
     )
 
 
-class GrantedAbility(RouteModel):
     tool: str = Field(description="The name the agent's model calls it by")
     name: str
     extension: str
     ability_id: str
 
 
-class GrantedAbilities(RouteModel):
     abilities: List[GrantedAbility]
 
 
-class AgentManager(AbstractBLLManager, RouterMixin):
     _model = AgentModel
 
     prefix: ClassVar[Optional[str]] = "/v1/agent"
     tags: ClassVar[Optional[List[str]]] = ["Agent Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def create_validation(self, entity: Any) -> None:
         if entity.rotation_id:
             _visible(
                 _as(RotationManager, self), entity.rotation_id, "Rotation not found"
@@ -1066,14 +1053,12 @@ class ProjectModel(
         description: Optional[StringSearchModel] = None
 
 
-class ProjectManager(AbstractBLLManager, RouterMixin):
     _model = ProjectModel
 
     prefix: ClassVar[Optional[str]] = "/v1/project"
     tags: ClassVar[Optional[List[str]]] = ["Project Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def create_validation(self, entity: Any) -> None:
         if entity.user_id != self.requester.id:
             _user_exists(self.model_registry, entity.user_id)
         if entity.team_id:
@@ -1208,7 +1193,6 @@ class ProjectConversationModel(
         pass
 
 
-class ProjectConversationManager(AbstractBLLManager, RouterMixin):
     _model = ProjectConversationModel
 
     def create_validation(self, entity: Any) -> None:
@@ -1301,14 +1285,12 @@ class ActivityHierarchy(RouteModel):
     )
 
 
-class ActivityManager(AbstractBLLManager, RouterMixin):
     _model = ActivityModel
 
     prefix: ClassVar[Optional[str]] = "/v1/activity"
     tags: ClassVar[Optional[List[str]]] = ["Activity Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def hierarchy(self, invocation_instance_id: str) -> Dict[str, Any]:
         """A turn's activities as trees: each root activity's id to
         ``{activity, children}``, children keyed by id the same way."""
         _visible(
@@ -1348,7 +1330,6 @@ class ActivityManager(AbstractBLLManager, RouterMixin):
     def hierarchy_route(self, invocation_instance_id: str) -> ActivityHierarchy:
         return ActivityHierarchy(activities=self.hierarchy(invocation_instance_id))
 
-    def create_validation(self, entity: Any) -> None:
         _visible(
             _as(InvocationInstanceManager, self),
             entity.invocation_instance_id,
@@ -1480,7 +1461,6 @@ class AgentAbilityManager(AbstractBLLManager, RouterMixin):
         _visible(_as(AgentManager, self), entity.agent_id, "Agent not found")
         _visible(_catalog(AbilityManager, self), entity.ability_id, "Ability not found")
 
-    def grants(self, agent_id: str) -> List[AbilityGrant]:
         """The abilities the agent may use: its enabled grants, each with
         the extension that performs it. A grant whose ability is gone is
         left out."""
@@ -1549,7 +1529,6 @@ class AgentMemoryModel(
         content: Optional[StringSearchModel] = None
 
 
-class AgentMemoryManager(AbstractBLLManager, RouterMixin):
     _model = AgentMemoryModel
 
     prefix: ClassVar[Optional[str]] = "/v1/agent-memory"
@@ -1612,23 +1591,17 @@ async def fire_conversation_message_turns(context: HookContext) -> None:
             await _wake_agents_for(context.manager.model_registry, message)
 
 
-async def _wake_agents_for(registry: Any, message: Any) -> None:
     from zephyrex.extensions.ai_agents.AgentTurnExecutor import fire_turn
     from zephyrex.extensions.ai_agents.EventSources import count_firing
 
     # Root sees deleted rows too: a deleted seat or trigger must not wake.
-    root = env("ROOT_ID")
-    seats = ConversationAgentManager(requester_id=root, model_registry=registry).list(
-        conversation_id=message.conversation_id, active=True, deleted_at=None
     )
-    triggers = InvocationTriggerManager(requester_id=root, model_registry=registry)
     for seat in seats:
         listening = triggers.list(
             agent_id=seat.agent_id,
             invocation_type="event",
             event_source="conversation_message",
             enabled=True,
-            deleted_at=None,
         )
         if not seat.auto_respond and not listening:
             continue
@@ -1677,17 +1650,11 @@ def create_agent_on_team_creation(context: HookContext) -> None:
         agents.create(name=f"{team.name} Agent", team_id=team.id, favourite=True)
 
 
-@hook_bll(ConversationManager.create, timing=HookTiming.AFTER, priority=10)
-def associate_agent_with_conversation(context: HookContext) -> None:
     """A new conversation gets an agent of one of its creator's teams, one
     with a rotation to think with, auto-responding."""
     if not _ai_agents_loaded(context.manager):
         return
-    requester_id = context.manager.requester.id
     registry = context.manager.model_registry
-    seats = ConversationAgentManager(requester_id=requester_id, model_registry=registry)
-    agents = AgentManager(requester_id=requester_id, model_registry=registry)
-    memberships = UserTeamManager(requester_id=requester_id, model_registry=registry)
     for conversation in created_records(context.result):
         if seats.list(conversation_id=conversation.id, active=True):
             continue

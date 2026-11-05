@@ -19,7 +19,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 MYSQL_DEFAULT_PORT = 3306
 
 
-class PRV_MySQL(AbstractDatabaseProvider):
     """MySQL database provider (static, rotation-compatible)."""
 
     name: ClassVar[str] = "MySQL"
@@ -82,8 +81,6 @@ class PRV_MySQL(AbstractDatabaseProvider):
         connection = cls._get_connection(cls.bond_instance(instance).config)
         return cls.run_sql(connection, query)
 
-    @classmethod
-    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Introspect table definitions from information_schema."""
         config = cls.bond_instance(instance).config
         connection = cls._get_connection(config)
@@ -91,7 +88,6 @@ class PRV_MySQL(AbstractDatabaseProvider):
         try:
             cursor = connection.cursor()
             try:
-                cursor.execute(
                     "SELECT table_name, column_name, data_type, is_nullable, "
                     "column_default FROM information_schema.columns "
                     "WHERE table_schema = %s ORDER BY table_name, ordinal_position;",
@@ -106,7 +102,6 @@ class PRV_MySQL(AbstractDatabaseProvider):
                     table_columns.setdefault(table_name, []).append(piece)
             finally:
                 cursor.close()
-        except Exception as exc:
             raise cls.query_failed(exc, "schema query") from exc
         finally:
             connection.close()

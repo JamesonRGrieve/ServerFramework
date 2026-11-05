@@ -39,9 +39,7 @@ _lock = threading.Lock()
 _registered_emitter: Optional[CostAuditEmitter] = None
 
 
-def register_cost_audit_emitter(emitter: Optional[CostAuditEmitter]) -> None:
     """Install (or clear, with ``None``) the process-wide cost-audit emitter."""
-    global _registered_emitter
     with _lock:
         _registered_emitter = emitter
 
@@ -52,7 +50,6 @@ def get_cost_audit_emitter() -> Optional[CostAuditEmitter]:
         return _registered_emitter
 
 
-def _coerce_iso(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -60,9 +57,6 @@ def _coerce_iso(value: Any) -> Optional[str]:
     return str(value)
 
 
-def make_cost_audit_emitter(
-    audit_log_manager_factory: Callable[[], "AuditLogManager"],
-) -> CostAuditEmitter:
     """Return a callable that persists a cost-emission payload as an
     ``AuditLogModel`` row.
 
@@ -89,7 +83,6 @@ def make_cost_audit_emitter(
         AuditLogModel,
     )
 
-    def emit(payload: Dict[str, Any]) -> None:
         try:
             tenant_id = str(payload.get("tenant_id", "unknown"))
             provider = str(payload.get("provider", "unknown"))
@@ -97,7 +90,6 @@ def make_cost_audit_emitter(
             cost_raw = payload.get("cost_usd", 0)
             try:
                 cost_usd = Decimal(str(cost_raw))
-            except Exception:  # noqa: BLE001
                 cost_usd = Decimal("0")
             occurred_at = _coerce_iso(payload.get("occurred_at"))
             if occurred_at is None:
@@ -124,7 +116,6 @@ def make_cost_audit_emitter(
             )
 
             audit_log_manager_factory().log_audit_event(create)
-        except Exception as exc:  # noqa: BLE001
             logger.warning("cost_audit_emitter: emission failed: %s", exc)
 
     return emit

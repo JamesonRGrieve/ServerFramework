@@ -80,7 +80,6 @@ def instance_namespace(provider_name: str, instance_id: str) -> str:
     return f"{provider_name}_{digits[:NAMESPACE_ID_DIGITS]}"
 
 
-def _definition_refs(schema: Any, definitions: Mapping[str, str]) -> Any:
     """``schema`` with its component references naming definitions."""
     if isinstance(schema, Mapping):
         ref = schema.get("$ref")
@@ -94,7 +93,6 @@ def _definition_refs(schema: Any, definitions: Mapping[str, str]) -> Any:
     return schema
 
 
-def doctype_json_schema(bundle: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     """The bundle's DocType (then its child tables) as one JSON Schema: the
     DocType a record, each child DocType a definition, the fields only the
     site sets read-only (and a document's ``idx``: only a child row's is
@@ -141,7 +139,6 @@ def typed_record(document: ERPDocument) -> Dict[str, Any]:
     return {**document.data, VERSION_FIELD: document.updated_at}
 
 
-class ERPTypedSession(FederatedSession):
     """The requester's documents in one instance, as the generic API
     serves them (:class:`ERPDocuments`)."""
 
@@ -196,7 +193,6 @@ class ERPTypedSession(FederatedSession):
             raise StaleRecord(typed_record(stale.extra["current"])) from None
 
 
-class ERPFederatedSource(AbstractFederatedSource):
     """One operator instance of an ERP provider."""
 
     def __init__(self, instance: ERPInstance) -> None:
@@ -251,7 +247,6 @@ class ERPFederatedSource(AbstractFederatedSource):
         names = {name.strip() for name in (raw or "").split(",") if name.strip()}
         return names or None
 
-    async def catalogue(self) -> Sequence[FederatedType]:
         """Every parent DocType the instance's account is shown, or those of
         them its ``typed_doctypes`` setting names, read as the instance's
         account (no requester: the app is booting)."""
@@ -278,7 +273,6 @@ class ERPFederatedSource(AbstractFederatedSource):
             async with gate:
                 return await self._type(info)
 
-        found = await asyncio.gather(*(described(info) for info in parents))
         return [federated for federated in found if federated is not None]
 
     def session(self, call: FederatedCall) -> FederatedSession:
@@ -289,16 +283,13 @@ class ERPFederatedSource(AbstractFederatedSource):
         )
 
 
-def operator_instances(model_registry: Any) -> List[ERPInstance]:
     """The enabled, undeleted root- and system-scoped instances of the
     extension's providers, oldest first."""
     from zephyrex.extensions.erp.EXT_ERP import EXT_ERP
 
-    base, root = model_registry.DB.manager.Base, env("ROOT_ID")
     provider_db = ProviderModel.DB(base)
     names = [provider.name for provider in EXT_ERP.providers]
     providers: List[ProviderModel] = provider_db.list(
-        requester_id=root,
         model_registry=model_registry,
         return_type="dto",
         override_dto=ProviderModel,
@@ -309,14 +300,12 @@ def operator_instances(model_registry: Any) -> List[ERPInstance]:
         return []
     instance_db = ProviderInstanceModel.DB(base)
     instances: List[ProviderInstanceModel] = instance_db.list(
-        requester_id=root,
         model_registry=model_registry,
         return_type="dto",
         override_dto=ProviderInstanceModel,
         filters=[
             instance_db.provider_id.in_(list(by_id)),
             instance_db.scope.in_(sorted(OPERATOR_SCOPES)),
-            instance_db.deleted_at.is_(None),
         ],
     )
     found: List[ERPInstance] = []

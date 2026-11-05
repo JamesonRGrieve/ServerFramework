@@ -85,12 +85,6 @@ class OpenAPIToPydanticResult:
     operations: Dict[str, OperationSpec] = field(default_factory=dict)
 
 
-def openapi_to_pydantic_models(
-    spec: Mapping[str, Any],
-    *,
-    prefix: Optional[str] = None,
-    config: Optional[ConfigDict] = None,
-) -> OpenAPIToPydanticResult:
     """Generate Pydantic models and an :class:`OperationSpec` table from a
     parsed OpenAPI 3.x document. ``config`` is merged into every model's
     configuration (``extra="forbid"`` to refuse fields the schema lacks).
@@ -174,7 +168,6 @@ def openapi_to_pydantic_models(
     for cls in models.values():
         try:
             cls.model_rebuild(_types_namespace=namespace)
-        except Exception:
             continue
 
     # Operations from paths.
@@ -263,12 +256,6 @@ def _ref_to_full(ref: Optional[str], fullname: Callable[[str], str]) -> Optional
     return fullname(m.group(1))
 
 
-def _openapi_to_python(
-    schema: Any,
-    components: Mapping[str, Any],
-    fullname: Callable[[str], str],
-    enums: Mapping[str, type],
-) -> Any:
     """Translate an OpenAPI schema fragment into a Python annotation."""
 
     from typing import Union as _Union, List as _List
@@ -319,7 +306,6 @@ def _synth_op_name(method: str, path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class RESTUpstreamTransport:
     """Send REST operations against a federated upstream.
 
     Wraps ``ProviderHTTPClient`` (Item 31). Concrete external models call
@@ -468,12 +454,6 @@ class RESTUpstreamTransport:
 # ---------------------------------------------------------------------------
 
 
-def derive_external_models(
-    *,
-    pydantic_result: "Any",
-    transport: RESTUpstreamTransport,
-    crud_map: Optional[Mapping[str, Mapping[str, str]]] = None,
-) -> Dict[str, Type[BaseModel]]:
     """Bind imported Pydantic models to a REST transport.
 
     For each model we synthesize a small ``AbstractExternalModel``-shaped
@@ -498,7 +478,6 @@ def derive_external_models(
     for name, model_cls in models.items():
         actions = crud_map.get(name) or _guess_crud_actions(name)
 
-        def _make_methods(actions: Mapping[str, str], transport=transport):
             def _create_via_provider(provider_instance, **kwargs):
                 op = actions.get("create")
                 if not op:

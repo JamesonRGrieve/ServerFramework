@@ -8,7 +8,6 @@ from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Auth_MagicLink(AbstractStaticExtension):
     """Passwordless email-link sign-in extension.
 
     Issues a one-time, hashed-at-rest token, emails it through ``EXT_Email``
@@ -46,8 +45,6 @@ class EXT_Auth_MagicLink(AbstractStaticExtension):
         logger.debug("Initializing magic-link extension")
         return True
 
-    @classmethod
-    def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
         issues: List[str] = []

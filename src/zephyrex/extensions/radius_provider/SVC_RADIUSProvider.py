@@ -60,13 +60,10 @@ Address = Tuple[str, int]
 RequestKey = Tuple[str, int, bytes]
 
 
-@dataclass
-class _Answer:
     expires_at: float
     reply: Optional[bytes] = None
 
 
-class DuplicateCache:
     """Answers by (client, identifier, authenticator), for resending."""
 
     def __init__(self, window_seconds: float = DUPLICATE_WINDOW_SECONDS) -> None:
@@ -74,7 +71,6 @@ class DuplicateCache:
         self._answers: Dict[RequestKey, _Answer] = {}
         self._lock = threading.Lock()
 
-    def claim(self, key: RequestKey) -> Tuple[bool, Optional[bytes]]:
         """``(True, None)`` when the caller is first to see ``key`` and must
         answer it; otherwise ``(False, the answer so far)``."""
         now = time.monotonic()
@@ -91,22 +87,18 @@ class DuplicateCache:
             self._answers[key] = _Answer(expires_at=now + self.window_seconds)
             return True, None
 
-    def answer(self, key: RequestKey, reply: Optional[bytes]) -> None:
         with self._lock:
             known = self._answers.get(key)
             if known is not None:
                 known.reply = reply
 
 
-class RequestHandler:
     """One datagram in, at most one datagram out."""
 
-    def __init__(self, model_registry: Any) -> None:
         self.model_registry = model_registry
         self.authenticator = PAPAuthenticator(model_registry)
         self.duplicates = DuplicateCache()
 
-    def client_for(self, host: str) -> Optional[RadiusClientModel]:
         """The enabled client whose network most specifically covers
         ``host``."""
         source = ipaddress.ip_address(host.split("%", 1)[0])
@@ -124,7 +116,6 @@ class RequestHandler:
             return None
         return max(covering, key=lambda pair: pair[0].prefixlen)[1]
 
-    def handle(self, datagram: bytes, source: Address) -> Optional[bytes]:
         host = source[0]
         client = self.client_for(host)
         if client is None or not client.shared_secret:
@@ -167,9 +158,6 @@ class RequestHandler:
         self.duplicates.answer(key, answer)
         return answer
 
-    def _decide(
-        self, client: RadiusClientModel, request: AuthPacket, host: str
-    ) -> Decision:
         if wire.raw_values(request, wire.EAP_MESSAGE) or wire.raw_values(
             request, wire.CHAP_PASSWORD
         ):
@@ -180,7 +168,6 @@ class RequestHandler:
         )
 
 
-class _Protocol(asyncio.DatagramProtocol):
     def __init__(self, handler: RequestHandler) -> None:
         self.handler = handler
         self.transport: Optional[asyncio.DatagramTransport] = None
@@ -192,7 +179,6 @@ class _Protocol(asyncio.DatagramProtocol):
         # (the loop's own class failed an isinstance check here).
         self.transport = cast(asyncio.DatagramTransport, transport)
 
-    def datagram_received(self, data: bytes, addr: Address) -> None:
         if len(self._in_flight) >= MAX_REQUESTS_IN_FLIGHT:
             logger.warning("radius_provider: busy, dropped a request from %s", addr[0])
             return
@@ -200,10 +186,8 @@ class _Protocol(asyncio.DatagramProtocol):
         self._in_flight.add(task)
         task.add_done_callback(self._in_flight.discard)
 
-    async def _answer(self, data: bytes, addr: Address) -> None:
         try:
             reply = await asyncio.to_thread(self.handler.handle, data, addr)
-        except Exception as exc:
             # One bad request must not stop the listener; it goes unanswered.
             # No traceback: the logger renders frame locals, and these hold
             # the decrypted shared secret and the user's password.
@@ -219,7 +203,6 @@ class _Protocol(asyncio.DatagramProtocol):
             self.closed.set_result(None)
 
 
-class RADIUSAuthService(AbstractService):
     """Listens on ``bind_address``:``port`` for as long as the app runs."""
 
     def __init__(
@@ -242,7 +225,6 @@ class RADIUSAuthService(AbstractService):
     async def update(self) -> None:
         """Unused: the listener answers datagrams as they arrive."""
 
-    async def run_service_loop(self) -> None:
         loop = asyncio.get_running_loop()
         try:
             transport, protocol = await loop.create_datagram_endpoint(
@@ -270,7 +252,6 @@ class RADIUSAuthService(AbstractService):
             transport.close()
             self.listening.clear()
 
-    def stop(self) -> None:
         super().stop()
         if self._loop is not None and self._transport is not None:
             try:

@@ -19,32 +19,20 @@ OUTPUT_LIMIT_BYTES = 256 * 1024
 _USAGE = "usage: LimitedProcess.py MEMORY CPU FILE [NAME…] -- PROGRAM [ARGS]"
 
 
-@dataclass(frozen=True)
-class Limits:
     memory_bytes: int
     cpu_seconds: int
     file_bytes: int
     wall_seconds: float
 
 
-@dataclass(frozen=True)
-class Completed:
     returncode: int
     stdout: str
     stderr: str
 
 
-class LimitExceeded(Exception):
     """The program ran past its wall-clock limit and was killed."""
 
 
-async def run_limited(
-    command: Sequence[str],
-    limits: Limits,
-    *,
-    cwd: str,
-    env: Mapping[str, str],
-) -> Completed:
     """Run ``command`` (no shell) in ``cwd`` with only ``env``; its exit
     status and (bounded) output.
 
@@ -53,7 +41,6 @@ async def run_limited(
     integration adds its trace headers to every child) cannot add to what
     the program sees. The values travel in the environment, never on argv.
     """
-    process = await asyncio.create_subprocess_exec(
         sys.executable,
         os.path.abspath(__file__),
         str(limits.memory_bytes),
@@ -64,9 +51,6 @@ async def run_limited(
         *command,
         cwd=cwd,
         env=dict(env),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     try:
@@ -84,7 +68,6 @@ async def run_limited(
     )
 
 
-def _limit_and_exec(argv: Sequence[str]) -> None:
     """``<memory> <cpu> <file> NAME… -- program args…``: set the limits,
     then become the program with only the named environment variables."""
     import resource
@@ -96,7 +79,6 @@ def _limit_and_exec(argv: Sequence[str]) -> None:
     names, command = argv[3:separator], list(argv[separator + 1 :])
     if not command:
         raise SystemExit(_USAGE)
-    environment = {name: os.environ[name] for name in names if name in os.environ}
     resource.setrlimit(resource.RLIMIT_AS, (int(memory), int(memory)))
     resource.setrlimit(resource.RLIMIT_CPU, (int(cpu), int(cpu)))
     resource.setrlimit(resource.RLIMIT_FSIZE, (int(file_size), int(file_size)))
@@ -104,7 +86,6 @@ def _limit_and_exec(argv: Sequence[str]) -> None:
     os.execvpe(command[0], command, environment)
 
 
-def available(program: str, path: Optional[str] = None) -> bool:
     """Whether ``program`` is on the PATH."""
     from shutil import which
 

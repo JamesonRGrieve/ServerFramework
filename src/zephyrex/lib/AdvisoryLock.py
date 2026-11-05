@@ -28,7 +28,6 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Callable, Dict, Optional
 
 
-class LockTimeoutError(Exception):
     """Raised when an advisory lock cannot be acquired within the configured timeout."""
 
 
@@ -37,7 +36,6 @@ class LockTimeoutError(Exception):
 # ---------------------------------------------------------------------------
 
 
-class InMemoryAdvisoryLock:
     """A process-local advisory lock, keyed by name."""
 
     _locks: Dict[str, asyncio.Lock] = {}
@@ -85,7 +83,6 @@ class InMemoryAdvisoryLock:
 SessionProvider = Callable[[], object]
 
 
-class PostgresAdvisoryLock:
     """Postgres advisory lock using ``pg_advisory_xact_lock(hashtext(name))``.
 
     Transaction-scoped by default for safety: the lock auto-releases on commit
@@ -104,7 +101,6 @@ class PostgresAdvisoryLock:
         self._session = None
         self._acquired = False
 
-    async def __aenter__(self) -> "PostgresAdvisoryLock":
         from sqlalchemy import text
 
         if self._session_provider is None:
@@ -115,15 +111,11 @@ class PostgresAdvisoryLock:
 
         if self.timeout is not None:
             ms = int(self.timeout * 1000)
-            self._session.execute(text(f"SET LOCAL lock_timeout = '{ms}ms'"))  # type: ignore[attr-defined]
 
         try:
-            self._session.execute(  # type: ignore[attr-defined]
-                text("SELECT pg_advisory_xact_lock(hashtext(:name))"),
                 {"name": self.name},
             )
             self._acquired = True
-        except Exception as e:
             # Postgres raises a generic operational error on lock_timeout.
             if "lock timeout" in str(e).lower() or "canceling" in str(e).lower():
                 raise LockTimeoutError(
@@ -149,9 +141,7 @@ class PostgresAdvisoryLock:
 _global_postgres_session_provider: Optional[SessionProvider] = None
 
 
-def set_postgres_session_provider(provider: Optional[SessionProvider]) -> None:
     """Configure a global session provider for the Postgres backend."""
-    global _global_postgres_session_provider
     _global_postgres_session_provider = provider
 
 
@@ -159,12 +149,6 @@ def _select_backend() -> str:
     return os.environ.get("LOCK_BACKEND", "memory").strip().lower()
 
 
-@asynccontextmanager
-async def acquire_lock(
-    name: str,
-    timeout: Optional[float] = None,
-    session_provider: Optional[SessionProvider] = None,
-) -> AsyncIterator[None]:
     """Acquire an advisory lock by name.
 
     Backend is selected via the ``LOCK_BACKEND`` environment variable. Raises

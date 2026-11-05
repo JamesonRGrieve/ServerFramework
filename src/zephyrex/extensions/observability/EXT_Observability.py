@@ -9,7 +9,6 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Observability(AbstractStaticExtension):
     """Auto-wire the metrics backend and error reporter from the environment.
 
     Metrics (#210): ``METRICS_BACKEND=prometheus|otel|noop`` selects and installs
@@ -71,8 +70,6 @@ class EXT_Observability(AbstractStaticExtension):
         cls._wire_error_reporter()
         return True
 
-    @classmethod
-    def _wire_metrics_backend(cls) -> None:
         backend_name = (env("METRICS_BACKEND") or "noop").strip().lower()
         if backend_name in ("", "noop"):
             return

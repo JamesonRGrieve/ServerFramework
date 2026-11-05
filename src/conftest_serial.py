@@ -14,19 +14,16 @@ from xdist.scheduler.loadscope import LoadScopeScheduling
 SERIAL_SCOPE = "__serial_last__"
 
 
-class SerialLastScheduler(LoadScopeScheduling):
 
     def __init__(self, config, log):
         super().__init__(config, log)
         self._serial_held: dict[str, bool] = {}
         self._serial_released: bool = False
 
-    def _split_scope(self, nodeid: str) -> str:
         if "Efficiency_test" in nodeid:
             return SERIAL_SCOPE
         return super()._split_scope(nodeid)
 
-    def schedule(self) -> None:
         assert self.collection_is_completed
 
         if self.collection is not None:
@@ -62,7 +59,6 @@ class SerialLastScheduler(LoadScopeScheduling):
         for node in self.nodes:
             self._reschedule(node)
 
-    def _try_release_serial(self) -> None:
         if self._serial_released or not self._serial_held:
             return
         if any(k != SERIAL_SCOPE for k in self.workqueue):

@@ -28,7 +28,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 CONNECT_TIMEOUT_SECONDS = 30.0
 
 
-class PRV_StreamableHTTP_MCPClient(AbstractMCPServerProvider):
     name: ClassVar[str] = "mcp_streamable_http"
     friendly_name: ClassVar[str] = "MCP server (Streamable HTTP)"
     description: ClassVar[str] = "A remote MCP server over Streamable HTTP"

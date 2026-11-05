@@ -115,7 +115,6 @@ class LabelDetachResponse(BaseModel):
     detached: bool
 
 
-class LabelManager(AbstractBLLManager, RouterMixin):
     _model = LabelModel
     prefix: ClassVar[Optional[str]] = "/v1/labels"
     tags: ClassVar[Optional[List[str]]] = ["Labels"]

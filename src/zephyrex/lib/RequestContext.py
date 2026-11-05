@@ -31,7 +31,6 @@ _request_correlation_id: ContextVar[Optional[str]] = ContextVar(
 )
 
 
-class DeadlineExceededError(Exception):
     """Item 47 — raised by framework I/O layers when the per-request budget
     has expired. Surfaces as HTTP 504 in the inbound surface; downstream
     layers should re-raise rather than swallow.
@@ -60,7 +59,6 @@ def get_request_user() -> Optional[Dict[str, Any]]:
     return _request_user_context.get()
 
 
-def get_user_timezone() -> str:
     """Get the current user's timezone or default to UTC"""
     user_info = get_request_user()
     if user_info and "timezone" in user_info:
@@ -71,7 +69,6 @@ def get_user_timezone() -> str:
 _MAX_REQUEST_TIMEOUT_MS = 300_000
 
 
-def set_request_deadline_ms(timeout_ms: Optional[int]) -> None:
     """Item 47 — set the per-request deadline from a relative
     (gRPC-style) timeout in milliseconds. ``None`` clears the deadline.
     Clamped to 5 minutes to prevent attacker-set absurd deadlines."""
@@ -87,7 +84,6 @@ def get_request_deadline() -> Optional[float]:
     return _request_deadline.get()
 
 
-def remaining_deadline_ms() -> Optional[int]:
     """Item 47 — return the remaining budget in milliseconds, or None
     when no deadline is set. Downstream layers compute their own timeout
     as ``min(layer_default, remaining_deadline_ms())``.
@@ -103,7 +99,6 @@ def remaining_deadline_ms() -> Optional[int]:
     return int(remaining) if remaining > 0 else 0
 
 
-def check_deadline_or_raise(layer: str = "unknown") -> None:
     """Item 47 — fail fast when the budget is exhausted. Called by
     framework layers before scheduling I/O so that no further wall-clock
     is consumed past the SLA boundary.
@@ -151,11 +146,6 @@ def mint_correlation_id() -> str:
     return uuid.uuid4().hex
 
 
-def wrap_in_context(
-    target: Union[Callable[..., Any], Coroutine[Any, Any, Any]],
-    *args: Any,
-    **kwargs: Any,
-) -> Any:
     """Item 85 — snapshot the current contextvars and bind them around a
     coroutine or callable so the correlation id (and every other
     contextvar) propagates across ``asyncio.to_thread`` /
@@ -205,9 +195,6 @@ def wrap_in_context(
     return _runner_sync
 
 
-async def _drive_coro_in_context(
-    ctx: contextvars.Context, coro: Coroutine[Any, Any, Any]
-) -> Any:
     """Step ``coro`` to completion with each ``send``/``throw`` executed
     inside ``ctx``. Mirrors :class:`asyncio.Task`'s contextvar binding
     semantics so explicit users get the same guarantees regardless of

@@ -86,8 +86,6 @@ _DISCOVERY_PATH = "/.well-known/openid-configuration"
 _TRUE_STRINGS = frozenset({"true"})
 
 
-@dataclass(frozen=True)
-class Endpoints:
     """Where a provider is reached, and what its metadata promises."""
 
     authorize: str
@@ -101,8 +99,6 @@ class Endpoints:
     issuer_in_response: bool = False
 
 
-@dataclass(frozen=True)
-class TokenSet:
     """A token endpoint's answer."""
 
     access_token: str
@@ -112,8 +108,6 @@ class TokenSet:
     scope: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class Identity:
     """The account a provider vouched for: ``subject`` is its stable id at
     the provider; ``email_verified`` is True only when the provider says it
     checked the mailbox is the user's."""
@@ -129,16 +123,12 @@ class Identity:
     picture: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class _PublishedKey:
     """One key of a provider's JWKS: the JWK as published, and the key."""
 
     jwk: Mapping[str, Any]
     key: jwt.PyJWK
 
 
-@dataclass
-class _KeySet:
     keys: List[_PublishedKey]
     fetched_at: float
     refetched_at: float = field(default=float("-inf"))
@@ -148,12 +138,10 @@ _DISCOVERED: Dict[str, Tuple[float, Endpoints]] = {}
 _KEY_SETS: Dict[str, _KeySet] = {}
 
 
-def text(value: Any) -> Optional[str]:
     """``value`` when it is a non-empty string."""
     return value if isinstance(value, str) and value.strip() else None
 
 
-def asserted_true(value: Any) -> bool:
     """A claim that is ``true``, as a JSON boolean or (as some providers
     send it) the string."""
     if isinstance(value, bool):
@@ -161,9 +149,6 @@ def asserted_true(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in _TRUE_STRINGS
 
 
-def client_settings(
-    client_id_env: str, client_secret_env: str, default_scopes: str
-) -> Tuple[InstanceSetting, ...]:
     """The settings every client registration has. The secret is
     write-only: stored encrypted, never returned."""
     return (
@@ -200,13 +185,11 @@ def issuer_setting(
     )
 
 
-def pkce_challenge(verifier: str) -> str:
     """The S256 code challenge of ``verifier`` (RFC 7636 §4.2)."""
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
-def require_tls(url: str, what: str, provider: str) -> str:
     """``url`` when it is ``https`` (or ``http`` to the loopback host)."""
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -220,7 +203,6 @@ def require_tls(url: str, what: str, provider: str) -> str:
     )
 
 
-def _token_hash(value: str, algorithm: str) -> Optional[str]:
     """The ``at_hash`` of ``value`` under an ID token's ``algorithm``: the
     left half of its digest, base64url (OIDC Core §3.1.3.6)."""
     digest_of = hashlib.sha512 if algorithm == "EdDSA" else _HASH_OF.get(algorithm[-3:])
@@ -231,7 +213,6 @@ def _token_hash(value: str, algorithm: str) -> Optional[str]:
     return base64.urlsafe_b64encode(half).rstrip(b"=").decode("ascii")
 
 
-def _key_fits(published: _PublishedKey, kid: Optional[str], algorithm: str) -> bool:
     """A signing key of the algorithm's type, published for it (or for any
     algorithm), with the id the token names."""
     jwk = published.jwk
@@ -254,7 +235,6 @@ def _select_key(
     return fitting[0] if len(fitting) == 1 else None
 
 
-def _parse_key_set(document: Any) -> List[_PublishedKey]:
     if not isinstance(document, dict) or not isinstance(document.get("keys"), list):
         return []
     keys: List[_PublishedKey] = []
@@ -268,7 +248,6 @@ def _parse_key_set(document: Any) -> List[_PublishedKey]:
     return keys
 
 
-class AbstractIdentityProvider(AbstractStaticProvider):
     """An OAuth 2.0 provider users sign in with; each instance is one
     client registration at it.
 
@@ -296,9 +275,6 @@ class AbstractIdentityProvider(AbstractStaticProvider):
     def services(cls) -> List[str]:
         return ["oauth_consumer"]
 
-    @classmethod
-    def client_id(cls, instance: ProviderInstanceModel) -> str:
-        found = text(cls.setting(instance, "client_id"))
         if found is None:
             raise PermanentExternalError(
                 f"{cls.friendly_name}: no client id is configured", provider=cls.name
@@ -310,12 +286,8 @@ class AbstractIdentityProvider(AbstractStaticProvider):
         """Whether ``instance`` names enough to sign anyone in."""
         return text(cls.setting(instance, "client_id")) is not None
 
-    @classmethod
-    def scopes(cls, instance: ProviderInstanceModel) -> str:
         return " ".join((cls.setting(instance, "scopes") or cls.default_scopes).split())
 
-    @classmethod
-    def redirect_uris(cls, instance: ProviderInstanceModel) -> List[str]:
         """The configured redirect URIs; empty when none is."""
         raw = cls.setting(instance, "redirect_uris") or ""
         return [uri.strip() for uri in raw.split(",") if uri.strip()]
@@ -341,17 +313,6 @@ class AbstractIdentityProvider(AbstractStaticProvider):
     ) -> Identity:
         """The account ``tokens`` were issued for."""
 
-    @classmethod
-    def authorization_url(
-        cls,
-        instance: ProviderInstanceModel,
-        endpoints: Endpoints,
-        *,
-        redirect_uri: str,
-        state: str,
-        nonce: str,
-        code_verifier: str,
-    ) -> str:
         """Where to send the browser: the code flow, with the S256 challenge
         of ``code_verifier`` (and, to an OpenID provider, the nonce)."""
         params = {
@@ -390,28 +351,16 @@ class AbstractIdentityProvider(AbstractStaticProvider):
             },
         )
 
-    @classmethod
-    async def refresh(
-        cls, instance: ProviderInstanceModel, endpoints: Endpoints, refresh_token: str
-    ) -> TokenSet:
         return await cls.token_request(
             instance,
             endpoints,
             {"grant_type": "refresh_token", "refresh_token": refresh_token},
         )
 
-    @classmethod
-    async def token_request(
-        cls,
-        instance: ProviderInstanceModel,
-        endpoints: Endpoints,
-        grant: Dict[str, str],
-    ) -> TokenSet:
         """POST ``grant`` to the token endpoint, authenticated as the client:
         HTTP Basic when the provider offers it (RFC 6749 §2.3.1), else in
         the form; a public client sends only its id."""
         client_id = cls.client_id(instance)
-        secret = text(cls.setting(instance, "client_secret"))
         form = {**grant, "client_id": client_id}
         headers = {"Accept": "application/json"}
         if secret is not None:
@@ -425,21 +374,17 @@ class AbstractIdentityProvider(AbstractStaticProvider):
         answer = await cls.http().post(url, data=form, headers=headers)
         return cls.parse_tokens(answer)
 
-    @classmethod
-    def parse_tokens(cls, answer: Any) -> TokenSet:
         if not isinstance(answer, dict):
             raise InvalidInputExternalError(
                 f"{cls.friendly_name}: the token endpoint answered no JSON object",
                 provider=cls.name,
             )
         # GitHub reports a refused code with 200 and an ``error`` member.
-        if "error" in answer or not text(answer.get("access_token")):
             raise InvalidInputExternalError(
                 f"{cls.friendly_name}: the token endpoint refused the grant "
                 f"({str(answer.get('error') or 'no access token')[:64]})",
                 provider=cls.name,
             )
-        token_type = text(answer.get("token_type"))
         if token_type is not None and token_type.lower() != "bearer":
             raise InvalidInputExternalError(
                 f"{cls.friendly_name}: unsupported token type", provider=cls.name
@@ -452,14 +397,9 @@ class AbstractIdentityProvider(AbstractStaticProvider):
         )
         return TokenSet(
             access_token=str(answer["access_token"]),
-            refresh_token=text(answer.get("refresh_token")),
             expires_at=expires_at,
-            id_token=text(answer.get("id_token")),
-            scope=text(answer.get("scope")),
         )
 
-    @classmethod
-    async def api_json(cls, url: str, access_token: str, what: str) -> Any:
         """GET a provider API ``url`` with the access token, over TLS."""
         return await cls.get_json(
             require_tls(url, what, cls.name),
@@ -470,15 +410,11 @@ class AbstractIdentityProvider(AbstractStaticProvider):
         )
 
 
-class AbstractOIDCProvider(AbstractIdentityProvider):
     """An OpenID provider, found from its issuer."""
 
     kind: ClassVar[str] = "oidc"
     default_scopes: ClassVar[str] = "openid email profile"
 
-    @classmethod
-    def issuer(cls, instance: ProviderInstanceModel) -> str:
-        found = text(cls.setting(instance, "issuer"))
         if found is None:
             raise PermanentExternalError(
                 f"{cls.friendly_name}: no issuer is configured", provider=cls.name
@@ -526,8 +462,6 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
     def email_verified(cls, claims: Dict[str, Any]) -> bool:
         return asserted_true(claims.get("email_verified"))
 
-    @classmethod
-    async def endpoints(cls, instance: ProviderInstanceModel) -> Endpoints:
         url = require_tls(cls.discovery_url(instance), "issuer", cls.name)
         cached = _DISCOVERED.get(url)
         if cached is not None and time.monotonic() - cached[0] < DISCOVERY_TTL_SECONDS:
@@ -542,10 +476,6 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
         _DISCOVERED[url] = (time.monotonic(), endpoints)
         return endpoints
 
-    @classmethod
-    def read_metadata(
-        cls, instance: ProviderInstanceModel, metadata: Dict[str, Any]
-    ) -> Endpoints:
         issuer = cls.metadata_issuer(instance, metadata)
         challenge_methods = metadata.get("code_challenge_methods_supported")
         if isinstance(challenge_methods, list) and "S256" not in challenge_methods:
@@ -559,14 +489,12 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             ("token_endpoint", "token endpoint"),
             ("jwks_uri", "JWKS URI"),
         ):
-            value = text(metadata.get(key))
             if value is None:
                 raise PermanentExternalError(
                     f"{cls.friendly_name}: the provider's metadata has no {what}",
                     provider=cls.name,
                 )
             required[key] = require_tls(value, what, cls.name)
-        userinfo = text(metadata.get("userinfo_endpoint"))
         algorithms = metadata.get("id_token_signing_alg_values_supported")
         methods = metadata.get("token_endpoint_auth_methods_supported")
         return Endpoints(
@@ -590,10 +518,6 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             is True,
         )
 
-    @classmethod
-    async def signing_key(
-        cls, jwks_uri: str, kid: Optional[str], algorithm: str
-    ) -> Optional[jwt.PyJWK]:
         """The provider's key for ``kid``, from the cached set; a key id the
         set lacks fetches it again (key rotation), at most once a minute."""
         now = time.monotonic()
@@ -629,20 +553,9 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             f"{cls.friendly_name}: invalid ID token ({reason})", provider=cls.name
         )
 
-    @classmethod
-    async def verify_id_token(
-        cls,
-        instance: ProviderInstanceModel,
-        endpoints: Endpoints,
-        id_token: str,
-        *,
-        nonce: str,
-        access_token: Optional[str],
-    ) -> Dict[str, Any]:
         """The verified claims of ``id_token`` (OIDC Core §3.1.3.7)."""
         try:
             header = jwt.get_unverified_header(id_token)
-            unverified = jwt.decode(id_token, options={"verify_signature": False})
         except jwt.PyJWTError:
             raise cls._refuse("malformed") from None
         algorithm = header.get("alg")
@@ -659,7 +572,6 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             raise cls._refuse("signed with an unknown key")
         client_id = cls.client_id(instance)
         try:
-            claims: Dict[str, Any] = jwt.decode(
                 id_token,
                 key=key.key,
                 algorithms=[algorithm],
@@ -681,17 +593,13 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             raise cls._refuse("issued to another party")
         issued_at = claims["iat"]
         if not isinstance(issued_at, (int, float)) or (
-            time.time() - issued_at > MAX_ID_TOKEN_AGE_SECONDS + CLOCK_SKEW_SECONDS
         ):
             raise cls._refuse("issued too long ago")
-        if not hmac.compare_digest(str(claims.get("nonce") or ""), nonce):
             raise cls._refuse("nonce mismatch")
-        if text(claims.get("sub")) is None:
             raise cls._refuse("no subject")
         at_hash = claims.get("at_hash")
         if at_hash is not None and access_token is not None:
             expected = _token_hash(access_token, algorithm)
-            if expected is None or not hmac.compare_digest(str(at_hash), expected):
                 raise cls._refuse("access token hash mismatch")
         return claims
 
@@ -713,14 +621,6 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             return {}
         return answer
 
-    @classmethod
-    async def identity(
-        cls,
-        instance: ProviderInstanceModel,
-        endpoints: Endpoints,
-        tokens: TokenSet,
-        nonce: str,
-    ) -> Identity:
         if tokens.id_token is None:
             raise cls._refuse("the provider returned none")
         claims = await cls.verify_id_token(
@@ -735,15 +635,9 @@ class AbstractOIDCProvider(AbstractIdentityProvider):
             **(await cls.profile(endpoints, tokens.access_token, subject)),
             **claims,
         }
-        email = text(claims.get("email"))
         return Identity(
             subject=subject,
             email=email.strip().lower() if email else None,
             email_verified=email is not None and cls.email_verified(claims),
             issuer=str(claims["iss"]),
-            first_name=text(found.get("given_name")),
-            last_name=text(found.get("family_name")),
-            display_name=text(found.get("name")),
-            username=text(found.get("preferred_username")),
-            picture=text(found.get("picture")),
         )

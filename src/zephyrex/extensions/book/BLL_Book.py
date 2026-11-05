@@ -113,7 +113,6 @@ class BookChapterModel(
         position: Optional[NumericalSearchModel] = None
 
 
-class BookChapterManager(AbstractBLLManager, RouterMixin):
     _model = BookChapterModel
 
     def create(self, **kwargs: Any) -> Any:
@@ -139,7 +138,6 @@ class BookChapterManager(AbstractBLLManager, RouterMixin):
         return sorted(chapters, key=lambda c: (c.position, str(c.created_at)))
 
 
-class BookManager(AbstractBLLManager, RouterMixin):
     _model = BookModel
 
     def chapters(self) -> BookChapterManager:
@@ -147,7 +145,6 @@ class BookManager(AbstractBLLManager, RouterMixin):
             model_registry=self.model_registry, requester_id=self.requester.id
         )
 
-    def manuscript(self, book_id: str) -> Manuscript:
         """The book and its chapters in order, as the requester sees them."""
         book = self.get(id=book_id)
         if book is None:

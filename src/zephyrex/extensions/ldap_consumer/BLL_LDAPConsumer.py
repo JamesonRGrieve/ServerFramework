@@ -118,7 +118,6 @@ ADMIN_ROUTES = [
 ]
 
 
-def _require_server_side(manager: AbstractBLLManager) -> None:
     """Directories and identities are the server's own configuration: an
     API key issued to a user is not enough to touch them."""
     requester = manager.optional_requester
@@ -198,7 +197,6 @@ class LdapDirectoryModel(
     table_comment: ClassVar[str] = "Directories (LDAP, AD) people sign in with"
     is_system_entity: ClassVar[bool] = True
 
-    class Create(BaseModel, NameMixinModel):
         host: str
         port: Optional[int] = None
         security: Security = "ldaps"
@@ -219,7 +217,6 @@ class LdapDirectoryModel(
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
         enabled: bool = True
 
-    class Update(BaseModel, NameMixinModel.Optional):
         host: Optional[str] = None
         port: Optional[int] = None
         security: Optional[Security] = None
@@ -271,13 +268,11 @@ class LdapIdentityModel(
 
     table_comment: ClassVar[str] = "Local users' identities in sign-in directories"
 
-    class Create(BaseModel, UserModel.Reference.ID, LdapDirectoryModel.Reference.ID):
         external_id: str
         dn: Optional[str] = None
         username: Optional[str] = None
         email: Optional[str] = None
 
-    class Update(BaseModel):
         pass
 
     class Search(
@@ -292,7 +287,6 @@ class LdapIdentityModel(
         last_login_at: Optional[DateSearchModel] = None
 
 
-def _sealed(fields: Dict[str, Any]) -> Dict[str, Any]:
     """``fields`` with the service account's DN and password encrypted."""
     sealed = dict(fields)
     for key in SECRET_FIELDS:
@@ -305,7 +299,6 @@ def _invalid(problems: List[str]) -> HTTPException:
     return HTTPException(status_code=422, detail="; ".join(problems))
 
 
-def directory_settings(directory: LdapDirectoryModel) -> DirectorySettings:
     """How to reach ``directory``, its secrets decrypted."""
     return DirectorySettings(
         host=directory.host,
@@ -328,14 +321,11 @@ def directory_settings(directory: LdapDirectoryModel) -> DirectorySettings:
     )
 
 
-def load_directory(model_registry: Any, directory_id: str) -> LdapDirectoryModel:
     """The directory (with its sealed secrets), read as ROOT. 404 when there
     is none, or it was deleted (ROOT reads deleted rows too)."""
     DirectoryDB = LdapDirectoryModel.DB(model_registry.DB.manager.Base)
     found: List[LdapDirectoryModel] = DirectoryDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
-        filters=[DirectoryDB.id == directory_id, DirectoryDB.deleted_at.is_(None)],
         return_type="dto",
         override_dto=LdapDirectoryModel,
     )
@@ -350,7 +340,6 @@ def client_for(model_registry: Any, directory_id: str) -> LDAPDirectoryClient:
     )
 
 
-class DirectoryAccountView(RouteModel):
     dn: str
     external_id: str
     username: str
@@ -370,16 +359,13 @@ class DirectoryAccountView(RouteModel):
         )
 
 
-class DirectoryLookupRequest(RouteModel):
     username: str = Field(..., min_length=1, description="Directory username")
 
 
-class DirectoryCheckResponse(RouteModel):
     reachable: bool
     security: str
 
 
-async def _directory_call(call: Any, *args: Any) -> Any:
     """Run a blocking directory call off the event loop, its failures as
     HTTP errors an administrator can act on."""
     try:
@@ -390,7 +376,6 @@ async def _directory_call(call: Any, *args: Any) -> Any:
         raise HTTPException(status_code=502, detail=str(exc))
 
 
-class LdapDirectoryManager(AbstractBLLManager, RouterMixin):
     _model = LdapDirectoryModel
 
     prefix: ClassVar[Optional[str]] = "/v1/ldap/directory"
@@ -398,10 +383,8 @@ class LdapDirectoryManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.API_KEY
     routes_to_register: ClassVar[Optional[List[RouteType]]] = ADMIN_ROUTES
 
-    def create(self, **kwargs: Any) -> Any:
         _require_server_side(self)
 
-        def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
             try:
                 complete = LdapDirectoryModel.Create(**fields).model_dump()
             except ValidationError:
@@ -420,7 +403,6 @@ class LdapDirectoryManager(AbstractBLLManager, RouterMixin):
             kwargs = prepare(kwargs)
         return super().create(**kwargs)
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         _require_server_side(self)
         current = load_directory(self.model_registry, id)
         problems = [
@@ -474,17 +456,12 @@ def _identity_db(model_registry: Any) -> Any:
     return LdapIdentityModel.DB(model_registry.DB.manager.Base)
 
 
-def find_identity(
-    model_registry: Any, directory_id: str, external_id: str
-) -> Optional[LdapIdentityModel]:
     IdentityDB = _identity_db(model_registry)
     rows: List[LdapIdentityModel] = IdentityDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
         filters=[
             IdentityDB.ldap_directory_id == directory_id,
             IdentityDB.external_id == external_id,
-            IdentityDB.deleted_at.is_(None),
         ],
         return_type="dto",
         override_dto=LdapIdentityModel,
@@ -492,14 +469,11 @@ def find_identity(
     return rows[0] if rows else None
 
 
-def _users(model_registry: Any, **match: Any) -> List[Dict[str, Any]]:
     """Users (not deleted) matching ``match``, read as ROOT, as rows the
     way password login reads them."""
     UserDB = UserModel.DB(model_registry.DB.manager.Base)
     found: List[Dict[str, Any]] = UserDB.list(
-        requester_id=env("ROOT_ID"),
         model_registry=model_registry,
-        filters=[UserDB.deleted_at.is_(None)],
         **match,
     )
     return found
@@ -509,7 +483,6 @@ def _active(user: Dict[str, Any]) -> bool:
     return bool(user.get("active"))
 
 
-class LdapIdentityManager(AbstractBLLManager, RouterMixin):
     _model = LdapIdentityModel
 
     prefix: ClassVar[Optional[str]] = "/v1/ldap/identity"
@@ -523,7 +496,6 @@ class LdapIdentityManager(AbstractBLLManager, RouterMixin):
         RouteType.DELETE,
     ]
 
-    def create_validation(self, entity: Any) -> None:
         load_directory(self.model_registry, entity.ldap_directory_id)
         refuse_internal_account(entity.user_id)
         if not _users(self.model_registry, id=entity.user_id):
@@ -546,22 +518,18 @@ class LdapIdentityManager(AbstractBLLManager, RouterMixin):
         super().delete(id)
 
 
-class LdapDirectoryEntry(RouteModel):
     id: str
     name: str
 
 
-class LdapDirectoryList(RouteModel):
     directories: List[LdapDirectoryEntry]
 
 
-class LdapLoginRequest(RouteModel):
     directory_id: str = Field(..., description="The directory to sign in with")
     username: str = Field(..., description="Directory username")
     password: str = Field(..., description="Directory password")
 
 
-class LdapLoginResponse(RouteModel):
     """What a password login answers: the session (``user``, ``token``,
     ``teams``, ``preferences``, ``session_key``), or, for a user with a
     second factor, the challenge to complete at POST
@@ -581,7 +549,6 @@ def _refused() -> HTTPException:
     return HTTPException(status_code=401, detail=INVALID_CREDENTIALS)
 
 
-class LdapLoginManager(AbstractBLLManager, RouterMixin):
     """Directory sign-in: no table of its own."""
 
     prefix: ClassVar[Optional[str]] = "/v1/auth/ldap"
@@ -589,20 +556,14 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.NONE
     routes_to_register: ClassVar[Optional[List[RouteType]]] = []
 
-    def enabled_directories(self) -> List[LdapDirectoryModel]:
         DirectoryDB = LdapDirectoryModel.DB(self.model_registry.DB.manager.Base)
         found: List[LdapDirectoryModel] = DirectoryDB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
-            filters=[DirectoryDB.enabled.is_(True), DirectoryDB.deleted_at.is_(None)],
             return_type="dto",
             override_dto=LdapDirectoryModel,
         )
         return found
 
-    def _known_user(
-        self, directory: LdapDirectoryModel, account: DirectoryAccount
-    ) -> Optional[str]:
         """The local user this account signs in as, if any yet."""
         identity = find_identity(self.model_registry, directory.id, account.external_id)
         if identity is not None:
@@ -616,14 +577,6 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
                 return str(users[0]["id"])
         return None
 
-    def sign_in(
-        self,
-        directory_id: str,
-        username: str,
-        password: str,
-        ip_address: Optional[str],
-        response: Response,
-    ) -> Dict[str, Any]:
         tracker = UserManager._lockout_tracker
         actor = ip_address or "unknown"
         if tracker.is_locked(actor, LOCKOUT_FLOW):
@@ -639,7 +592,6 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
 
         user_ids: List[str] = []
 
-        def admit(account: DirectoryAccount) -> None:
             user_id = self._known_user(directory, account)
             if user_id is None:
                 return
@@ -673,9 +625,6 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
         )
         return completed
 
-    def _local_user(
-        self, directory: LdapDirectoryModel, account: DirectoryAccount
-    ) -> Dict[str, Any]:
         """The local user ``account`` signs in as: linked, linked now, or
         created (see the module docstring), with the identity refreshed."""
         identity = find_identity(self.model_registry, directory.id, account.external_id)
@@ -708,9 +657,6 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
         self._link(directory, account, str(user["id"]))
         return user
 
-    def _register(
-        self, account: DirectoryAccount, email: Optional[str]
-    ) -> Dict[str, Any]:
         """A new local user for ``account``, as self-registration would make
         one: only when registration is open."""
         from zephyrex.lib.Environment import settings
@@ -741,9 +687,7 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
                 status_code=403,
                 detail="The directory account's email address is not valid",
             )
-        root_id = env("ROOT_ID")
         created = UserModel.DB(self.model_registry.DB.manager.Base).create(
-            requester_id=root_id,
             model_registry=self.model_registry,
             override_dto=self.model_registry.apply(UserModel),
             return_type="dto",
@@ -752,7 +696,6 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
         # A password nobody knows: the account signs in through the
         # directory, and a password login for it fails like any wrong one.
         UserCredentialManager(
-            requester_id=created.id,
             target_id=created.id,
             model_registry=self.model_registry,
         ).create(user_id=created.id, password=_unusable_password())
@@ -774,9 +717,7 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
             last_login_at=datetime.now(timezone.utc),
         )
 
-    def _refresh(self, identity: LdapIdentityModel, account: DirectoryAccount) -> None:
         _identity_db(self.model_registry).update(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=identity.id,
             new_properties={
@@ -832,6 +773,4 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
         return LdapLoginResponse(**result)
 
 
-def _unusable_password() -> str:
     """Random, and meeting the password policy (a letter and a digit)."""
-    return f"ldap-{secrets.token_hex(UNUSABLE_PASSWORD_BYTES)}-0"

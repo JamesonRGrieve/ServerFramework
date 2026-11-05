@@ -57,7 +57,6 @@ def _segment(value: str, what: str) -> str:
     return value
 
 
-def repo_segments(repo: str, host: str, depth: Optional[int]) -> List[str]:
     """The path segments naming ``repo``: ``owner/name``, or a web URL on
     ``host``. ``depth`` is the segment count (None: two or more, GitLab's
     nested groups). Every segment is a plain name: one cannot reach
@@ -162,7 +161,6 @@ def first_line(message: str) -> str:
     return message.splitlines()[0] if message else ""
 
 
-class AbstractSourceProvider(AbstractStaticProvider):
     """A code hosting platform."""
 
     name: ClassVar[str] = ""
@@ -290,7 +288,6 @@ class AbstractSourceProvider(AbstractStaticProvider):
         return ["source_control"]
 
 
-class EXT_Source(AbstractStaticExtension):
     name: ClassVar[str] = "source"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

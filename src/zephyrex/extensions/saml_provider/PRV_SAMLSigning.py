@@ -23,12 +23,10 @@ CERTIFICATE_SETTING = "signing_certificate"
 KEY_SETTING = "signing_key"
 
 
-class SigningKeyMissing(LookupError):
     """No signing identity is configured, or the one configured is unusable.
     The text names what to fix, never a key's value."""
 
 
-class PRV_SAMLSigningKey(AbstractStaticProvider):
     name: ClassVar[str] = "saml_idp_signing_key"
     friendly_name: ClassVar[str] = "SAML IdP signing key"
     description: ClassVar[str] = (
@@ -56,8 +54,6 @@ class PRV_SAMLSigningKey(AbstractStaticProvider):
     def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         return AbstractProviderInstance(instance)
 
-    @classmethod
-    def identity(cls, instance: Optional[ProviderInstanceModel]) -> SigningIdentity:
         """The signing identity ``instance`` holds (the environment's, for
         None), checked to be an RSA key and its certificate."""
         certificate = cls.setting(instance, CERTIFICATE_SETTING)

@@ -20,18 +20,14 @@ RENEW_MARGIN_SECONDS = 60
 Fetch = Callable[[], Awaitable[Tuple[str, float]]]
 
 
-def fingerprint(*parts: str) -> str:
     """A digest of the credentials a token was issued for."""
     return hashlib.sha256("\x00".join(parts).encode()).hexdigest()
 
 
-class TokenCache:
-    def __init__(self) -> None:
         self._tokens: Dict[str, Tuple[str, str, float]] = {}
         # A lock belongs to one event loop; each loop gets its own.
         self._locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Dict[str, asyncio.Lock]]" = (weakref.WeakKeyDictionary())
 
-    async def obtain(self, key: str, credentials: str, fetch: Fetch) -> str:
         """The cached token for ``key``, or a new one from ``fetch``
         (``(token, lifetime in seconds)``) when there is none, it has
         nearly expired, or the credentials changed."""
@@ -49,6 +45,5 @@ class TokenCache:
             self._tokens[key] = (credentials, token, expiry)
             return token
 
-    def drop(self, key: str) -> None:
         """Forget ``key``'s token (it was refused)."""
         self._tokens.pop(key, None)

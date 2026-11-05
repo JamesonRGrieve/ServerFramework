@@ -26,7 +26,6 @@ from zephyrex.extensions.billing.BLL_CostSummary import (
 from zephyrex.lib.Logging import logger
 
 
-def _default_period_key(period: str, now: Optional[datetime] = None) -> str:
     """UTC period bucket key. Daily uses ``YYYY-MM-DD`` to match Quota."""
     if now is None:
         now = datetime.now(timezone.utc)
@@ -44,8 +43,6 @@ def _default_period_key(period: str, now: Optional[datetime] = None) -> str:
     raise ValueError(f"Unknown period: {period!r}")
 
 
-@dataclass
-class CostSummaryPassReport:
     """Summary of a single roll-up pass."""
 
     period: str
@@ -57,7 +54,6 @@ class CostSummaryPassReport:
     errors: List[str] = field(default_factory=list)
 
 
-class CostSummaryRollup:
     """Synchronous roll-up engine. Wrap with :func:`make_cost_summary_scheduled_service`
     for runtime scheduling."""
 
@@ -82,7 +78,6 @@ class CostSummaryRollup:
     def period(self) -> str:
         return self._period
 
-    def run_pass(self) -> CostSummaryPassReport:
         now = self._clock()
         period_key = _default_period_key(self._period, now=now)
         report = CostSummaryPassReport(
@@ -91,7 +86,6 @@ class CostSummaryRollup:
 
         try:
             counter = self._counter_provider()
-        except Exception as exc:  # noqa: BLE001
             report.errors.append(f"counter_provider: {exc!r}")
             report.finished_at = self._clock()
             self._emit_self_audit(report)
@@ -118,7 +112,6 @@ class CostSummaryRollup:
             try:
                 self._upsert(create)
                 report.rows_written += 1
-            except Exception as exc:  # noqa: BLE001
                 report.errors.append(
                     f"upsert {create.tenant_id}/{create.provider}: {exc!r}"
                 )
@@ -126,14 +119,12 @@ class CostSummaryRollup:
         if not report.errors:
             try:
                 self._counter_resetter()
-            except Exception as exc:  # noqa: BLE001
                 report.errors.append(f"counter_reset: {exc!r}")
 
         report.finished_at = self._clock()
         self._emit_self_audit(report)
         return report
 
-    def _emit_self_audit(self, report: CostSummaryPassReport) -> None:
         if self._audit_emit is None:
             return
         payload = {
@@ -152,7 +143,6 @@ class CostSummaryRollup:
         }
         try:
             self._audit_emit(payload)
-        except Exception:  # noqa: BLE001
             logger.warning(
                 "CostSummaryRollup audit_emit failed for %s/%s",
                 report.period,
@@ -161,8 +151,6 @@ class CostSummaryRollup:
             )
 
 
-@dataclass
-class _CachedRow:
     """In-memory view of a persisted summary row for the current bucket."""
 
     id: str
@@ -170,10 +158,6 @@ class _CachedRow:
     count: int
 
 
-def _make_default_upsert(
-    model_registry: Any,
-    requester_id: str,
-) -> Callable[[CostSummaryModel.Create], str]:
     """Build an upsert callable that finds-or-creates a CostSummaryModel
     row keyed by (tenant_id, provider, ability, period, period_key).
 
@@ -195,10 +179,8 @@ def _make_default_upsert(
     loaded_bucket: Optional[tuple[str, str]] = None
     rows_by_key: Dict[tuple[str, str, str], _CachedRow] = {}
 
-    def _load_bucket(period: str, period_key: str) -> None:
         nonlocal loaded_bucket, rows_by_key
         existing = DB.list(
-            requester_id=requester_id,
             model_registry=model_registry,
             filters=[
                 DB.period == period,
@@ -217,7 +199,6 @@ def _make_default_upsert(
         }
         loaded_bucket = (period, period_key)
 
-    def upsert(create: CostSummaryModel.Create) -> str:
         bucket = (create.period, create.period_key)
         if loaded_bucket != bucket:
             _load_bucket(create.period, create.period_key)
@@ -228,7 +209,6 @@ def _make_default_upsert(
             new_total = cached.total + create.total_cost_usd
             new_count = cached.count + int(create.call_count)
             DB.update(
-                requester_id=requester_id,
                 model_registry=model_registry,
                 new_properties={
                     "total_cost_usd": new_total,
@@ -244,7 +224,6 @@ def _make_default_upsert(
             return cached.id
 
         created = DB.create(
-            requester_id=requester_id,
             model_registry=model_registry,
             tenant_id=create.tenant_id,
             provider=create.provider,
@@ -267,22 +246,6 @@ def _make_default_upsert(
     return upsert
 
 
-def make_cost_summary_scheduled_service(
-    *,
-    service_id: str,
-    interval_seconds: int = 24 * 60 * 60,
-    model_registry: Optional[Any] = None,
-    requester_id: str = "system",
-    period: str = "day",
-    upsert_summary: Optional[Callable[[CostSummaryModel.Create], str]] = None,
-    counter_provider: Optional[Callable[[], Dict[Any, Decimal]]] = None,
-    counter_resetter: Optional[Callable[[], None]] = None,
-    clock: Optional[Callable[[], datetime]] = None,
-    audit_emit_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    state_store: Optional[Callable[..., Any]] = None,
-    cron_expression: Optional[str] = None,
-    cron_evaluator: Optional[Callable[..., Any]] = None,
-):
     """Wrap :class:`CostSummaryRollup` in a :class:`ScheduledService`.
 
     By default, reads from ``RotationManager.get_cost_counter()`` and
@@ -319,12 +282,10 @@ def make_cost_summary_scheduled_service(
         rollup_kwargs["clock"] = clock
     inner = CostSummaryRollup(**rollup_kwargs)
 
-    class _CostSummaryScheduled(ScheduledService):
         async def update(self) -> None:
             inner.run_pass()
 
     svc = _CostSummaryScheduled(
-        requester_id=requester_id,
         service_id=service_id,
         interval_seconds=interval_seconds,
         cron_expression=cron_expression,

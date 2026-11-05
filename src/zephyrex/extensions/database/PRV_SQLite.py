@@ -24,7 +24,6 @@ SQLITE_CHAT_GUIDANCE = """To implement natural language querying, you would need
 For now, please convert your request to SQL manually and use the execute_sql method."""
 
 
-class PRV_SQLite(AbstractDatabaseProvider):
     """
     SQLite database provider implementation.
     Static/abstract provider compatible with Provider Rotation System.
@@ -87,8 +86,6 @@ class PRV_SQLite(AbstractDatabaseProvider):
         connection = cls._get_connection(cls.bond_instance(instance).config)
         return cls.run_sql(connection, query)
 
-    @classmethod
-    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Get the schema of the SQLite database."""
         connection = cls._get_connection(cls.bond_instance(instance).config)
         schemas: List[str] = []
@@ -97,20 +94,17 @@ class PRV_SQLite(AbstractDatabaseProvider):
         try:
             cursor = connection.cursor()
             # Tables, excluding SQLite's internal ones.
-            cursor.execute(
                 "SELECT name, sql FROM sqlite_master "
                 "WHERE type='table' AND name NOT LIKE 'sqlite_%';"
             )
             for table_name, create_table_sql in cursor.fetchall():
                 if create_table_sql:
                     schemas.append(f"{create_table_sql};")
-                cursor.execute(f"PRAGMA foreign_key_list('{table_name}');")
                 for fk in cursor.fetchall():
                     key_relations.append(
                         f"-- {table_name}.{fk['from']} can be joined with "
                         f"{fk['table']}.{fk['to']}"
                     )
-            cursor.execute(
                 "SELECT sql FROM sqlite_master "
                 "WHERE type='index' AND name NOT LIKE 'sqlite_%';"
             )
@@ -133,8 +127,6 @@ class PRV_SQLite(AbstractDatabaseProvider):
             instance, request, SQLITE_CHAT_GUIDANCE, **kwargs
         )
 
-    @classmethod
-    def validate_config(cls) -> List[str]:
         """Validate the environment-configured SQLite database file."""
         database_file = cls.connection_config(None)["database_file"]
         if not database_file:

@@ -30,7 +30,6 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_TTL = 300
 
 
-class ValkeyEntityCache:
     """Per-entity-type read-through cache with write-through invalidation."""
 
     def __init__(self, client: Any, default_ttl: int = _DEFAULT_TTL) -> None:

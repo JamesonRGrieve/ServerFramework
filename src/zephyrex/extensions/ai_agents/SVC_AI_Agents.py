@@ -42,7 +42,6 @@ def as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
-class InvocationMonitorService(AbstractService):
     """Fires due triggers, as ``requester_id`` (ROOT, to see every agent's);
     each turn acts as its agent's owner."""
 
@@ -77,7 +76,6 @@ class InvocationMonitorService(AbstractService):
             requester_id=self.requester_id, model_registry=self.model_registry
         )
 
-    async def update(self) -> None:
         """Fire every due trigger this worker owns, most urgent first."""
         now = datetime.now(timezone.utc)
         due = [
@@ -97,7 +95,6 @@ class InvocationMonitorService(AbstractService):
                     "Disabling invocation trigger %s: %s", trigger.id, refused.detail
                 )
                 self._triggers().update(id=trigger.id, enabled=False)
-            except Exception:  # one trigger's failure must not stop the sweep
                 logger.exception("Failed firing invocation trigger %s", trigger.id)
                 # Not retried every poll: it next fires when it is next due.
                 self._triggers().update(

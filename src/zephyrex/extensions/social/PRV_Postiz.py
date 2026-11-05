@@ -52,7 +52,6 @@ def postiz_post_id(answer: Any) -> str:
     return ""
 
 
-class PRV_Postiz_Social(AbstractSocialProvider):
     name: ClassVar[str] = "postiz"
     friendly_name: ClassVar[str] = "Postiz"
     description: ClassVar[str] = "A channel connected in a Postiz workspace"

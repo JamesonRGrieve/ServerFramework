@@ -41,7 +41,6 @@ DEFAULT_DRAIN_PERIOD_SECONDS: float = 30.0
 RestartPolicy = Literal["always", "on_failure", "never"]
 
 
-class HealthStatus:
     """A simple structured health-status value for AbstractService.health().
 
     Three states map naturally to the rotation system's HealthStatus from
@@ -75,7 +74,6 @@ class HealthStatus:
         }
 
 
-class AbstractService(ABC):
     """
     Abstract base class for all service components.
 
@@ -90,16 +88,6 @@ class AbstractService(ABC):
     - Lifecycle management (start, stop, pause)
     """
 
-    def __init__(
-        self,
-        requester_id: str,
-        db: Optional[Session] = None,
-        interval_seconds: int = 60,
-        max_failures: int = 3,
-        retry_delay_seconds: int = 5,
-        service_id: Optional[str] = None,
-        **kwargs,
-    ):
         """
         Initialize the service.
 
@@ -112,7 +100,6 @@ class AbstractService(ABC):
             service_id: Optional unique identifier for the service instance. Auto-generated if None.
             **kwargs: Additional service-specific parameters
         """
-        self.requester_id = requester_id
         self._db = db
         self._close_db_on_exit = db is None
         self.interval_seconds = interval_seconds
@@ -144,15 +131,12 @@ class AbstractService(ABC):
         """
         pass
 
-    @property
-    def db(self) -> Session:
         """Property that returns an active database session, creating a new one if needed."""
         if self._db is None or not self._db.is_active:
             self._db = self.db_manager.get_session()  # type: ignore[union-attr]
             self._close_db_on_exit = True
         return self._db
 
-    def start(self) -> None:
         """Start the service running in the background."""
         if self.running:
             logger.debug(
@@ -169,7 +153,6 @@ class AbstractService(ABC):
         self.running = False
         logger.debug(f"Stopped {self.__class__.__name__} ({self.service_id})")
 
-    def pause(self) -> None:
         """Pause the service temporarily."""
         if not self.running:
             logger.warning(
@@ -180,7 +163,6 @@ class AbstractService(ABC):
         self.paused = True
         logger.debug(f"Paused {self.__class__.__name__} ({self.service_id})")
 
-    def resume(self) -> None:
         """Resume a paused service."""
         if not self.running:
             logger.warning(
@@ -197,7 +179,6 @@ class AbstractService(ABC):
         self.paused = False
         logger.debug(f"Resumed {self.__class__.__name__} ({self.service_id})")
 
-    def _handle_failure(self, error: Exception) -> bool:
         """
         Handle a failure and determine if retrying is appropriate.
 
@@ -243,7 +224,6 @@ class AbstractService(ABC):
         self._failed_reason = None
         self.failures = 0
 
-    def health(self) -> HealthStatus:
         """Return a structured health status for the service.
 
         Default mapping:
@@ -270,14 +250,12 @@ class AbstractService(ABC):
         """Reset the failure counter after a successful execution."""
         self.failures = 0
 
-    async def run_service_loop(self) -> None:
         """
         Main service loop that runs update() at the configured interval.
         This method should be called from an event loop.
         """
         while self.running:
             try:
-                current_time = time.time()
 
                 # Skip if paused
                 if self.paused:
@@ -299,7 +277,6 @@ class AbstractService(ABC):
                 # Reset failure counter after successful execution
                 self._reset_failures()
 
-            except Exception as e:
                 retry = self._handle_failure(e)
                 if retry:
                     # Wait before retrying
@@ -323,7 +300,6 @@ class AbstractService(ABC):
         logger.debug(f"Cleaning up {self.__class__.__name__} ({self.service_id})")
         self.stop()
 
-    def __del__(self):
         """Clean up resources when the service is destroyed"""
         self.cleanup()
         if hasattr(self, "_db") and self._db is not None and self._close_db_on_exit:
@@ -331,7 +307,6 @@ class AbstractService(ABC):
             self._db = None
 
 
-class ServiceRegistry:
     """
     Registry for managing service instances.
 
@@ -395,38 +370,29 @@ class ServiceRegistry:
         """
         return list(cls._services.keys())
 
-    @classmethod
-    def start_all(cls) -> None:
         """Start all registered services."""
         for service_id, service in cls._services.items():
             try:
                 service.start()
                 # Logging now happens within service.start()
-            except Exception as e:
                 logger.error(
                     f"Failed to start service {service_id} ({service.__class__.__name__}): {e}"
                 )
 
-    @classmethod
-    def stop_all(cls) -> None:
         """Stop all registered services."""
         for service_id, service in cls._services.items():
             try:
                 service.stop()
                 # Logging now happens within service.stop()
-            except Exception as e:
                 logger.error(
                     f"Failed to stop service {service_id} ({service.__class__.__name__}): {e}"
                 )
 
-    @classmethod
-    def cleanup_all(cls) -> None:
         """Clean up all registered services."""
         for service_id in list(cls._services.keys()):
             try:
                 cls.unregister(service_id)
                 # Logging happens within unregister/cleanup
-            except Exception as e:
                 logger.error(f"Failed to cleanup/unregister service {service_id}: {e}")
         logger.debug("All services cleaned up")
 
@@ -436,7 +402,6 @@ class ServiceRegistry:
 # ---------------------------------------------------------------------------
 
 
-class PerpetualService(AbstractService):
     """Alias for the existing :class:`AbstractService` perpetual-loop semantics.
 
     Default flavor; provided so callers can be explicit at declaration time:
@@ -451,7 +416,6 @@ class PerpetualService(AbstractService):
 # ----- Scheduled --------------------------------------------------------------
 
 
-class ScheduledService(AbstractService):
     """Cron-or-interval scheduled execution.
 
     Accepts either ``cron_expression`` or the existing ``interval_seconds``.
@@ -485,17 +449,14 @@ class ScheduledService(AbstractService):
                     f"ScheduledService {self.service_id}: state_store load failed: {e}"
                 )
 
-    def _persist_last_run(self) -> None:
         if self._state_store is None:
             return
         try:
             self._state_store(self.service_id, value=self.last_run_at)
-        except Exception as e:  # noqa: BLE001
             logger.warning(
                 f"ScheduledService {self.service_id}: state_store save failed: {e}"
             )
 
-    def _next_due(self, now: datetime) -> datetime:
         if self.cron_expression and self._cron_evaluator is not None:
             return self._cron_evaluator(self.cron_expression, self.last_run_at)
         # Fallback to interval semantics.
@@ -504,7 +465,6 @@ class ScheduledService(AbstractService):
             base.timestamp() + self.interval_seconds, tz=timezone.utc
         )
 
-    async def run_service_loop(self) -> None:
         while self.running:
             try:
                 if self.paused:
@@ -524,7 +484,6 @@ class ScheduledService(AbstractService):
                 # Always yield to the event loop so external stop() calls
                 # are observable even when ``interval_seconds == 0``.
                 await asyncio.sleep(0)
-            except Exception as e:  # noqa: BLE001
                 retry = self._handle_failure(e)
                 if retry:
                     await asyncio.sleep(self.retry_delay_seconds)
@@ -535,13 +494,11 @@ class ScheduledService(AbstractService):
 # ----- QueueConsumer ----------------------------------------------------------
 
 
-class JobPriority(str, Enum):
     HIGH = "high"
     NORMAL = "normal"
     LOW = "low"
 
 
-class QueueSource(ABC):
     """Abstract pull-model queue source."""
 
     @abstractmethod
@@ -563,7 +520,6 @@ class QueueSource(ABC):
         return JobPriority.NORMAL
 
 
-class InMemoryQueueSource(QueueSource):
     """A FIFO in-memory queue, intended for tests and dev."""
 
     def __init__(self) -> None:
@@ -575,7 +531,6 @@ class InMemoryQueueSource(QueueSource):
     def push(self, item: dict) -> None:
         self._items.append(item)
 
-    async def pull_one(self) -> Optional[dict]:
         if not self._items:
             return None
         return self._items.popleft()
@@ -592,7 +547,6 @@ class InMemoryQueueSource(QueueSource):
         self.dlq.append({"item": item, "reason": reason})
 
 
-class QueueConsumerService(AbstractService):
     """Pulls from a :class:`QueueSource` with backoff and DLQ handling.
 
     Override :meth:`process` to do per-item work. Failures are retried up to
@@ -612,7 +566,6 @@ class QueueConsumerService(AbstractService):
         self.max_retries = max_retries
         self._attempts: Dict[str, int] = {}
 
-    async def pull_one(self) -> Optional[dict]:
         if self.queue_source is None:
             return None
         return await self.queue_source.pull_one()
@@ -624,7 +577,6 @@ class QueueConsumerService(AbstractService):
         # Prefer an explicit id; fall back to a stable repr.
         return str(item.get("id") or id(item))
 
-    async def update(self) -> None:
         item = await self.pull_one()
         if item is None:
             return
@@ -634,7 +586,6 @@ class QueueConsumerService(AbstractService):
             if self.queue_source is not None:
                 await self.queue_source.ack(item)
             self._attempts.pop(key, None)
-        except Exception as e:  # noqa: BLE001
             attempts = self._attempts.get(key, 0) + 1
             self._attempts[key] = attempts
             if attempts > self.max_retries:
@@ -657,7 +608,6 @@ class QueueConsumerService(AbstractService):
 # ----- FairQueueConsumer ------------------------------------------------------
 
 
-class FairQueueConsumerService(QueueConsumerService):
     """QueueConsumer with strict-priority lanes and per-tenant fair round-robin.
 
     On each ``update()``: drains up to ``batch_size`` items from the source and
@@ -693,7 +643,6 @@ class FairQueueConsumerService(QueueConsumerService):
             lane: 0 for lane in self._LANE_ORDER
         }
 
-    async def handler(self, item: Any) -> None:
         if self._handler is not None:
             result = self._handler(item)
             if asyncio.iscoroutine(result):
@@ -701,7 +650,6 @@ class FairQueueConsumerService(QueueConsumerService):
             return
         await self.process(item)
 
-    async def _drain_into_partitions(self) -> None:
         if self.queue_source is None:
             return
         for _ in range(self.batch_size):
@@ -711,10 +659,8 @@ class FairQueueConsumerService(QueueConsumerService):
             lane = self.queue_source.priority(item)
             tenant = self.queue_source.tenant_key(item)
             self._partitions[lane].setdefault(tenant, deque()).append(
-                (item, time.time())
             )
 
-    def _select_next(self) -> Optional[Tuple[JobPriority, str, Any, float]]:
         for lane in self._LANE_ORDER:
             tenants_map = self._partitions[lane]
             tenants = [t for t, q in tenants_map.items() if q]
@@ -741,7 +687,6 @@ class FairQueueConsumerService(QueueConsumerService):
         cls._drain_counter = {}
         cls._wait_summary = {}
 
-    def _record_metrics(self, lane: JobPriority, tenant: str, wait: float) -> None:
         key = (tenant, lane.value)
         cls = type(self)
         cls._drain_counter[key] = cls._drain_counter.get(key, 0) + 1
@@ -759,13 +704,11 @@ class FairQueueConsumerService(QueueConsumerService):
             summary["count"] = summary["count"] + 1
             summary["sum"] = summary["sum"] + wait
 
-    async def update(self) -> None:
         await self._drain_into_partitions()
         selected = self._select_next()
         if selected is None:
             return
         lane, tenant, item, enqueued_at = selected
-        wait = max(0.0, time.time() - enqueued_at)
         key = self._item_key(item) if isinstance(item, dict) else str(id(item))
         try:
             await self.handler(item)
@@ -773,7 +716,6 @@ class FairQueueConsumerService(QueueConsumerService):
                 await self.queue_source.ack(item)
             self._attempts.pop(key, None)
             self._record_metrics(lane, tenant, wait)
-        except Exception as e:  # noqa: BLE001
             attempts = self._attempts.get(key, 0) + 1
             self._attempts[key] = attempts
             if attempts > self.max_retries:
@@ -818,7 +760,6 @@ StreamingHandlerKey = Tuple[str, str, Optional[str]]
 STREAMING_HANDLER_REGISTRY: Dict[StreamingHandlerKey, Callable[..., Any]] = {}
 
 
-class StreamingMessageContext:
     """Payload delivered to a ``@streaming_handler``-tagged callable.
 
     Mirrors :class:`extensions.webhooks.WebhookContext` so a Stripe event
@@ -856,11 +797,6 @@ class StreamingMessageContext:
         self.service_id = service_id
 
 
-def streaming_handler(
-    extension_class_or_name: Any,
-    provider: str,
-    event: Optional[str] = None,
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a handler for ``(extension, provider, event)`` streaming events.
 
     ``extension_class_or_name`` accepts either an extension class (the
@@ -887,7 +823,6 @@ def streaming_handler(
             extension_name = cls_name.lower()
     provider_norm = provider.lower()
 
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         key = (extension_name, provider_norm, event)
         if key in STREAMING_HANDLER_REGISTRY:
             logger.warning(
@@ -912,7 +847,6 @@ def _lookup_streaming_handler(
     return STREAMING_HANDLER_REGISTRY.get((extension, provider, None))
 
 
-class StreamingService(AbstractService):
     """Long-lived connection-oriented work.
 
     Lifecycle: ``connect() -> on_message(message) -> disconnect()``. Reconnection
@@ -1004,14 +938,6 @@ class StreamingService(AbstractService):
             cursor=cursor,
         )
 
-    async def fan_out(
-        self,
-        *,
-        payload: Any,
-        event_name: Optional[str],
-        headers: Optional[Dict[str, str]] = None,
-        cursor: Optional[str] = None,
-    ) -> None:
         """Dispatch a classified event into the streaming handler registry.
 
         Resolves the handler keyed by ``(extension_name, provider_name,
@@ -1054,17 +980,14 @@ class StreamingService(AbstractService):
         if self._event_bus is not None and hasattr(self._event_bus, "publish"):
             try:
                 await self._event_bus.publish(payload)
-            except Exception as e:  # noqa: BLE001
                 logger.warning(
                     f"StreamingService {self.service_id}: event_bus publish failed: {e}"
                 )
 
-    def _persist_cursor(self) -> None:
         if self._state_store is None:
             return
         try:
             self._state_store(self.service_id, value=self.cursor)
-        except Exception as e:  # noqa: BLE001
             logger.warning(
                 f"StreamingService {self.service_id}: state_store save failed: {e}"
             )
@@ -1074,7 +997,6 @@ class StreamingService(AbstractService):
         # the abstract contract from AbstractService.
         return None
 
-    async def stop_and_drain(self) -> None:
         """Awaitable graceful shutdown: stop, drain, return.
 
         Sets ``running=False`` so the loop exits its iteration, then waits
@@ -1094,7 +1016,6 @@ class StreamingService(AbstractService):
             if self._inflight is not None and not self._inflight.done():
                 self._inflight.cancel()
 
-    async def run_service_loop(self) -> None:
         attempt = 0
         while self.running:
             if self.paused:
@@ -1116,7 +1037,6 @@ class StreamingService(AbstractService):
                         self._inflight = asyncio.ensure_future(self.on_message(message))
                         try:
                             await self._inflight
-                        except Exception as e:  # noqa: BLE001
                             logger.error(
                                 f"StreamingService {self.service_id} on_message"
                                 f" error: {e}"
@@ -1127,11 +1047,9 @@ class StreamingService(AbstractService):
                 finally:
                     try:
                         await self.disconnect()
-                    except Exception as e:  # noqa: BLE001
                         logger.warning(
                             f"StreamingService {self.service_id} disconnect error: {e}"
                         )
-            except Exception as e:  # noqa: BLE001
                 if not self._handle_failure(e):
                     break
                 attempt += 1
@@ -1140,17 +1058,14 @@ class StreamingService(AbstractService):
                     self.reconnect_initial_seconds * (2 ** (attempt - 1)),
                 )
                 # Jitter: +/- 25%.
-                backoff = backoff * (0.75 + random.random() * 0.5)
                 await asyncio.sleep(backoff)
 
 
-class ConsumerStreamingService(StreamingService):
     """Long-lived inbound connections: websocket subscribers, SSE listeners, etc."""
 
     pass
 
 
-class ProducerStreamingService(StreamingService):
     """Long-lived outbound streams that we write to."""
 
     pass

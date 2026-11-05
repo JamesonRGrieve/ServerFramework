@@ -74,19 +74,12 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _not_signed_in() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not signed in at the forward-auth service",
     )
 
 
-class ForwardAuthIdentityModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference,
-    metaclass=ModelMeta,
-):
     """An identity a forward-auth verifier vouches for, signing in as a user."""
 
     provider_instance_id: str = Field(
@@ -101,11 +94,9 @@ class ForwardAuthIdentityModel(
 
     table_comment: ClassVar[str] = "Forward-auth identities linked to local users"
 
-    class Create(BaseModel, UserModel.Reference.ID):
         provider_instance_id: str
         identity: str
 
-    class Update(BaseModel):
         last_login_at: Optional[datetime] = Field(
             None, description="Set by sign-in only"
         )
@@ -120,7 +111,6 @@ class ForwardAuthIdentityModel(
         last_login_at: Optional[DateSearchModel] = None
 
 
-class ForwardAuthLoginResponse(RouteModel):
     """The password-login response (``user``, ``token``, ``preferences``,
     ``teams``, ``session_key``) for the verified identity's user or, for a
     user with a verified second factor, the MFA challenge to complete at
@@ -141,7 +131,6 @@ class ForwardAuthLoginResponse(RouteModel):
     methods: Optional[List[Dict[str, str]]] = None
 
 
-class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
     """A user's forward-auth identities (read and unlink), and the sign-in."""
 
     _model = ForwardAuthIdentityModel
@@ -158,7 +147,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
         RouteType.DELETE,
     ]
 
-    def create(self, **kwargs: Any) -> Any:
         """Link an identity to a user: ROOT and SYSTEM only. The link is
         written as its user, so they can see and remove it."""
         if not server_side(str(self.requester.id)):
@@ -190,7 +178,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
             )
         return self._link(instance_id, identity, user_id)
 
-    def update(self, id: str, **kwargs: Any) -> Any:
         """Only sign-in stamps a link (its ``last_login_at``); a link never
         moves to another identity or user."""
         if not server_side(self.requester.id) or set(kwargs) - {"last_login_at"}:
@@ -200,9 +187,7 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
             )
         return super().update(id, **kwargs)
 
-    def _link(self, instance_id: str, identity: str, user_id: str) -> Any:
         return self.DB.create(
-            requester_id=user_id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(ForwardAuthIdentityModel),
@@ -211,27 +196,21 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
             user_id=user_id,
         )
 
-    def linked(self, instance_id: str, identity: str) -> Optional[Any]:
         """The live link for ``identity`` under the instance (exact match)."""
         links = self.DB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=ForwardAuthIdentityModel,
             filters=[
                 self.DB.provider_instance_id == instance_id,
                 self.DB.identity == identity,
-                self.DB.deleted_at.is_(None),
             ],
         )
         return links[0] if links else None
 
-    def _users(self, **filters: Any) -> List[Dict[str, Any]]:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         users: List[Dict[str, Any]] = UserDB.list(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
-            filters=[UserDB.deleted_at.is_(None)]
             + [getattr(UserDB, key) == value for key, value in filters.items()],
         )
         return users
@@ -246,24 +225,19 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
 
     # -- the verifiers ------------------------------------------------------
 
-    def _verifier_rows(self) -> List[ProviderInstanceModel]:
         """The live verifier instances an operator owns, oldest first. An
         instance a user or team created is never trusted: its verifier
         would let them vouch for anyone."""
-        root_id = env("ROOT_ID")
         provider = ProviderManager(
-            model_registry=self.model_registry, requester_id=root_id
         ).get(name=PRV_ForwardAuthVerifier.name)
         # ROOT's reads include deleted rows; a deleted instance is gone.
         InstanceDB = ProviderInstanceModel.DB(self.model_registry.DB.manager.Base)
         rows: List[ProviderInstanceModel] = InstanceDB.list(
-            requester_id=root_id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=ProviderInstanceModel,
             filters=[
                 InstanceDB.provider_id == provider.id,
-                InstanceDB.deleted_at.is_(None),
             ],
         )
         return sorted(
@@ -277,7 +251,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
             key=lambda row: row.created_at or _now(),
         )
 
-    def trusted_verifier(self, name: Optional[str]) -> Tuple[str, Verifier]:
         """The enabled, configured operator verifier named ``name``, or the
         only one when no name is given: its instance id and its verifier.
         503 when none is usable; 400 when a choice is needed; 404 for a
@@ -315,9 +288,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
                 detail="Forward-auth sign-in is misconfigured",
             ) from None
 
-    async def verified(
-        self, verifier: Verifier, original: OriginalRequest
-    ) -> VerifiedIdentity:
         """Who ``verifier`` says sent ``original``: 401 when it denies, or
         when the browser sent none of the credentials it reads; 502 when it
         fails (fail closed)."""
@@ -343,9 +313,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
 
     # -- the account ----------------------------------------------------------
 
-    def _registered(
-        self, verified: VerifiedIdentity, email: Optional[str]
-    ) -> Dict[str, Any]:
         """A new account for ``verified``, as REGISTRATION_MODE allows.
         ``email`` is one the verifier vouches for, or None."""
         # Read through the module: the settings snapshot is replaced when
@@ -367,7 +334,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
                     detail="User registration requires an invitation",
                 )
         created = UserModel.DB(self.model_registry.DB.manager.Base).create(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(UserModel),
@@ -385,9 +351,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
         )
         return self._user(str(created.id))
 
-    def resolve_user(
-        self, instance_id: str, verifier: Verifier, verified: VerifiedIdentity
-    ) -> Dict[str, Any]:
         """The active local user ``verified`` signs in as, linked (or
         created) on first sign-in."""
         link = self.linked(instance_id, verified.identity)
@@ -409,7 +372,6 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
                 status_code=status.HTTP_403_FORBIDDEN, detail="The account is disabled"
             )
         self.DB.update(
-            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=link.id,
             new_properties={"last_login_at": _now()},

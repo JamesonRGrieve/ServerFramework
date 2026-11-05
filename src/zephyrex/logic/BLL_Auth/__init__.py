@@ -95,11 +95,9 @@ _EXTRACTED = {
 }
 
 
-def __getattr__(name: str):  # PEP 562 — lazy module-level attribute access
     if name in _EXTRACTED:
         ext, module = _EXTRACTED[name]
         try:
-            mod = __import__(
                 f"zephyrex.extensions.{ext}.{module}",
                 fromlist=[name],
             )
