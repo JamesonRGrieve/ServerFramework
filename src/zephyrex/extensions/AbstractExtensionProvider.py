@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from time import monotonic
 from types import ModuleType
+import inspect
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
 
 from fastapi import HTTPException, status
@@ -111,6 +112,35 @@ def ability(name: Optional[str] = None, enabled: bool = True) -> Callable:
         return method
 
     return decorator
+
+
+def loaded_ability(
+    model_registry: Any, extension_name: str, ability_name: str
+) -> Optional[Callable[..., Any]]:
+    """The ability ``ability_name`` of the loaded extension ``extension_name``:
+    a ``@classmethod`` marked ``@ability`` on its extension class, or None when
+    that extension isn't loaded in the app or has no such ability.
+
+    How one extension calls another's ability without importing it, so a
+    product composed with another reaches it only through what that one
+    offers. An ability acts for a user through its ``requester_id``; the
+    caller passes whose permissions it uses."""
+    registry = getattr(model_registry, "extension_registry", None)
+    if registry is None:
+        return None
+    for extension in registry.extensions:
+        if extension.name != extension_name:
+            continue
+        # Read statically: getattr on every attribute would run the
+        # extension's classproperties.
+        for attribute, member in inspect.getmembers_static(extension):
+            if not isinstance(member, classmethod):
+                continue
+            info = getattr(member.__func__, "_ability_info", None)
+            if info and info.get("name") == ability_name:
+                method: Callable[..., Any] = getattr(extension, attribute)
+                return method
+    return None
 
 
 class ExtensionRegistry(AbstractRegistry):

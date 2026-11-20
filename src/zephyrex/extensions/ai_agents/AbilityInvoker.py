@@ -31,6 +31,7 @@ from typing import (
 from fastapi import HTTPException
 
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import IN_AGENT_ABILITY, AbilityGrant
+from zephyrex.extensions.AbstractExtensionProvider import loaded_ability
 from zephyrex.extensions.ExternalErrors import BaseExternalError
 
 # Parameters of an ability's calling convention, never the model's to fill.
@@ -153,22 +154,7 @@ class AbilityInvoker:
     def resolve(self, grant: AbilityGrant) -> Optional[Callable[..., Any]]:
         """The extension's ability method the grant names, or None when the
         extension is not loaded or has no such static ability."""
-        registry = getattr(self.model_registry, "extension_registry", None)
-        if registry is None:
-            return None
-        for extension in registry.extensions:
-            if extension.name != grant.extension:
-                continue
-            # Read statically: getattr on every attribute would run the
-            # extension's classproperties.
-            for attribute, member in inspect.getmembers_static(extension):
-                if not isinstance(member, classmethod):
-                    continue
-                info = getattr(member.__func__, "_ability_info", None)
-                if info and info.get("name") == grant.name:
-                    method: Callable[..., Any] = getattr(extension, attribute)
-                    return method
-        return None
+        return loaded_ability(self.model_registry, grant.extension, grant.name)
 
     def build_tools(self, allowed: Mapping[str, AbilityGrant]) -> List[Dict[str, Any]]:
         """Schemas for the granted tools the agent may use and that resolve."""
