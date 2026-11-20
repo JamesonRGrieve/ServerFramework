@@ -13,17 +13,36 @@ caller. Agent messages carry no author and are posted only through
 message; an author or the conversation's owner deletes it. Feedback is
 likewise its author's. Only the owner deletes a conversation; the owner
 removes anyone, and a participant may leave.
+
+A conversation can be followed live (``GET /v1/conversation/{id}/events``):
+whoever can read it receives each change to it as a server-sent event, naming
+what changed and never its content (``{"type": "message.created", "id": ...}``),
+so every message is still read over REST under its own access. Every write
+publishes, REST, GraphQL and abilities alike, through the framework's event
+bus, so a broker-backed bus carries the events across server processes; an
+extension keeping its own records for a conversation announces their changes
+on the same feed (``announce``). A
+participant who is removed, or a conversation deleted, ends the streams it
+closes.
 """
 
+import asyncio
+import json
+import threading
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Dict, List, Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel as RouteModel
 from pydantic import Field, model_validator
 
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
+from zephyrex.lib.EventStream import event_stream
+from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import expect_route_record
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -41,11 +60,200 @@ from zephyrex.logic.AbstractLogicManager.ownership import (
     server_side,
 )
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
+from zephyrex.logic.EventBus import get_event_bus
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.pydantic2.registry import BaseModel
 
 MAX_THREAD_DEPTH = 10
 MAX_THREAD_MESSAGES = 1000
+
+# The live feed's event types.
+MESSAGE_CREATED = "message.created"
+MESSAGE_UPDATED = "message.updated"
+MESSAGE_DELETED = "message.deleted"
+PARTICIPANT_REMOVED = "participant.removed"
+CONVERSATION_DELETED = "conversation.deleted"
+# How often an idle feed sends a comment, so proxies keep it open and a
+# vanished client is noticed.
+FEED_KEEPALIVE_SECONDS = 15.0
+# How many undelivered events one stream may queue before it is closed as too
+# slow to keep up (the client reconnects and reads what it missed over REST).
+FEED_QUEUE_SIZE = 256
+
+
+class ConversationEvent(RouteModel):
+    """A change in a conversation, as it crosses the event bus: what changed
+    and its id, never its content."""
+
+    conversation_id: str
+    type: str
+    id: str
+
+
+@dataclass
+class _Listener:
+    user_id: str
+    queue: "asyncio.Queue[Optional[str]]"
+    loop: asyncio.AbstractEventLoop
+
+
+@dataclass
+class ConversationFeed:
+    """The feeds open in this process, keyed by conversation. Events reach it
+    through the event bus, which hands each to the conversation's streams."""
+
+    _listeners: Dict[str, List[_Listener]] = field(default_factory=dict)
+    _subscribed_bus: Any = None
+
+    def _ensure_bus_subscription(self) -> None:
+        bus = get_event_bus()
+        if self._subscribed_bus is not bus:
+            bus.subscribe(ConversationEvent, self.deliver)
+            self._subscribed_bus = bus
+
+    def join(
+        self, conversation_id: str, user_id: str
+    ) -> "asyncio.Queue[Optional[str]]":
+        self._ensure_bus_subscription()
+        queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue(maxsize=FEED_QUEUE_SIZE)
+        self._listeners.setdefault(conversation_id, []).append(
+            _Listener(user_id, queue, asyncio.get_running_loop())
+        )
+        return queue
+
+    def listening(self, conversation_id: str) -> List[str]:
+        """The users following the conversation in this process, one per stream."""
+        return [
+            listener.user_id for listener in self._listeners.get(conversation_id, [])
+        ]
+
+    def leave(
+        self, conversation_id: str, queue: "asyncio.Queue[Optional[str]]"
+    ) -> None:
+        listeners = self._listeners.get(conversation_id)
+        if listeners is None:
+            return
+        kept = [listener for listener in listeners if listener.queue is not queue]
+        if kept:
+            self._listeners[conversation_id] = kept
+        else:
+            del self._listeners[conversation_id]
+
+    def deliver(self, message: RouteModel) -> None:
+        """Hand a bus event to this process's streams on its conversation. A
+        broker-backed bus may hand over its own model of the payload."""
+        event = (
+            message
+            if isinstance(message, ConversationEvent)
+            else ConversationEvent.model_validate(message.model_dump())
+        )
+        frame = f"data: {json.dumps({'type': event.type, 'id': event.id})}\n\n"
+        for listener in list(self._listeners.get(event.conversation_id, [])):
+            ends = event.type == CONVERSATION_DELETED or (
+                event.type == PARTICIPANT_REMOVED and listener.user_id == event.id
+            )
+            try:
+                listener.loop.call_soon_threadsafe(
+                    self._offer, event.conversation_id, listener, frame, ends
+                )
+            except RuntimeError:
+                # The stream's loop has closed: it is gone.
+                self.leave(event.conversation_id, listener.queue)
+
+    def _offer(
+        self, conversation_id: str, listener: _Listener, frame: str, ends: bool
+    ) -> None:
+        if ends:
+            # A removed participant hears nothing more, not even why.
+            self.leave(conversation_id, listener.queue)
+            self._close(listener)
+            return
+        try:
+            listener.queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            logger.warning(
+                "conversations: closing a feed that fell %s events behind",
+                FEED_QUEUE_SIZE,
+            )
+            self.leave(conversation_id, listener.queue)
+            self._close(listener)
+
+    @staticmethod
+    def _close(listener: _Listener) -> None:
+        """Ends a stream: its close marker, making room for it if the queue is full."""
+        if listener.queue.full():
+            listener.queue.get_nowait()
+        listener.queue.put_nowait(None)
+
+
+FEED = ConversationFeed()
+
+
+class _Publisher:
+    """Publishes feed events from the synchronous managers on one loop and one
+    thread, so a conversation's events reach the bus in the order they happened."""
+
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._lock = threading.Lock()
+
+    def publish(self, event: ConversationEvent) -> None:
+        with self._lock:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                threading.Thread(
+                    target=self._loop.run_forever,
+                    name="conversation-feed",
+                    daemon=True,
+                ).start()
+            loop = self._loop
+        asyncio.run_coroutine_threadsafe(self._send(event), loop)
+
+    @staticmethod
+    async def _send(event: ConversationEvent) -> None:
+        try:
+            await get_event_bus().publish(event)
+        except Exception as error:
+            # A missed event costs a live update, never the write.
+            logger.warning(f"conversations: an event was not published: {error}")
+
+
+_PUBLISHER = _Publisher()
+
+
+def announce(conversation_id: str, type: str, id: str) -> None:
+    """Tell the conversation's followers that a record changed: ``type`` names
+    what changed (``message.created``, ...) and ``id`` which record. The
+    conversation's own messages and memberships announce themselves; an
+    extension that keeps its own records for a conversation (a game's chat
+    lines, say) announces theirs here, under its own type names, after the
+    write. Followers then read the record over that extension's API, under
+    its own access."""
+    _PUBLISHER.publish(
+        ConversationEvent(conversation_id=str(conversation_id), type=type, id=str(id))
+    )
+
+
+async def _follow(
+    request: Request, conversation_id: str, queue: "asyncio.Queue[Optional[str]]"
+) -> AsyncIterator[str]:
+    try:
+        yield ": connected\n\n"
+        while True:
+            try:
+                frame = await asyncio.wait_for(
+                    queue.get(), timeout=FEED_KEEPALIVE_SECONDS
+                )
+            except TimeoutError:
+                if await request.is_disconnected():
+                    return
+                yield ": keepalive\n\n"
+                continue
+            if frame is None:
+                return
+            yield frame
+    finally:
+        FEED.leave(conversation_id, queue)
 
 
 class ConversationModel(
@@ -196,6 +404,7 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
                 status_code=403, detail="Only the owner deletes a conversation"
             )
         super().delete(id)
+        announce(id, CONVERSATION_DELETED, id)
 
     def add_participant(
         self, conversation_id: str, user_id: str
@@ -246,6 +455,7 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
             with expect_route_record(self.conversation_users, membership.id):
                 root.delete_row(membership.id)
         _revoke(self.model_registry, conversation_id, user_id)
+        announce(conversation_id, PARTICIPANT_REMOVED, user_id)
 
     def get_participants(self, conversation_id: str) -> List[ConversationUserModel]:
         return self.conversation_users.list(conversation_id=conversation_id)
@@ -326,6 +536,24 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
         return DirectMessageResponse(
             **self.create_direct_message(body.other_user_id, body.initial_message)
         )
+
+    @custom_route(
+        method="GET",
+        path="/{conversation_id}/events",
+        authentication_type="jwt",
+        expose_in=(ExposeIn.REST,),
+        response_class=StreamingResponse,
+        openapi_tags=("Conversations",),
+        summary="Follow a conversation live: each change as a server-sent event, naming what changed (read it over REST)",
+    )
+    async def events_route(
+        self, request: Request, conversation_id: str
+    ) -> StreamingResponse:
+        # Only someone who can read the conversation follows it: anyone else
+        # gets the same 404 as for a conversation that doesn't exist.
+        self.get(id=conversation_id)
+        queue = FEED.join(conversation_id, str(self.requester.id))
+        return event_stream(_follow(request, conversation_id, queue))
 
 
 class ConversationUserManager(AbstractBLLManager, RouterMixin):
@@ -463,14 +691,20 @@ class MessageManager(AbstractBLLManager, RouterMixin):
         none). Agent replies to new messages are the ``ai_agents``
         extension's create hook."""
         authored = owned_by(self.requester.id, server_may_leave_unowned=True)
-        return super().create(**each_created(kwargs, authored))
+        result = super().create(**each_created(kwargs, authored))
+        for message in created_records(result):
+            announce(message.conversation_id, MESSAGE_CREATED, message.id)
+        return result
 
     def create_agent_message(self, **kwargs: Any) -> Any:
         """A message an agent posts, with no author, into a conversation
         the requester (the agent's user) can post in."""
         kwargs.pop("entities", None)
         kwargs["user_id"] = None
-        return super().create(**kwargs)
+        result = super().create(**kwargs)
+        for message in created_records(result):
+            announce(message.conversation_id, MESSAGE_CREATED, message.id)
+        return result
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """Only the author edits a message; an edit is stamped."""
@@ -482,13 +716,16 @@ class MessageManager(AbstractBLLManager, RouterMixin):
         kwargs.pop("edited_at", None)
         if "content" in kwargs:
             kwargs["edited_at"] = datetime.now(timezone.utc)
-        return super().update(id, **kwargs)
+        result = super().update(id, **kwargs)
+        announce(message.conversation_id, MESSAGE_UPDATED, id)
+        return result
 
     def delete(self, id: str) -> None:
         """The author or the conversation's owner deletes a message."""
         message = self.get(id=id)
         if server_side(self.requester.id) or message.user_id == self.requester.id:
             super().delete(id)
+            announce(message.conversation_id, MESSAGE_DELETED, id)
             return
         conversation = ConversationManager(
             requester_id=self.requester.id, model_registry=self.model_registry
