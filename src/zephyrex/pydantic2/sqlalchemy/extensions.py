@@ -17,6 +17,48 @@ _EXTENSION_REGISTRY_COMPAT = {}  # type: ignore[var-annotated]
 # undo in-place field additions that _apply_model_extension makes.
 _MODEL_SNAPSHOTS: Dict[str, dict] = {}
 
+# The validator kinds an extension carries onto its target (pydantic's
+# DecoratorInfos), and each mutated class's originals, keyed by the class,
+# so reset_extension_system() can restore them.
+_VALIDATOR_KINDS = (
+    "validators",
+    "field_validators",
+    "root_validators",
+    "model_validators",
+)
+_VALIDATOR_SNAPSHOTS: Dict[Type[BaseModel], Dict[str, dict]] = {}
+
+
+def _merge_validators(target: Type[BaseModel], extension: type) -> bool:
+    """Carry the extension's validators onto the target, which only gets its
+    fields and plain attributes otherwise: an injected field is then checked
+    as its extension declares (a ``field_validator`` or ``model_validator`` on
+    the extension's model, Create or Update), not stored unchecked.
+
+    Each is keyed by the extension's qualified name, so a target validator of
+    the same name is never replaced. Returns whether any was added; the target
+    must then be rebuilt, which is when pydantic reads them."""
+    source = getattr(extension, "__pydantic_decorators__", None)
+    dest = getattr(target, "__pydantic_decorators__", None)
+    if source is None or dest is None:
+        return False
+    if target not in _VALIDATOR_SNAPSHOTS:
+        _VALIDATOR_SNAPSHOTS[target] = {
+            kind: dict(getattr(dest, kind, {}) or {}) for kind in _VALIDATOR_KINDS
+        }
+    merged = False
+    for kind in _VALIDATOR_KINDS:
+        theirs = getattr(source, kind, None)
+        ours = getattr(dest, kind, None)
+        if not theirs or ours is None:
+            continue
+        for name, decorator in theirs.items():
+            key = f"{extension.__module__}.{extension.__qualname__}.{name}"
+            if key not in ours:
+                ours[key] = decorator
+                merged = True
+    return merged
+
 
 class RemoveField:
     """
@@ -274,8 +316,10 @@ def _apply_model_extension(
             setattr(target_model, attr_name, attr_value)
             added_attributes.append(attr_name)
 
+    validators_added = _merge_validators(target_model, extension_class)
+
     # CRITICAL: Properly integrate extension fields into Pydantic's model structure
-    if added_fields or removed_fields:
+    if added_fields or removed_fields or validators_added:
         try:
             # Update the model's internal structures that Pydantic uses for field access
 
@@ -402,6 +446,9 @@ def _apply_nested_model_extensions(
                     )
                     fields_modified = True
 
+            if _merge_validators(target_nested, extension_nested):
+                fields_modified = True
+
             if fields_modified and hasattr(target_nested, "model_rebuild"):
                 target_nested.model_rebuild(force=True)
 
@@ -440,6 +487,22 @@ def reset_extension_system() -> None:
     from zephyrex.lib.Logging import logger
 
     global _EXTENSION_REGISTRY_COMPAT, _MODEL_SNAPSHOTS
+
+    # Restore each mutated class's own validators, then rebuild it.
+    for model_cls, originals in _VALIDATOR_SNAPSHOTS.items():
+        decorators = getattr(model_cls, "__pydantic_decorators__", None)
+        if decorators is None:
+            continue
+        for kind, original in originals.items():
+            current = getattr(decorators, kind, None)
+            if current is not None:
+                current.clear()
+                current.update(original)
+        try:
+            model_cls.model_rebuild(force=True)
+        except Exception:
+            pass
+    _VALIDATOR_SNAPSHOTS.clear()
 
     # Restore mutated model classes to their pre-extension state
     for snap_key, snap in _MODEL_SNAPSHOTS.items():
