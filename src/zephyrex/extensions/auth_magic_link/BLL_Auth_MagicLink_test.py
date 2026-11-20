@@ -297,3 +297,54 @@ class TestMagicLink(ExtensionServerMixin):
         for older in captured_emails[:-1]:
             with pytest.raises(InvalidGrantError):
                 manager.verify_magic_link(token=older["raw_token"], email=admin_a.email)
+
+    # ------------------------------------------------------------------
+    # sign-up: the account is made when the link is clicked
+    # ------------------------------------------------------------------
+
+    def test_signup_link_creates_the_account_only_when_clicked(
+        self, model_registry, captured_emails, set_env
+    ):
+        set_env("REGISTRATION_MODE", "open")
+        manager = self._manager(model_registry)
+        email = f"newcomer-{datetime.now(timezone.utc).timestamp()}@example.com"
+
+        response = manager.request_magic_link(email=email, create=True)
+
+        assert response.status == "accepted"
+        assert [c["email"] for c in captured_emails] == [email]
+        # Nothing exists for the address until its owner clicks.
+        assert UserManager.user_id_for_verified_email(email, model_registry) is None
+
+        result = manager.verify_magic_link(token=captured_emails[0]["raw_token"])
+
+        created = UserManager.user_id_for_verified_email(email, model_registry)
+        assert created is not None
+        assert result.user_id == created
+        assert result.grant_type == "magic_link"
+        assert result.token
+
+    @pytest.mark.parametrize("mode", ["sso", "closed"])
+    def test_signup_link_is_not_sent_where_registration_is_shut(
+        self, model_registry, captured_emails, set_env, mode
+    ):
+        set_env("REGISTRATION_MODE", mode)
+        manager = self._manager(model_registry)
+
+        response = manager.request_magic_link(email="shut-out@example.com", create=True)
+
+        # The same answer as ever, and no email: nothing to enumerate.
+        assert response.status == "accepted"
+        assert captured_emails == []
+
+    def test_signup_for_an_existing_account_is_an_ordinary_sign_in(
+        self, model_registry, captured_emails, admin_a, set_env
+    ):
+        set_env("REGISTRATION_MODE", "open")
+        manager = self._manager(model_registry)
+
+        manager.request_magic_link(email=admin_a.email, create=True)
+
+        assert [c["email"] for c in captured_emails] == [admin_a.email]
+        result = manager.verify_magic_link(token=captured_emails[0]["raw_token"])
+        assert result.user_id == admin_a.id

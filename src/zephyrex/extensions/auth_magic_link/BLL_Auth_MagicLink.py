@@ -16,6 +16,7 @@ from fastapi import Response
 from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import custom_route
+from zephyrex.lib import Environment
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from zephyrex.lib.Logging import logger
@@ -35,6 +36,7 @@ from zephyrex.logic.BLL_Auth import (
     UserIdGrantPayload,
     UserManager,
     UserModel,
+    _invitation_hooks,
     make_user_id_grant_validator,
 )
 from zephyrex.logic.BLL_Auth.user import issue_browser_session
@@ -62,6 +64,14 @@ def clear_send_listeners() -> None:
 
 class MagicLinkRequest(BaseModel):
     email: str = Field(..., description="The email address to send a magic link to")
+    create: bool = Field(
+        False,
+        description=(
+            "Sign up: for an email with no account, where registration allows, send "
+            "a link that creates the account when its owner clicks it. An email with "
+            "an account gets an ordinary sign-in link either way."
+        ),
+    )
 
 
 class MagicLinkResponse(BaseModel):
@@ -111,7 +121,14 @@ class AuthMagicLinkTokenModel(
     """Magic-link tokens. Stored hashed; the raw code reaches the user only
     via email."""
 
-    user_id: str = Field(..., description="User this token authenticates")
+    user_id: Optional[str] = Field(
+        None,
+        description=(
+            "User this token authenticates; none for a sign-up link, whose click "
+            "makes the account (so nothing exists for an address until its owner "
+            "proves it)"
+        ),
+    )
     requested_email: str = Field(
         ..., description="The email this token was issued for (binds token to identity)"
     )
@@ -121,7 +138,7 @@ class AuthMagicLinkTokenModel(
     )
 
     class Create(BaseModel):
-        user_id: str
+        user_id: Optional[str] = None
         requested_email: str
         code_hash: str
         code_salt: str
@@ -177,7 +194,43 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
             return None
         return users[0]
 
-    def _send_magic_link(self, email: str, raw_token: str) -> None:
+    def _signup_allowed(self, email: str) -> bool:
+        """Whether a sign-up link may create an account for ``email``:
+        ``REGISTRATION_MODE`` open, or invite with an invitation pending for
+        that address. sso (accounts only through a provider) and closed refuse,
+        silently, so the response still says nothing about the address."""
+        mode = Environment.settings.REGISTRATION_MODE
+        if mode == "open":
+            return True
+        if mode == "invite":
+            pending_for = _invitation_hooks["pending_invitations_for_user"]
+            return pending_for is not None and bool(
+                pending_for("", email, self.model_registry)
+            )
+        return False
+
+    def _create_account(self, email: str) -> str:
+        """A passwordless account for an email whose owner just proved it by
+        clicking a sign-up link; the one already there if the address was
+        registered in the meantime."""
+        existing = UserManager.user_id_for_verified_email(email, self.model_registry)
+        if existing is not None:
+            return existing
+        if not self._signup_allowed(email):
+            raise InvalidGrantError(detail="Sign-up is not open")
+        UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
+        user: UserModel = UserDB.create(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            override_dto=self.model_registry.apply(UserModel),
+            return_type="dto",
+            email=email,
+        )
+        return str(user.id)
+
+    def _send_magic_link(
+        self, email: str, raw_token: str, signup: bool = False
+    ) -> None:
         """Email the link through the email extension (when this app loaded
         it) and notify any registered listeners, the test seam.
 
@@ -197,35 +250,54 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
 
         EXT_EMail.queue_email(
             email,
-            f"Sign in to {env('APP_NAME')}",
-            f"Use this link to sign in. It works once and expires in "
+            (
+                f"Create your {env('APP_NAME')} account"
+                if signup
+                else f"Sign in to {env('APP_NAME')}"
+            ),
+            (
+                "Use this link to finish creating your account. "
+                if signup
+                else "Use this link to sign in. "
+            )
+            + f"It works once and expires in "
             f"{self._ttl_minutes()} minutes.\n\n{magic_link_url}\n\n"
             "If you did not ask to sign in, you can ignore this email.",
         )
 
-    def request_magic_link(self, email: str) -> MagicLinkResponse:
-        """Issue a magic link for ``email`` if a user matches. Always returns
-        the same ``accepted`` response - no enumeration."""
+    def _issue(self, email: str, user_id: Optional[str]) -> None:
+        """Store a one-time token for ``email`` (and ``user_id``, or
+        none for a sign-up, owned by root until the click makes the account)
+        and send its link."""
+        raw_code, token = OneTimeTokenMixin.generate(ttl_minutes=self._ttl_minutes())
+        TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
+        TokenDB.create(
+            requester_id=user_id or env("ROOT_ID"),
+            model_registry=self.model_registry,
+            user_id=user_id,
+            requested_email=email,
+            code_hash=token.code_hash,
+            code_salt=token.code_salt,
+            code_fingerprint=token.code_fingerprint,
+            expires_at=token.expires_at,
+            is_used=False,
+            used_at=None,
+            created_ip=None,
+        )
+        self._send_magic_link(email, raw_code, signup=user_id is None)
+
+    def request_magic_link(self, email: str, create: bool = False) -> MagicLinkResponse:
+        """Issue a magic link for ``email`` if a user matches; with ``create``,
+        a sign-up link for an email with no account, where registration
+        allows. Always returns the same ``accepted`` response - no
+        enumeration."""
         user = self._resolve_user_by_email(email)
+        if user is None and create:
+            address = UserManager._normalize_identifier(email)
+            if address and self._signup_allowed(address):
+                self._issue(address, None)
         if user is not None:
-            raw_code, token = OneTimeTokenMixin.generate(
-                ttl_minutes=self._ttl_minutes()
-            )
-            TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
-            TokenDB.create(
-                requester_id=user.id,
-                model_registry=self.model_registry,
-                user_id=user.id,
-                requested_email=email,
-                code_hash=token.code_hash,
-                code_salt=token.code_salt,
-                code_fingerprint=token.code_fingerprint,
-                expires_at=token.expires_at,
-                is_used=False,
-                used_at=None,
-                created_ip=None,
-            )
-            self._send_magic_link(email, raw_code)
+            self._issue(email, str(user.id))
 
         return MagicLinkResponse(status="accepted")
 
@@ -255,25 +327,32 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         if matched is None:
             raise InvalidGrantError(detail="Invalid or expired magic-link token")
 
+        # A sign-up link: the click is the proof, so the account is made now.
+        user_id = (
+            self._create_account(matched.requested_email)
+            if matched.user_id is None
+            else matched.user_id
+        )
+
         now = datetime.now(timezone.utc)
         TokenDB.update(
-            requester_id=matched.user_id,
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=matched.id,
             new_properties={"is_used": True, "used_at": now},
         )
 
-        self._invalidate_other_tokens(matched.user_id, matched.id)
+        self._invalidate_other_tokens(user_id, matched.id)
 
         # The link proves the email only; a second factor still stands.
-        challenge = UserManager.mfa_challenge(matched.user_id, self.model_registry)
+        challenge = UserManager.mfa_challenge(user_id, self.model_registry)
         if challenge is not None:
-            return MagicLinkVerifyResponse(user_id=matched.user_id, **challenge)
+            return MagicLinkVerifyResponse(user_id=user_id, **challenge)
 
         session = UserManager.login_via_grant(
             grant_type="magic_link",
             grant_payload=UserIdGrantPayload(
-                user_id=matched.user_id, model_registry=self.model_registry
+                user_id=user_id, model_registry=self.model_registry
             ),
             model_registry=self.model_registry,
         )
@@ -319,7 +398,7 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
     )
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def request_route(self, body: MagicLinkRequest) -> MagicLinkResponse:
-        return self.request_magic_link(email=body.email)
+        return self.request_magic_link(email=body.email, create=body.create)
 
     @custom_route(
         method="POST",
