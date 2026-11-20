@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from abc import ABC
+from contextvars import ContextVar
 from datetime import date, datetime, time, timedelta
 from typing import (
     Any,
@@ -7,12 +8,14 @@ from typing import (
     cast,
     ClassVar,
     Dict,
+    FrozenSet,
     Generic,
     List,
     Optional,
     Protocol,
     Sequence,
     Set,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -86,6 +89,12 @@ def _escape_like(v: object) -> str:
 # class per registry, so keying on that resolved class keeps different applied
 # models from colliding while collapsing the per-list/search/count
 # ``get_type_hints`` recomputation to one resolution per class.
+# The one update call update_trusted made, as (manager, record id, the field names it named): a
+# ContextVar, so concurrent requests never see another's, and matched on manager and record.
+_TRUSTED_UPDATE: ContextVar[Optional[Tuple[Any, str, FrozenSet[str]]]] = ContextVar(
+    "zephyrex_trusted_update", default=None
+)
+
 _type_hints_cache: Dict[type, Dict[str, Any]] = {}
 
 
@@ -1784,21 +1793,93 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         # client-controllable.
         self._strip_server_controlled_fields(kwargs)
         self._enforce_caller_owned_fields(kwargs)
-        logger.debug("Updating entity with ID: %s", id)
+        entity_before = self.get(id=id)
+        trusted = _TRUSTED_UPDATE.get()
+        # Trusted only for the very call update_trusted made: this manager, this record. A plain
+        # update running concurrently (another context) or nested in it (a hook updating another
+        # record) still goes through the Update schema.
+        if trusted is not None and trusted[0] is self and trusted[1] == id:
+            logger.debug("Trusted update of entity with ID: %s", id)
+            # Only what the trusted caller named is written; a field a hook adds is dropped, as the
+            # Update schema drops it on a plain update.
+            update_args = self._validated_against_model(
+                entity_before,
+                {name: value for name, value in kwargs.items() if name in trusted[2]},
+            )
+        else:
+            logger.debug("Updating entity with ID: %s", id)
+            try:
+                args = self.model_registry.apply(self.Model).Update(**kwargs)
+            except ValidationError as e:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"message": "Validation error", "details": e.errors()},
+                )
+            # Convert arguments to dictionary, excluding unset values
+            update_args = {k: v for k, v in args.model_dump(exclude_unset=True).items()}
+        return self._write_update(id, update_args, entity_before)
+
+    def update_trusted(self, id: str, **kwargs) -> ModelT:
+        """Update fields a client may not change, for server-side operations only.
+
+        ``update`` validates through the model's ``Update`` schema, the
+        client's view, and drops every field it doesn't declare. A
+        server-side operation sometimes has to change one of those (an
+        extension rewriting a record it owns, e.g. swapping two chat
+        messages' speakers). This validates the changed fields against the
+        full model instead, and otherwise is ``update``: it runs through the
+        hook-wrapped ``update`` itself, so every before and after hook
+        registered on ``update`` runs, with the same version check and cache
+        invalidation. (A hook registered on every method of a class sees
+        ``update_trusted`` and then ``update``.)
+
+        Never call it with a client's payload, and never expose it through a
+        route: RouterMixin's routes call ``update``, never this.
+        Server-managed fields (audit, identity) are still stripped, and
+        caller-owned fields still checked.
+        """
+        token = _TRUSTED_UPDATE.set((self, id, frozenset(kwargs)))
         try:
-            args = self.model_registry.apply(self.Model).Update(**kwargs)
+            return self.update(id, **kwargs)
+        finally:
+            _TRUSTED_UPDATE.reset(token)
+
+    def _validated_against_model(
+        self, entity_before: Any, changes: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """``changes`` checked against the full model (with the record's other fields as they are): a
+        name that is no field of it, or a value it refuses, is a 422."""
+        full_model = self.model_registry.apply(self.Model)
+        unknown = sorted(set(changes) - set(full_model.model_fields))
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Validation error",
+                    "details": [
+                        {"loc": [name], "msg": "Not a field of the model"}
+                        for name in unknown
+                    ],
+                },
+            )
+        current = (
+            entity_before.model_dump()
+            if hasattr(entity_before, "model_dump")
+            else obj_to_dict(entity_before)
+        )
+        try:
+            validated = full_model.model_validate({**current, **changes})
         except ValidationError as e:
             raise HTTPException(
                 status_code=422,
                 detail={"message": "Validation error", "details": e.errors()},
             )
+        return {name: getattr(validated, name) for name in changes}
 
-        # Convert arguments to dictionary, excluding unset values
-        update_args = {k: v for k, v in args.model_dump(exclude_unset=True).items()}
-
-        # Get the entity before update (for after hooks)
-        entity_before = self.get(id=id)
-
+    def _write_update(
+        self, id: str, update_args: Dict[str, Any], entity_before: Any
+    ) -> ModelT:
+        """The write ``update`` and ``update_trusted`` share: the version-checked database update, then the cache."""
         updated_entity = self.DB.update(
             requester_id=self.requester.id,
             model_registry=self.model_registry,

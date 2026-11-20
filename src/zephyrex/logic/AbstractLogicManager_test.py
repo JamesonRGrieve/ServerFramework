@@ -4,6 +4,7 @@ from typing import Any, Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -864,6 +865,103 @@ class TestAbstractLogicManager:
         assert updated.id == created_entity.id
         assert updated.name == "Updated Name"
         assert updated.description == "Updated Description"
+
+    def test_update_trusted_changes_a_field_the_update_schema_leaves_out(self):
+        """A server-side update may change a field clients may not; the client's update drops it."""
+        created = self.base_manager.create(name="Trusted", description="Original")
+        # `count` is on the model but not in its Update schema: the client-facing update ignores it.
+        dropped = self.base_manager.update(id=created.id, count=5)
+        assert dropped.count is None
+        updated = self.base_manager.update_trusted(
+            id=created.id, count=5, description="Rewritten"
+        )
+        assert updated.id == created.id
+        assert updated.count == 5
+        assert updated.description == "Rewritten"
+        # (Other tests' hooks on create may have renamed it; what matters is that it stayed.)
+        assert updated.name == created.name
+        assert self.base_manager.get(id=created.id).count == 5
+
+    def test_update_trusted_validates_against_the_full_model(self):
+        """A value the model refuses, or a name that is no field of it, is a 422, and nothing is written."""
+        created = self.base_manager.create(name="Checked")
+        with pytest.raises(HTTPException) as wrong_type:
+            self.base_manager.update_trusted(id=created.id, count="many")
+        assert wrong_type.value.status_code == 422
+        with pytest.raises(HTTPException) as unknown:
+            self.base_manager.update_trusted(id=created.id, colour="red")
+        assert unknown.value.status_code == 422
+        assert self.base_manager.get(id=created.id).count is None
+
+    def test_update_trusted_runs_the_hooks_on_update(self):
+        """Every before and after hook registered on update runs for a trusted update too."""
+        seen: list[str] = []
+
+        def before(context: HookContext) -> None:
+            seen.append(f"before {context.method_name} {sorted(context.kwargs)}")
+
+        def after(context: HookContext) -> None:
+            seen.append(f"after {context.method_name}")
+
+        hook_bll(BaseManagerForTest.update, timing=HookTiming.BEFORE, priority=90)(
+            before
+        )
+        hook_bll(BaseManagerForTest.update, timing=HookTiming.AFTER, priority=90)(after)
+        created = self.base_manager.create(name="Hooked")
+        seen.clear()
+        updated = self.base_manager.update_trusted(id=created.id, count=7)
+        assert updated.count == 7
+        assert [entry for entry in seen if entry.startswith("before update")]
+        assert "after update" in seen
+
+    def test_a_plain_update_inside_a_trusted_one_keeps_the_update_schema(self):
+        """The trust is for update_trusted's own call only: a plain update made while it runs (here by
+        a hook, on another record) still drops fields the Update schema leaves out."""
+        other = self.base_manager.create(name="Bystander")
+        nested: list[Any] = []
+
+        def plain_update_meanwhile(context: HookContext) -> None:
+            if not nested and context.kwargs.get("count") == 11:
+                nested.append(self.base_manager.update(id=other.id, count=99))
+
+        hook_bll(BaseManagerForTest.update, timing=HookTiming.BEFORE, priority=95)(
+            plain_update_meanwhile
+        )
+        target = self.base_manager.create(name="Trusted target")
+        assert self.base_manager.update_trusted(id=target.id, count=11).count == 11
+        assert nested and nested[0].count is None
+        assert self.base_manager.get(id=other.id).count is None
+
+    def test_a_plain_update_in_another_thread_keeps_the_update_schema(self):
+        """A trusted update's context never reaches a concurrent request (a ContextVar, not state on the manager)."""
+        import threading
+
+        record = self.base_manager.create(name="Concurrent")
+        seen: list[Any] = []
+
+        def plain() -> None:
+            seen.append(self.base_manager.update(id=record.id, count=42))
+
+        def start_plain_meanwhile(context: HookContext) -> None:
+            if not seen and context.kwargs.get("count") == 12:
+                worker = threading.Thread(target=plain)
+                worker.start()
+                worker.join()
+
+        hook_bll(BaseManagerForTest.update, timing=HookTiming.BEFORE, priority=96)(
+            start_plain_meanwhile
+        )
+        other = self.base_manager.create(name="Trusted elsewhere")
+        self.base_manager.update_trusted(id=other.id, count=12)
+        assert seen and seen[0].count is None
+
+    def test_update_trusted_is_never_a_route(self):
+        """RouterMixin's routes call update; nothing routes to update_trusted."""
+        import inspect
+
+        from zephyrex.pydantic2.fastapi import routes
+
+        assert "update_trusted" not in inspect.getsource(routes)
 
     def test_delete_operation(self):
         """Test deleting an entity."""
