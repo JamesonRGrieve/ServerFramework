@@ -1860,8 +1860,42 @@ class AbstractStaticExtension(
                         e,
                     )
 
-        cls._types_cache = types
+        # The text check above misses models declared with ``metaclass=ModelMeta`` (which never
+        # name DatabaseMixin) and ``@extension_model`` classes, so an extension made only of those
+        # read as not DATABASE, and ``discover_extension_models`` skipped its injections
+        # (zephyrex-rpg-wiki's rpg_core, zephyrex-vtt's rpg_state, 2026-11-20). Decide from the
+        # classes its BLL_ modules actually define.
+        partial = False
+        if ExtensionType.DATABASE not in types and glob.glob(
+            os.path.join(extension_dir, "BLL_*.py")
+        ):
+            defines, partial = cls._bll_defines_database_classes()
+            if defines:
+                types.add(ExtensionType.DATABASE)
+
+        if not partial:
+            cls._types_cache = types
         return types
+
+    @classmethod
+    def _bll_defines_database_classes(cls) -> Tuple[bool, bool]:
+        """Whether this extension's BLL_ modules define a database model or an
+        ``@extension_model`` class, and whether any of them failed to load (then the
+        answer may be incomplete and is not cached)."""
+        import inspect
+
+        from zephyrex.pydantic2.sqlalchemy.mixins import DatabaseMixin
+
+        modules, partial = cls._load_component_modules("BLL_")
+        for module in modules:
+            for _, obj in inspect.getmembers(module, inspect.isclass):
+                if obj.__module__ != module.__name__:
+                    continue
+                if getattr(obj, "_is_extension_model", False) or issubclass(
+                    obj, DatabaseMixin
+                ):
+                    return True, partial
+        return False, partial
 
     _models_cache: ClassVar[Optional[Set[Type]]] = None
 

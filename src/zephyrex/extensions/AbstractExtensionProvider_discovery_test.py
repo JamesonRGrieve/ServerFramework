@@ -13,6 +13,7 @@ import pytest
 from zephyrex.extensions.email.EXT_EMail import EXT_EMail
 from zephyrex.extensions.genealogy.BLL_Genealogy import ALL_MODELS
 from zephyrex.extensions.genealogy.EXT_Genealogy import EXT_Genealogy
+from zephyrex.extensions.AbstractExtensionProvider import ExtensionType
 from zephyrex.lib import Paths
 
 
@@ -45,3 +46,11 @@ def test_a_bundled_extension_finds_its_providers_under_a_consumer_root(
 
 def test_the_extension_root_is_where_the_class_lives(consumer_root):
     assert EXT_Genealogy._extensions_root() == str(Paths.src_path() / "extensions")
+
+
+def test_an_extension_of_modelmeta_models_is_a_database_extension(monkeypatch):
+    """genealogy declares its tables with ``metaclass=ModelMeta`` and never names
+    DatabaseMixin; it was typed not DATABASE, so model discovery skipped it and
+    any @extension_model in such an extension was never applied."""
+    monkeypatch.setattr(EXT_Genealogy, "_types_cache", None)
+    assert ExtensionType.DATABASE in EXT_Genealogy.types
