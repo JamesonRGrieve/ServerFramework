@@ -1073,15 +1073,32 @@ def _pending_invitations_for_user(
     return pending
 
 
+def _bound_on(model: Any, declarative_base: Any) -> bool:
+    """Whether the app on ``declarative_base`` bound ``model``: its registry
+    builds every bound model's class on its base at startup, so an app that
+    did not load this extension has neither class there (nor the tables)."""
+    built = getattr(declarative_base, "_pydantic_models", None)
+    return isinstance(built, dict) and f"{model.__module__}.{model.__name__}" in built
+
+
 def _invitation_db_class(declarative_base):
     """Return the SA model bound to ``declarative_base`` for the
-    ``invitations`` table. Consumed by ``StaticPermissions`` so the core
-    permission filter can include invitation-driven team access without
-    importing the extension directly."""
+    ``invitations`` table, or None when that app did not load this extension.
+    Consumed by ``StaticPermissions`` so the core permission filter can
+    include invitation-driven team access without importing the extension
+    directly. Importing this module registers the hook in every app in the
+    process, so the hook itself has to ask whether this one has the table;
+    building the class regardless made every sign-in in an app without the
+    extension query a missing ``invitations`` table."""
+    if not _bound_on(InvitationModel, declarative_base):
+        return None
     return InvitationModel.DB(declarative_base)
 
 
 def _invitee_db_class(declarative_base):
+    """As ``_invitation_db_class``, for the ``invitees`` table."""
+    if not _bound_on(InviteeModel, declarative_base):
+        return None
     return InviteeModel.DB(declarative_base)
 
 

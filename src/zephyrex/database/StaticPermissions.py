@@ -1129,17 +1129,22 @@ def _get_admin_accessible_team_ids_cte(
     # Invitations that target the user directly should also expose the team
     # hierarchy. The invitation entity is owned by the ``auth_invitations``
     # extension; without it, the only path into a team is via UserTeam
-    # rows, which the ``base_selects`` above already cover.
+    # rows, which the ``base_selects`` above already cover. The hooks are
+    # registered whenever the module is imported, so each also answers None
+    # for an app that did not load the extension (and has no such tables).
     invitation_db_class_hook = _invitation_hooks["invitation_db_class"]
     invitee_db_class_hook = _invitation_hooks["invitee_db_class"]
-    if (
-        not memberships_only
-        and invitation_db_class_hook is not None
-        and invitee_db_class_hook is not None
-    ):
-        invitation_db_cls = invitation_db_class_hook(declarative_base)
-        invitee_db_cls = invitee_db_class_hook(declarative_base)
-
+    invitation_db_cls = (
+        invitation_db_class_hook(declarative_base)
+        if not memberships_only and invitation_db_class_hook is not None
+        else None
+    )
+    invitee_db_cls = (
+        invitee_db_class_hook(declarative_base)
+        if invitation_db_cls is not None and invitee_db_class_hook is not None
+        else None
+    )
+    if invitation_db_cls is not None and invitee_db_cls is not None:
         invitation_filters = [
             invitation_db_cls.team_id.isnot(None),
             invitation_db_cls.team_id.in_(live_team_ids),
@@ -1884,8 +1889,12 @@ def generate_permission_filter(
         # ``invitations``, which the extension creates — so the hook is
         # guaranteed to be registered before we reach this code.
         invitee_db_class_hook = _invitation_hooks["invitee_db_class"]
-        if invitee_db_class_hook is not None:
-            Invitee_db_cls = invitee_db_class_hook(declarative_base)
+        Invitee_db_cls = (
+            invitee_db_class_hook(declarative_base)
+            if invitee_db_class_hook is not None
+            else None
+        )
+        if Invitee_db_cls is not None:
             user_invited_filter = exists().where(
                 and_(
                     Invitee_db_cls.invitation_id == resource_db_cls.id,
@@ -1902,9 +1911,13 @@ def generate_permission_filter(
         # Invitation row is owned by ``auth_invitations``; resolved
         # through the hook so core never imports the extension directly.
         invitation_db_class_hook = _invitation_hooks["invitation_db_class"]
-        if invitation_db_class_hook is None:
+        invitation_db_cls = (
+            invitation_db_class_hook(declarative_base)
+            if invitation_db_class_hook is not None
+            else None
+        )
+        if invitation_db_cls is None:
             return false()
-        invitation_db_cls = invitation_db_class_hook(declarative_base)
 
         # Users can see invitation invitees if they have access to the associated invitation
         # This means: invitations they created OR invitations to teams they're members of

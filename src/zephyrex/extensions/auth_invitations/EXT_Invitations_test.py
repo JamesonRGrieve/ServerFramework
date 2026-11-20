@@ -320,3 +320,46 @@ class TestInvitationCreateDedupBatching(ExtensionServerMixin):
                 )
         assert exc_info.value.status_code == 400
         assert "already invited" in str(exc_info.value.detail)
+
+
+class TestTeamAccessWithoutTheExtension:
+    """An app that did not load auth_invitations has no invitation tables, yet
+    importing this module registers the hooks in every app in the process.
+    The team-access query must not name the tables there: it did, so every
+    sign-in in such an app logged "no such table: invitations" (Practice
+    Interview, server-framework 84b45ea4)."""
+
+    @staticmethod
+    def _team_access_sql(base) -> str:
+        from sqlalchemy import select
+
+        from zephyrex.database.StaticPermissions import (
+            _get_admin_accessible_team_ids_cte,
+        )
+
+        cte = _get_admin_accessible_team_ids_cte("user-1", None, base)
+        return str(select(cte.c.id))
+
+    def test_hooks_answer_none_where_the_extension_was_not_loaded(self):
+        from sqlalchemy.orm import declarative_base
+
+        base = declarative_base()
+        assert BLL_Auth._invitation_hooks["invitation_db_class"](base) is None
+        assert BLL_Auth._invitation_hooks["invitee_db_class"](base) is None
+
+    def test_team_access_names_no_invitation_table_without_the_extension(self):
+        from sqlalchemy.orm import declarative_base
+
+        sql = self._team_access_sql(declarative_base())
+        assert "invitations" not in sql.lower()
+        assert "invitees" not in sql.lower()
+
+    def test_team_access_counts_invitations_where_the_extension_is_loaded(self):
+        from sqlalchemy.orm import declarative_base
+
+        base = declarative_base()
+        InvitationModel.DB(base)
+        InviteeModel.DB(base)
+        sql = self._team_access_sql(base).lower()
+        assert "invitations" in sql
+        assert "invitees" in sql

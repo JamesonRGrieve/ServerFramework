@@ -24,8 +24,11 @@ _invitation_hooks: dict = {
     "invitation_manager_factory": None,  # (requester_id, target_team_id, model_registry, **kw) -> manager
     "invitee_manager_factory": None,  # (requester_id, target_id, model_registry, **kw) -> manager
     "pending_invitations_for_user": None,  # (user_id, email, model_registry) -> List[dict]
-    "invitation_db_class": None,  # (declarative_base) -> SA model
-    "invitee_db_class": None,  # (declarative_base) -> SA model
+    # The two below answer None when the app on ``declarative_base`` did not
+    # load auth_invitations: importing the module registers every hook, but
+    # only a loaded extension has its tables.
+    "invitation_db_class": None,  # (declarative_base) -> SA model | None
+    "invitee_db_class": None,  # (declarative_base) -> SA model | None
 }
 
 
