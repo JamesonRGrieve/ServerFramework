@@ -24,8 +24,9 @@ from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import AbstractRegistry, env
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Paths import (
+    extension_roots as _extension_roots,
     extensions_dir as _resolve_extensions_dir,
-    src_dir as _resolve_src_dir,
+    find_extension_dir as _find_extension_dir,
 )
 from zephyrex.pydantic2.registry import classproperty
 from zephyrex.logic.BLL_Providers import (
@@ -142,8 +143,9 @@ class ExtensionRegistry(AbstractRegistry):
         # the bundled <src_dir>/extensions". Resolved through Paths so a
         # caller-supplied path (e.g. ``zephyrex.run(extensions_path=…)``)
         # is honored without disturbing existing call sites.
+        # Every root is kept (os.pathsep-joined), searched in order.
         self.extensions_path: Optional[str] = (
-            _resolve_extensions_dir(extensions_path)
+            os.pathsep.join(str(root) for root in _extension_roots(extensions_path))
             if extensions_path is not None
             else None
         )
@@ -196,7 +198,9 @@ class ExtensionRegistry(AbstractRegistry):
 
                         file_stem = os.path.basename(file_path)[:-3]
                         module = load_extension_module(
-                            self._extensions_root(), extension_name, file_stem
+                            os.path.dirname(self._extension_dir(extension_name)),
+                            extension_name,
+                            file_stem,
                         )
 
                         # Find AbstractStaticExtension subclass
@@ -252,19 +256,12 @@ class ExtensionRegistry(AbstractRegistry):
     def _extension_dir(self, extension_name: str) -> str:
         """Path to a specific extension's directory.
 
-        Checks the consumer's extensions_path first; falls back to the
-        bundled ``<src_dir>/extensions`` if the extension isn't found there.
-        This lets consumers mix their own extensions with framework-bundled ones.
+        Checks the consumer's extensions roots in order, then falls back to
+        the bundled ``<src_dir>/extensions``. This lets consumers mix their
+        own extensions, another product's and framework-bundled ones; a name
+        in two roots is refused (``DuplicateExtensionError``).
         """
-        import os
-
-        primary = os.path.join(self._extensions_root(), extension_name)
-        if os.path.isdir(primary):
-            return primary
-        bundled = os.path.join(_resolve_src_dir(), "extensions", extension_name)
-        if os.path.isdir(bundled):
-            return bundled
-        return primary
+        return str(_find_extension_dir(extension_name, self.extensions_path))
 
     @property
     def csv(self) -> str:
@@ -429,7 +426,9 @@ class ExtensionRegistry(AbstractRegistry):
                     )
 
                     module = load_extension_module(
-                        self._extensions_root(), dep_name, file_stem
+                        os.path.dirname(self._extension_dir(dep_name)),
+                        dep_name,
+                        file_stem,
                     )
 
                     # Find the extension class
@@ -516,7 +515,9 @@ class ExtensionRegistry(AbstractRegistry):
                             # correctly via spec_from_file_location.
                             file_stem = os.path.basename(file_path)[:-3]
                             module = load_extension_module(
-                                self._extensions_root(), extension_name, file_stem
+                                os.path.dirname(self._extension_dir(extension_name)),
+                                extension_name,
+                                file_stem,
                             )
                             logger.debug(
                                 f"Successfully imported module: {module.__name__}"
@@ -859,7 +860,9 @@ class ExtensionRegistry(AbstractRegistry):
                 # out-of-tree extensions resolve correctly.
                 file_stem = os.path.basename(prv_file)[:-3]
                 module = load_extension_module(
-                    self._extensions_root(), extension_name, file_stem
+                    os.path.dirname(self._extension_dir(extension_name)),
+                    extension_name,
+                    file_stem,
                 )
 
                 # Providers defined in this module (not ones it imports). The
@@ -1580,7 +1583,7 @@ class AbstractStaticExtension(
         defined_in = Path(inspect.getfile(cls)).resolve().parent
         if defined_in.name == cls.name:
             return str(defined_in.parent)
-        return _resolve_extensions_dir()
+        return str(_find_extension_dir(cls.name).parent)
 
     @classmethod
     def _load_component_modules(cls, prefix: str) -> Tuple[List[ModuleType], bool]:
@@ -1795,9 +1798,9 @@ class AbstractStaticExtension(
         import glob
         import os
 
-        # Get extension directory through Paths so a global
-        # ``set_extensions_root`` override is honored.
-        extension_dir = os.path.join(_resolve_extensions_dir(), cls.name)
+        # The folder this extension's class lives in, whichever root holds it
+        # (the active root alone misses a bundled or another product's one).
+        extension_dir = os.path.join(cls._extensions_root(), cls.name)
 
         # Check for endpoints
         if glob.glob(os.path.join(extension_dir, "EP_*.py")):

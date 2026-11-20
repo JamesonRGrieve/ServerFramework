@@ -26,6 +26,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.Paths import extension_roots, find_extension_dir
 
 
 class MigrationManager:
@@ -715,8 +716,7 @@ class MigrationManager:
 
             for ext_name in self.configured_extensions:
                 ext_test = (
-                    self.paths["extensions_dir"]
-                    / ext_name
+                    self._extension_source_dir(ext_name)
                     / "migrations"
                     / "test_versions"
                 )
@@ -1028,11 +1028,18 @@ class MigrationManager:
         Returns a list of ``(extension_name, migrations_dir_path)``
         tuples in deterministic (sorted) order.
         """
-        ext_root = Path(self.paths["extensions_dir"])
+        # Every consumer root, the configured one first (a product composed
+        # with another also names that one's extensions folder).
+        roots = [Path(self.paths["extensions_dir"])]
+        for root in extension_roots(getattr(self, "_extensions_path_override", None)):
+            if root not in roots:
+                roots.append(root)
         out = []
-        if not ext_root.exists():
-            return out
-        for ext_dir in sorted(ext_root.iterdir()):
+        ext_dirs = sorted(
+            (ext_dir for root in roots if root.exists() for ext_dir in root.iterdir()),
+            key=lambda ext_dir: ext_dir.name,
+        )
+        for ext_dir in ext_dirs:
             if not ext_dir.is_dir() or ext_dir.name.startswith("__"):
                 continue
             # Only consider extensions that ship BLL files — those are the
@@ -1064,6 +1071,13 @@ class MigrationManager:
         primary = self.paths["extensions_dir"] / extension_name
         if primary.exists():
             return primary
+        # Another consumer root (a composed product's extensions folder); a
+        # name in two roots is refused there.
+        found = find_extension_dir(
+            extension_name, getattr(self, "_extensions_path_override", None)
+        )
+        if found.exists():
+            return found
         try:
             import importlib.util
 
@@ -1437,7 +1451,7 @@ class {class_name}(Base):
 
         # Check for extension directories and models
         for ext_name in self.configured_extensions:
-            ext_dir = self.paths["extensions_dir"] / ext_name
+            ext_dir = self._extension_source_dir(ext_name)
             if ext_dir.exists():
                 logger.debug(f"Extension directory {ext_name}: Exists")
                 # Check for BLL models

@@ -14,7 +14,8 @@ from typing import Any
 
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Paths import (
-    extensions_dir as _resolve_extensions_dir,
+    extension_roots as _extension_roots,
+    find_extension_dir as _find_extension_dir,
     src_dir as _resolve_src_dir,
 )
 
@@ -63,7 +64,7 @@ class ScopedModuleImporter:
             file_type,
             tuple(sorted(scopes)),
             tuple(sorted(enabled_extensions)),
-            _resolve_extensions_dir(),
+            tuple(str(root) for root in _extension_roots()),
         )
 
         # Return cached result if available and not forcing clean
@@ -99,18 +100,11 @@ class ScopedModuleImporter:
                         f"Only importing from enabled extensions: {enabled_extensions}"
                     )
 
-                    # Include enabled extension directories. Check the
-                    # consumer's extensions_path first, fall back to the
-                    # bundled extensions inside the framework package.
-                    extensions_dir = _resolve_extensions_dir()
-                    bundled_dir = os.path.join(_resolve_src_dir(), "extensions")
+                    # Include enabled extension directories: the consumer's
+                    # extensions roots in order, then the bundled extensions
+                    # inside the framework package.
                     for ext_name in enabled_extensions:
-                        ext_path = os.path.join(extensions_dir, ext_name)
-                        if os.path.isdir(ext_path):
-                            expanded_scopes.append(f"extensions.{ext_name}")
-                        elif extensions_dir != bundled_dir and os.path.isdir(
-                            os.path.join(bundled_dir, ext_name)
-                        ):
+                        if _find_extension_dir(ext_name).is_dir():
                             expanded_scopes.append(f"extensions.{ext_name}")
                         else:
                             logger.warning(
@@ -142,7 +136,7 @@ class ScopedModuleImporter:
             scope_dir = os.path.join(src_dir, *scope_parts)
             if scope.startswith("extensions.") and not os.path.isdir(scope_dir):
                 ext_name = scope_parts[1] if len(scope_parts) > 1 else ""
-                consumer_dir = os.path.join(_resolve_extensions_dir(), ext_name)
+                consumer_dir = str(_find_extension_dir(ext_name))
                 if os.path.isdir(consumer_dir):
                     scope_dir = consumer_dir
 
@@ -265,7 +259,7 @@ class ScopedModuleImporter:
                     if len(parts) >= ext_idx + 3:
                         ext_name = parts[ext_idx + 1]
                         file_stem = parts[-1]
-                        extensions_root = _resolve_extensions_dir()
+                        extensions_root = str(_find_extension_dir(ext_name).parent)
                         module = load_extension_module(
                             extensions_root, ext_name, file_stem
                         )

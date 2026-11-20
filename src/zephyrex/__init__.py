@@ -51,7 +51,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
 
 # Item 66 — the sys.path mutation that bridged the legacy top-level
 # package layout (`lib/`, `logic/`, ...) is gone now that Item 60
@@ -125,7 +125,9 @@ def get_framework_version() -> str:
     return "0.0.0"
 
 
-def set_extensions_root(path: Optional[Union[str, os.PathLike]]) -> None:
+def set_extensions_root(
+    path: Optional[Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]]],
+) -> None:
     """Configure the global extensions root.
 
     Equivalent to ``lib.Paths.set_extensions_root``; re-exported here so
@@ -138,7 +140,9 @@ def set_extensions_root(path: Optional[Union[str, os.PathLike]]) -> None:
 
 def run(
     extensions: Optional[str] = None,
-    extensions_path: Optional[Union[str, os.PathLike]] = None,
+    extensions_path: Optional[
+        Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]]
+    ] = None,
     host: str = "0.0.0.0",
     port: int = 1996,
     workers: Optional[int] = None,
@@ -175,7 +179,14 @@ def run(
         os.environ["APP_EXTENSIONS"] = extensions
 
     if extensions_path is not None:
-        os.environ["EXTENSIONS_PATH"] = str(extensions_path)
+        # Several roots (a product composed with another) travel as one
+        # os.pathsep-joined value, as EXTENSIONS_PATH is read back.
+        if isinstance(extensions_path, (str, os.PathLike)):
+            os.environ["EXTENSIONS_PATH"] = os.fspath(extensions_path)
+        else:
+            os.environ["EXTENSIONS_PATH"] = os.pathsep.join(
+                os.fspath(root) for root in extensions_path
+            )
         set_extensions_root(extensions_path)
 
     # Refresh the cached settings singleton so env() picks up the values
