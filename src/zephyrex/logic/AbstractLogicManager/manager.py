@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import base64
+import binascii
+import json
 from abc import ABC
 from contextvars import ContextVar
 from datetime import date, datetime, time, timedelta
@@ -25,10 +28,14 @@ from typing import (
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import and_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from zephyrex.database.AbstractDatabaseEntity import IncludePath
+from zephyrex.database.AbstractDatabaseEntity import (
+    IncludePath,
+    db_to_return_type,
+    get_dto_class,
+)
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import (
     PreconditionFailed,
@@ -191,6 +198,42 @@ def _fire_and_forget(coro) -> None:
             loop.close()
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+# How many changes one ``changes`` page holds at most, and by default.
+CHANGES_LIMIT_MAX = 500
+CHANGES_LIMIT_DEFAULT = 100
+
+
+class Change(BaseModel):
+    """One record in a ``changes`` page: as the requester reads it, and when
+    it changed; ``deleted_at`` is set for a record that has been deleted."""
+
+    record: Any
+    changed_at: datetime
+    deleted_at: Optional[datetime] = None
+
+
+class ChangesPage(BaseModel):
+    """A page of ``changes``, and the cursor for the next one (None at the end)."""
+
+    changes: List[Change]
+    next: Optional[str] = None
+
+
+def _changes_cursor(changed_at: datetime, record_id: str) -> str:
+    raw = json.dumps([changed_at.isoformat(), str(record_id)]).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _changes_position(cursor: str) -> Tuple[datetime, str]:
+    try:
+        changed_at, record_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        return datetime.fromisoformat(changed_at), str(record_id)
+    except (ValueError, TypeError, binascii.Error) as error:
+        raise HTTPException(
+            status_code=422, detail="That cursor is not one this gave"
+        ) from error
 
 
 class AbstractBLLManager(ABC, Generic[ModelT]):
@@ -1589,6 +1632,88 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             offset=offset,
             filters=combined_filters,  # Use combined_filters here
             **simple_kwargs,  # Pass simple_kwargs for filter_by
+        )
+
+    def changes(
+        self,
+        since: Optional[datetime] = None,
+        after: Optional[str] = None,
+        limit: int = CHANGES_LIMIT_DEFAULT,
+        **kwargs: Any,
+    ) -> ChangesPage:
+        """What changed among the requester's records, for a sync: every record
+        they may VIEW that was created, updated or deleted at or after ``since``,
+        oldest change first (then by id), deleted ones included with their
+        ``deleted_at`` (a tombstone, so the sync can remove its copy).
+
+        ``after`` is the ``next`` cursor of the previous page. A record that
+        changes during a sync moves to the end and comes on a later page, so
+        nothing is missed. ``kwargs`` filter as ``list``'s do. The VIEW rule is
+        ``list``'s: no one sees a record, deleted or not, they couldn't read.
+        """
+        if not 1 <= limit <= CHANGES_LIMIT_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail=f"limit is 1 to {CHANGES_LIMIT_MAX}",
+            )
+        stamps = [
+            getattr(self.DB, name)
+            for name in ("deleted_at", "updated_at", "created_at")
+            if hasattr(self.DB, name)
+        ]
+        if not stamps:
+            raise HTTPException(
+                status_code=400, detail=f"{self.Model.__name__} has no change times"
+            )
+        changed = func.coalesce(*stamps) if len(stamps) > 1 else stamps[0]
+        filters: List[Any] = []
+        if since is not None:
+            filters.append(changed >= since)
+        if after is not None:
+            at, record_id = _changes_position(after)
+            filters.append(
+                or_(changed > at, and_(changed == at, self.DB.id > record_id))
+            )
+        self.parent_validation(kwargs)
+        rows = self.DB.list(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            return_type="db",
+            filters=filters,
+            order_by=[changed.asc(), self.DB.id.asc()],
+            limit=limit + 1,
+            include_deleted=True,
+            **kwargs,
+        )
+        more = len(rows) > limit
+        rows = rows[:limit]
+        dto_class = get_dto_class(self.DB, self.model_registry.apply(self.Model))
+        records = db_to_return_type(rows, "dto", dto_class)
+        changes = []
+        for row, record in zip(rows, records):
+            deleted_at = getattr(row, "deleted_at", None)
+            changed_at = next(
+                (
+                    stamp
+                    for stamp in (
+                        deleted_at,
+                        getattr(row, "updated_at", None),
+                        getattr(row, "created_at", None),
+                    )
+                    if stamp is not None
+                )
+            )
+            changes.append(
+                Change(record=record, changed_at=changed_at, deleted_at=deleted_at)
+            )
+        last = changes[-1] if changes else None
+        return ChangesPage(
+            changes=changes,
+            next=(
+                _changes_cursor(last.changed_at, rows[-1].id)
+                if more and last is not None
+                else None
+            ),
         )
 
     def search(

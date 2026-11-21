@@ -1630,6 +1630,7 @@ def generate_permission_filter(
     _visited_classes: Optional[set] | None = None,
     minimum_role: Optional[str] | None = None,
     db_manager=None,
+    include_deleted: bool = False,
 ):
     """
     Generate a SQLAlchemy filter expression to filter query results based on permissions.
@@ -1644,6 +1645,9 @@ def generate_permission_filter(
         required_permission_level: The permission level required (default: PermissionType.VIEW)
         _visited_classes: Internal tracking of visited classes to prevent infinite recursion
         minimum_role: Minimum role required (e.g., "user", "admin", "superadmin")
+        include_deleted: Also match the resource's own soft-deleted rows (a sync's
+            tombstones). Only the resource itself: a record reached through a
+            deleted parent is still refused, the parent's own tombstone covering it
 
     Returns:
         A SQLAlchemy filter expression to be used in query.filter()
@@ -1971,7 +1975,7 @@ def generate_permission_filter(
     # Inequality comparisons against NULL evaluate to NULL (treated as FALSE in
     # WHERE), so the ``ROOT_ID`` denials are wrapped to allow NULL values.
     if not is_root_id(user_id):
-        if hasattr(resource_db_cls, "deleted_at"):
+        if hasattr(resource_db_cls, "deleted_at") and not include_deleted:
             final_filter = and_(final_filter, resource_db_cls.deleted_at.is_(None))
         if hasattr(
             resource_db_cls, "user_id"

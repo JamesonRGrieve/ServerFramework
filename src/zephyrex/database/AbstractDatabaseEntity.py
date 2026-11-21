@@ -1295,6 +1295,7 @@ class BaseMixin:
         check_permissions=True,
         minimum_role=None,
         include: Sequence[IncludePath] = (),
+        include_deleted: bool = False,
         **kwargs,
     ) -> List[T]:
         """
@@ -1316,6 +1317,8 @@ class BaseMixin:
             minimum_role: Minimum role required for team access (defaults to None)
             include: Relationship paths to load onto each record, under the
                 requester's own VIEW rule (``load_visible_includes``)
+            include_deleted: Also return soft-deleted rows (a sync's tombstones),
+                still only those the requester may VIEW
             **kwargs: Additional filter criteria
 
         Returns:
@@ -1344,7 +1347,8 @@ class BaseMixin:
         # cls is already the SQLAlchemy model class
         db_cls = cls
 
-        filters = _apply_soft_delete_filter(db_cls, requester_id, filters)
+        if not include_deleted:
+            filters = _apply_soft_delete_filter(db_cls, requester_id, filters)
 
         # Apply permission filter
         perm_filter = generate_permission_filter(
@@ -1354,6 +1358,7 @@ class BaseMixin:
             declarative_base,
             PermissionType.VIEW,
             db_manager=db_manager,
+            include_deleted=include_deleted,
         )  # Default VIEW for list
         if perm_filter is not None:
             if filters:
@@ -1367,7 +1372,11 @@ class BaseMixin:
 
         # Item 75 follow-up: same ROOT bypass as in get() above so admin
         # listings continue to surface tombstoned rows.
-        if _should_include_deleted(db_cls, requester_id):
+        # Also anyone's own tombstones when asked for them (a sync), still
+        # under the VIEW filter above.
+        if _should_include_deleted(db_cls, requester_id) or (
+            include_deleted and hasattr(db_cls, "deleted_at")
+        ):
             query = query.execution_options(include_deleted=True)
 
         # Fetch records based on filtered query
