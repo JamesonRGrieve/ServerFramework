@@ -321,3 +321,181 @@ def test_remote_without_a_key_is_refused(server):
     )
     assert code == ExitCode.USAGE
     assert "ZEPHYREX_ROOT_API_KEY" in json.loads(out.getvalue())["error"]["message"]
+
+
+# Many records per command: ``record create --file`` and batch ``record delete``.
+
+
+def _teams(tag: str, count: int) -> List[Dict[str, Any]]:
+    return [{"name": f"{tag}-{n}", "description": tag} for n in range(count)]
+
+
+def _jsonl(items: List[Dict[str, Any]]) -> str:
+    return "\n".join(json.dumps(item) for item in items) + "\n"
+
+
+def tagged(server: Any, tag: str) -> List[str]:
+    code, envelope = run(
+        server, "record", "list", "team", "--filter", f"description={tag}"
+    )
+    assert code == 0, envelope
+    return sorted(row["name"] for row in envelope["result"])
+
+
+def test_create_from_a_jsonl_file(server, tmp_path):
+    tag = f"cli-{uuid.uuid4().hex[:8]}"
+    path = tmp_path / "teams.jsonl"
+    path.write_text(_jsonl(_teams(tag, 3)))
+
+    code, envelope = run(server, "record", "create", "team", "--file", str(path))
+    assert code == ExitCode.OK, envelope
+    report = envelope["result"]
+    assert (report["created"], report["failed"], report["skipped"]) == (3, 0, 0)
+    assert [r["index"] for r in report["results"]] == [0, 1, 2]
+    assert all(r["outcome"] == "created" and r["id"] for r in report["results"])
+    assert tagged(server, tag) == [f"{tag}-{n}" for n in range(3)]
+
+
+def test_create_from_a_json_array_on_stdin(server):
+    tag = f"cli-{uuid.uuid4().hex[:8]}"
+    code, envelope = run(
+        server,
+        "record",
+        "create",
+        "team",
+        "--file",
+        "-",
+        stdin=json.dumps(_teams(tag, 2)),
+    )
+    assert code == ExitCode.OK, envelope
+    assert tagged(server, tag) == [f"{tag}-0", f"{tag}-1"]
+
+
+def test_a_failing_record_is_reported_and_the_rest_are_created(server):
+    tag = f"cli-{uuid.uuid4().hex[:8]}"
+    items = [*_teams(tag, 1), {"description": tag}, *_teams(f"{tag}x", 1)]
+
+    code, envelope = run(
+        server, "record", "create", "team", "--file", "-", stdin=_jsonl(items)
+    )
+    assert code == ExitCode.VALIDATION, envelope
+    report = envelope["error"]["detail"]
+    assert (report["created"], report["failed"]) == (2, 1)
+    assert [r["outcome"] for r in report["results"]] == ["created", "error", "created"]
+    assert report["results"][1]["status_code"] == 422
+
+    code, envelope = run(
+        server,
+        "record",
+        "create",
+        "team",
+        "--file",
+        "-",
+        "--stop-on-error",
+        stdin=_jsonl([{"description": tag}, *_teams(f"{tag}y", 1)]),
+    )
+    assert code == ExitCode.VALIDATION, envelope
+    report = envelope["error"]["detail"]
+    assert (report["created"], report["failed"], report["skipped"]) == (0, 1, 1)
+    assert tagged(server, f"{tag}y") == []
+
+
+def test_a_dry_run_import_writes_nothing(server):
+    tag = f"cli-{uuid.uuid4().hex[:8]}"
+    code, envelope = run(
+        server,
+        "record",
+        "create",
+        "team",
+        "--file",
+        "-",
+        "--dry-run",
+        stdin=_jsonl(_teams(tag, 3)),
+    )
+    assert code == ExitCode.OK, envelope
+    assert envelope["dry_run"] is True and envelope["result"]["created"] == 3
+    assert tagged(server, tag) == []
+
+
+def test_a_bad_file_is_a_usage_error(server, tmp_path):
+    for text in ("", "[1, 2]", "{not json"):
+        code, envelope = run(
+            server, "record", "create", "team", "--file", "-", stdin=text
+        )
+        assert code == ExitCode.USAGE, (text, envelope)
+    code, envelope = run(
+        server, "record", "create", "team", "--file", str(tmp_path / "missing.jsonl")
+    )
+    assert code == ExitCode.USAGE, envelope
+
+
+def test_delete_by_filter_and_by_ids(server):
+    tag = f"cli-{uuid.uuid4().hex[:8]}"
+    _, made = run(
+        server, "record", "create", "team", "--file", "-", stdin=_jsonl(_teams(tag, 4))
+    )
+    ids = [r["id"] for r in made["result"]["results"]]
+
+    code, envelope = run(server, "record", "delete", "team", ids[0], ids[1], "--yes")
+    assert code == ExitCode.OK, envelope
+    assert (envelope["result"]["matched"], envelope["result"]["deleted"]) == (2, 2)
+    assert tagged(server, tag) == [f"{tag}-2", f"{tag}-3"]
+
+    code, envelope = run(
+        server, "record", "delete", "team", "--filter", f"description={tag}", "--yes"
+    )
+    assert code == ExitCode.OK, envelope
+    assert envelope["result"]["deleted"] == 2
+    assert tagged(server, tag) == []
+
+
+def test_a_batch_delete_is_guarded(server):
+    code, envelope = run(server, "record", "delete", "team", "--yes")
+    assert code == ExitCode.USAGE, envelope  # names nothing: never "delete all"
+    code, envelope = run(
+        server, "record", "delete", "team", "a", "b", "--if-match", '"v1"', "--yes"
+    )
+    assert code == ExitCode.USAGE, envelope
+    code, envelope = run(
+        server, "record", "delete", "team", "--filter", "description=x"
+    )
+    assert code == ExitCode.USAGE, envelope  # destructive: needs --yes
+
+
+def test_remote_import_in_batches_and_delete_by_search(server, monkeypatch, tmp_path):
+    from zephyrex.cli import Records
+
+    monkeypatch.setattr(Records, "BATCH_SIZE", 2)  # three records: two POSTs
+    tag = f"cli-{uuid.uuid4().hex[:8]}"
+    items = [*_teams(tag, 2), {"description": tag}, *_teams(f"{tag}z", 1)]
+    path = tmp_path / "teams.jsonl"
+    path.write_text(_jsonl(items))
+    code, envelope = remote(server, "record", "create", "team", "--file", str(path))
+    assert code == ExitCode.VALIDATION, envelope
+    report = envelope["error"]["detail"]
+    assert [r["index"] for r in report["results"]] == [0, 1, 2, 3]
+    assert [r["outcome"] for r in report["results"]] == [
+        "created",
+        "created",
+        "error",
+        "created",
+    ]
+    assert tagged(server, tag) == [f"{tag}-0", f"{tag}-1"]
+
+    code, refused = remote(server, "record", "delete", "team", "a", "b", "--yes")
+    assert code == ExitCode.USAGE, refused
+
+    search = json.dumps({"description": {"eq": tag}})
+    code, deleted = remote(
+        server, "record", "delete", "team", "--search", search, "--yes"
+    )
+    assert code == ExitCode.OK, deleted
+    assert deleted["result"]["deleted"] == 2
+    assert tagged(server, tag) == []
+
+    [other] = [r["id"] for r in report["results"] if r["outcome"] == "created"][2:]
+    code, deleted = remote(
+        server, "record", "delete", "team", other, other, "--if-match", "*", "--yes"
+    )
+    assert code == ExitCode.OK, deleted
+    assert tagged(server, f"{tag}z") == []

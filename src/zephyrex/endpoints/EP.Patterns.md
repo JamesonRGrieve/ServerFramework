@@ -40,16 +40,20 @@ class ItemManager(AbstractBLLManager, RouterMixin):
 ### Batch Update
 
 ```python
-# PUT /items/batch
+# PUT /items  (the same fields applied to every target)
 {"item": {"price": 19.99}, "target_ids": ["id1", "id2"]}
 ```
 
 ### Batch Delete
 
 ```python
-# DELETE /items/batch
-{"target_ids": ["id1", "id2"]}
+# DELETE /items?target_ids=id1,id2
+# If-Match: "<v1>", "<v2>"   (each record's version as last read; one stale refuses all, 412)
 ```
+
+A batch create, update or delete names at most 100 items (`MAX_BATCH_SIZE`,
+422 past it). A batch create attempts every item: 201 when all are created,
+207 with per-item `results` otherwise.
 
 ### Search
 

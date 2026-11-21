@@ -432,6 +432,8 @@ def execute(
         confirm(command, args, stdin, stderr)
         if getattr(args, "data", None) == "-":
             args.data = stdin.read()
+        if getattr(args, "file", None) == "-":
+            args.file_text = stdin.read()
         if client is not None:
             if args.dry_run and command.mutates:
                 raise CLIError(

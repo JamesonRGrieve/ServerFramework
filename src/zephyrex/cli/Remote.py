@@ -26,6 +26,7 @@ class RemoteClient:
     def __init__(self, http: httpx.Client) -> None:
         self.http = http
         self.last_etag: Optional[str] = None
+        self.last_status: Optional[int] = None
 
     @classmethod
     def connect(cls, url: str, key: str) -> "RemoteClient":
@@ -49,7 +50,10 @@ class RemoteClient:
         body: Optional[Dict[str, Any]] = None,
         params: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, str]] = None,
+        raw: bool = False,
     ) -> Any:
+        """The response payload, its envelope unwrapped (``raw``: as sent,
+        for a body with several keys such as a 207's per-item report)."""
         if "X-API-Key" not in self.http.headers:
             raise CLIError(
                 ExitCode.USAGE, f"--remote needs the root key in {REMOTE_KEY_ENV}"
@@ -66,6 +70,7 @@ class RemoteClient:
             raise CLIError(ExitCode.ERROR, f"{method} {path} failed: {err}")
         payload = _json(response)
         self.last_etag = response.headers.get("ETag")
+        self.last_status = response.status_code
         if response.status_code >= 400:
             detail = (
                 payload.get("detail", payload) if isinstance(payload, dict) else payload
@@ -79,7 +84,7 @@ class RemoteClient:
                     "etag": response.headers.get("ETag"),
                 },
             )
-        return unwrap(payload)
+        return payload if raw else unwrap(payload)
 
 
 def unwrap(payload: Any) -> Any:
