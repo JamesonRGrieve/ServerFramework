@@ -10,7 +10,8 @@
   name of the record's model, e.g. ``location`` for ``LocationModel``), ``target_entity_id`` and a
   ``role`` (``primary_image``, ``header_image``, ``document``, ...). Attaching needs one's own
   asset and EDIT on the record. ``GET /v1/attachment/of`` lists a record's attachments to anyone
-  who can view the record. The attacher or an editor of the record removes one.
+  who can view the record, each with its file's ``asset`` (name, content_type, size): what its
+  content would tell them anyway. The attacher or an editor of the record removes one.
 
 Records are found through the app's own managers, never another extension's internals, and each
 check is the record manager's own (``get`` for VIEW, the permission layer's EDIT check).
@@ -23,7 +24,7 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from fastapi import HTTPException, Request, Response
 from pydantic import BaseModel as RouteModel
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from zephyrex.lib.ContentNegotiation import skip_negotiation
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
@@ -230,18 +231,39 @@ class AttachmentModel(
         role: Optional[StringSearchModel] = None
 
 
-def _exists(manager: Any, id: str) -> bool:
+def _found(manager: Any, id: str) -> Optional[AssetModel]:
     try:
-        manager.get(id=id)
+        asset: AssetModel = manager.get(id=id)
     except HTTPException as error:
         if error.status_code == 404:
-            return False
+            return None
         raise
-    return True
+    return asset
+
+
+class AssetSummary(RouteModel):
+    """What a record's viewer may know of an attached file: as much as its content tells them."""
+
+    name: str
+    content_type: str
+    size: int
+
+
+class AttachmentOf(RouteModel):
+    """An attachment as ``/v1/attachment/of`` lists it: the row, and its file's name, type and size."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    asset_id: str
+    target_entity_type: str
+    target_entity_id: str
+    role: str
+    asset: AssetSummary
 
 
 class AttachmentList(RouteModel):
-    attachments: List[AttachmentModel]
+    attachments: List[AttachmentOf]
 
 
 class AttachmentManager(AbstractBLLManager, RouterMixin):
@@ -292,7 +314,7 @@ class AttachmentManager(AbstractBLLManager, RouterMixin):
         output_model=AttachmentList,
         authentication_type="jwt",
         openapi_tags=("Attachments",),
-        summary="A record's attachments, to anyone who can view the record (optionally one role)",
+        summary="A record's attachments with each file's name, type and size, to anyone who can view the record (optionally one role)",
         expose_in=(ExposeIn.REST,),
     )
     def of_route(
@@ -314,14 +336,25 @@ class AttachmentManager(AbstractBLLManager, RouterMixin):
         rows = AttachmentManager(
             requester_id=env("SYSTEM_ID"), model_registry=self.model_registry
         ).list(**filters)
-        # Only rows whose file is still there: a deleted asset's attachments never show.
+        # Read as SYSTEM once the record's VIEW check has passed: a viewer may read each file's
+        # content, so its name, type and size too. Only rows whose file is still there: a deleted
+        # asset's attachments never show.
         assets = AssetManager(
             requester_id=env("SYSTEM_ID"), model_registry=self.model_registry
         )
-        rows = [row for row in rows if _exists(assets, row.asset_id)]
-        return AttachmentList(
-            attachments=sorted(rows, key=lambda row: str(row.created_at))
-        )
+        listed: List[AttachmentOf] = []
+        for row in sorted(rows, key=lambda row: str(row.created_at)):
+            asset = _found(assets, row.asset_id)
+            if asset is None:
+                continue
+            summary = AssetSummary(
+                name=asset.name, content_type=asset.content_type, size=asset.size
+            )
+            # The row's own ``asset`` (its reference) gives way to what a viewer may know of it.
+            listed.append(
+                AttachmentOf(**row.model_dump(exclude={"asset"}), asset=summary)
+            )
+        return AttachmentList(attachments=listed)
 
     def delete(self, id: str) -> None:
         """The attacher, or anyone who may edit the record, removes an attachment."""

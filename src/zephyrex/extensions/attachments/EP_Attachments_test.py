@@ -144,6 +144,12 @@ class TestAttachments(ExtensionServerMixin):
         assert [row["asset_id"] for row in listed.json()["attachments"]] == [
             asset["id"]
         ]
+        # It isn't user_b's asset, yet they see what the file is: its name, type and size.
+        assert listed.json()["attachments"][0]["asset"] == {
+            "name": "map.png",
+            "content_type": "image/png",
+            "size": len(PNG),
+        }
         assert (
             server.get(f"/v1/asset/{asset['id']}/content", headers=auth(user_b)).content
             == PNG
@@ -254,3 +260,39 @@ class TestAttachments(ExtensionServerMixin):
         )
         assert left.status_code == 200, left.text
         assert left.json()["attachments"] == []
+
+    def test_an_asset_gone_without_its_rows_drops_out_of_the_list(
+        self, server: Any, admin_a: Any, user_b: Any, table: Dict[str, Any]
+    ) -> None:
+        from zephyrex.extensions.attachments.BLL_Attachments import AssetManager
+        from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
+
+        kept = self._upload(server, admin_a, name="kept.pdf", kind="application/pdf")
+        lost = self._upload(server, admin_a, name="lost.png")
+        for made in (kept, lost):
+            assert (
+                self._attach(
+                    server,
+                    admin_a,
+                    made.json()["asset"]["id"],
+                    table["id"],
+                    role="document",
+                ).status_code
+                == 201
+            )
+        # The asset row alone, past AssetManager.delete's removal of its attachments.
+        AbstractBLLManager.delete(
+            AssetManager(
+                requester_id=admin_a.id, model_registry=server.app.state.model_registry
+            ),
+            lost.json()["asset"]["id"],
+        )
+        listed = server.get(
+            "/v1/attachment/of",
+            params={"target_entity_type": "team", "target_entity_id": table["id"]},
+            headers=auth(user_b),
+        )
+        assert listed.status_code == 200, listed.text
+        assert [row["asset"] for row in listed.json()["attachments"]] == [
+            {"name": "kept.pdf", "content_type": "application/pdf", "size": len(PNG)}
+        ]
