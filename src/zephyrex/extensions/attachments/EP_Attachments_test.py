@@ -205,6 +205,50 @@ class TestAttachments(ExtensionServerMixin):
         )
         assert unknown.status_code == 422
 
+    def test_several_attach_in_one_call_each_checked_first(
+        self, server: Any, admin_a: Any, admin_b: Any, table: Dict[str, Any]
+    ) -> None:
+        """``create(entities=[...])`` (a scenario's pictures copied in bulk)
+        checks every attachment as a single one is checked, before writing
+        any: one asset that isn't the requester's refuses the lot."""
+        from fastapi import HTTPException
+
+        from zephyrex.extensions.attachments.BLL_Attachments import (
+            AttachmentManager,
+        )
+
+        registry = server.app.state.model_registry
+        manager = AttachmentManager(requester_id=admin_a.id, model_registry=registry)
+        mine = [self._upload(server, admin_a).json()["asset"]["id"] for _ in range(2)]
+        theirs = self._upload(server, admin_b).json()["asset"]["id"]
+        target = {"target_entity_type": "team", "target_entity_id": table["id"]}
+
+        with pytest.raises(HTTPException) as refused:
+            manager.create(
+                entities=[{"asset_id": mine[0]}, {"asset_id": theirs, "role": "token"}],
+                **target,
+            )
+        assert refused.value.status_code == 404
+        assert manager.list(target_entity_id=table["id"]) == []
+
+        created = manager.create(
+            entities=[
+                {"asset_id": mine[0]},
+                {"asset_id": mine[1], "role": "token"},
+            ],
+            **target,
+        )
+        assert sorted((row.asset_id, row.role) for row in created) == sorted(
+            [(mine[0], "primary_image"), (mine[1], "token")]
+        )
+        listed = server.get(
+            "/v1/attachment/of",
+            params={"target_entity_type": "team", "target_entity_id": table["id"]},
+            headers=auth(admin_a),
+        )
+        assert listed.status_code == 200, listed.text
+        assert len(listed.json()["attachments"]) == 2
+
     def test_deleting_an_asset_removes_its_attachments(
         self, server: Any, admin_a: Any, table: Dict[str, Any]
     ) -> None:

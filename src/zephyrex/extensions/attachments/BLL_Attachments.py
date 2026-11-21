@@ -279,9 +279,23 @@ class AttachmentManager(AbstractBLLManager, RouterMixin):
     ]
 
     def create(self, **kwargs: Any) -> Any:
-        """One's own asset attached to a record one may edit."""
-        if kwargs.get("entities") is not None:
-            raise HTTPException(status_code=422, detail="Attach one asset at a time")
+        """One's own asset attached to a record one may edit; with
+        ``entities=[...]``, several, each checked so before any is written."""
+        entities = kwargs.pop("entities", None)
+        if entities is not None:
+            if not isinstance(entities, list) or not entities:
+                raise HTTPException(
+                    status_code=422, detail="entities is a non-empty list"
+                )
+            checked = [self._checked({**kwargs, **dict(e)}) for e in entities]
+            return super().create(entities=checked)
+        return super().create(**self._checked(kwargs))
+
+    def _checked(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """One attachment's fields once its asset is the requester's own and
+        its record one they may edit (404 otherwise, alike for missing)."""
+        if not kwargs.get("asset_id"):
+            raise HTTPException(status_code=422, detail="An attachment names its asset")
         role = str(kwargs.get("role") or "primary_image")
         if not ROLE_PATTERN.match(role):
             raise HTTPException(
@@ -301,12 +315,12 @@ class AttachmentManager(AbstractBLLManager, RouterMixin):
         ):
             # The same 404 whether the record is missing or merely not the requester's to change.
             raise HTTPException(status_code=404, detail="Record not found")
-        return super().create(
-            target_entity_type=target_type,
-            target_entity_id=target_id,
-            asset_id=kwargs["asset_id"],
-            role=role,
-        )
+        return {
+            "target_entity_type": target_type,
+            "target_entity_id": target_id,
+            "asset_id": kwargs["asset_id"],
+            "role": role,
+        }
 
     @custom_route(
         method="GET",
