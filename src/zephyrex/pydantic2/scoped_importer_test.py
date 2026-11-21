@@ -103,3 +103,24 @@ def test_clean_bypasses_the_cache(
 
     assert fresh == first
     assert fresh is not first
+
+
+def test_an_enabled_extension_no_root_holds_stops_the_boot_naming_it(
+    extension_tree: Callable[[], str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """It used to die on an undefined name inside the warning meant to say
+    which extension was missing (NameError: ext_path)."""
+    from zephyrex import StartupError
+
+    present = extension_tree()
+    _enable(monkeypatch, f"{present},zz_not_there")
+    with pytest.raises(StartupError) as err:
+        ScopedModuleImporter({})._scoped_import(
+            file_type=FILE_TYPE, scopes=["extensions"]
+        )
+    message = str(err.value)
+    assert "'zz_not_there'" in message
+    assert str(tmp_path) in message
+    assert "EXTENSIONS_PATH" in message

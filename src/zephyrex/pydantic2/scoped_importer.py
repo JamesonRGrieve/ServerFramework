@@ -10,6 +10,7 @@ registry keeps thin delegators so its public/test surface is unchanged.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from zephyrex.lib.Logging import logger
@@ -18,6 +19,21 @@ from zephyrex.lib.Paths import (
     find_extension_dir as _find_extension_dir,
     src_dir as _resolve_src_dir,
 )
+
+
+def _missing_extension(name: str) -> Exception:
+    """A boot that enables an extension no root holds stops here, naming it
+    and every directory searched (the consumer's roots, then the bundled
+    one), rather than starting without it."""
+    from zephyrex import StartupError
+
+    searched = [str(root) for root in _extension_roots()]
+    searched.append(str(Path(_resolve_src_dir()) / "extensions"))
+    return StartupError(
+        f"Enabled extension {name!r} was not found in any extensions root: "
+        + ", ".join(searched)
+        + " (check APP_EXTENSIONS and EXTENSIONS_PATH)"
+    )
 
 
 class ScopedModuleImporter:
@@ -104,12 +120,9 @@ class ScopedModuleImporter:
                     # extensions roots in order, then the bundled extensions
                     # inside the framework package.
                     for ext_name in enabled_extensions:
-                        if _find_extension_dir(ext_name).is_dir():
-                            expanded_scopes.append(f"extensions.{ext_name}")
-                        else:
-                            logger.warning(
-                                f"Enabled extension directory not found: {ext_path}"
-                            )
+                        if not _find_extension_dir(ext_name).is_dir():
+                            raise _missing_extension(ext_name)
+                        expanded_scopes.append(f"extensions.{ext_name}")
                 else:
                     logger.debug(
                         "No APP_EXTENSIONS configured, skipping extension imports"
@@ -409,7 +422,7 @@ class ScopedModuleImporter:
         # so there is exactly one owner per name; ``setdefault`` keeps the first
         # module that claims a name, replicating the original "break on first
         # match" semantics even in the theoretical duplicate case.
-        class_to_module: Dict[str, str] = {}
+        class_to_module: dict[str, str] = {}
         for other_module, classes in module_classes.items():
             for class_fqn in classes:
                 class_to_module.setdefault(class_fqn, other_module)
