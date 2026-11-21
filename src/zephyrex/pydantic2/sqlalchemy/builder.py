@@ -569,6 +569,20 @@ def _process_reference_fields(
                     if field_name not in own_ref_fields:
                         all_optional_fields.add(field_name)
 
+        elif base.__name__ == "Reference" and hasattr(base, "ID"):
+            # A required reference (``OtherModel.Reference``, made by ModelMeta): its id field is a
+            # foreign key that may not be null. Without this branch only ``.Optional`` references
+            # became foreign keys, so ``group_id`` from ``GroupModel.Reference`` was a plain column
+            # (16 Worldviews' migration gate, 2026-11-21).
+            try:
+                for field_name, field_type in get_type_hints(base.ID).items():
+                    if field_name not in own_ref_fields and is_reference_field_name(
+                        field_name
+                    ):
+                        all_ref_fields[field_name] = field_type
+            except Exception:
+                pass
+
         elif hasattr(base, "__qualname__") and (
             "ReferenceModel.Optional" in base.__qualname__
             or base.__name__.endswith("Optional")
