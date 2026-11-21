@@ -1,0 +1,12 @@
+# rooms
+
+Live change streams for a record's viewers. A **room** is a record (type + id, as `lib.RecordTarget` names it). Anyone who may VIEW that record, by its own manager, may join. Joining a room someone can't see answers 404, whether or not the record exists.
+
+- **Mapping:** `lib.Rooms.room_of(Manager, record -> None | (type, id) | [(type, id), ...])` registers hooks on that manager: AFTER create and update, plus BEFORE and AFTER delete (a deleted record's rooms are read before it goes). The hooks do nothing unless the app loads `rooms`, so an extension declares its rooms unconditionally. Dry runs skip AFTER hooks, so they publish nothing. Writes that bypass the manager (direct `DB.create`) publish nothing either.
+  - Bundled mappings: conversations map `ConversationManager` and `MessageManager` to `("conversation", id)`.
+- **Change:** `{id, room {type, id}, record {type, id}, op: created|updated|deleted, etag, changed_at}`. It never holds record data: clients refetch through the API under their own permissions, so payloads must not leak what the record would hide (coordinates, content).
+- **Log:** `room_events` (`RoomEventModel`, index `ix_room_events_room` on room_type, room_id, created_at). Each change is written as SYSTEM after the write commits, pruned past `RETENTION` (1 h) by a hard delete, and published on the event bus (`RoomChange`), which crosses processes once a broker bus is wired.
+- **Hub:** per-process streams by room. A stream more than `STREAM_QUEUE_SIZE` changes behind is closed, and the client reconnects with its cursor.
+- **Routes** (`/v1/room`, jwt):
+  - `GET /{room_type}/{room_id}/events?since=`: SSE. `Last-Event-ID` beats `since`. The stream joins first, then replays the logged changes after the cursor, dropping duplicates. Frames: `id:` + `event: change`; `event: reset` when the cursor is unknown or more than `REPLAY_LIMIT` (500) behind (refetch everything); `event: revoked` when an access recheck (every `ACCESS_RECHECK_SECONDS`, 60 s) fails, after which the stream ends. Comments keep it alive every 15 s.
+  - `GET /{room_type}/{room_id}/changes?after=&limit=` (1–500, default 100): `{changes, next, reset}`. Without `after` it returns no changes and `next` set to the latest change id. An unknown cursor gives `reset` and the latest id. A long backlog pages.

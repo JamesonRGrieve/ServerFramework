@@ -19,6 +19,12 @@ def _snake(name: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
+def record_type_of(model_class: type) -> str:
+    """The record type that names ``model_class``'s records (``location`` for
+    ``LocationModel``), as ``record_manager`` resolves it."""
+    return _snake(model_class.__name__.removesuffix("Model"))
+
+
 def record_manager(model_registry: Any, target_entity_type: str) -> Type[Any]:
     """The manager of the records ``target_entity_type`` names. 422 when no loaded one does."""
     if not TYPE_PATTERN.match(target_entity_type or ""):

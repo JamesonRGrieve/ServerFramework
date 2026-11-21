@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
+name = "rooms"
+version = "1.0.0"
+description = "Live change streams for a record's viewers: who may see a record hears when the records in its room change"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Rooms"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []

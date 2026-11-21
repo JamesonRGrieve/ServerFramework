@@ -44,6 +44,7 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.EventStream import event_stream
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import expect_route_record
+from zephyrex.lib.Rooms import room_of
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -1057,3 +1058,9 @@ async def _transcribe(audio_base64: str, filename: str) -> str:
 
 
 DirectMessageResponse.model_rebuild()
+
+# A conversation is a room (``rooms`` extension): its participants hear its
+# own changes and its messages' as they happen. A whisper's messages are in
+# the whisper's own conversation, so only its participants hear them.
+room_of(ConversationManager, lambda conversation: ("conversation", conversation.id))
+room_of(MessageManager, lambda message: ("conversation", message.conversation_id))
