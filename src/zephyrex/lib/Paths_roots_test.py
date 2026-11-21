@@ -59,7 +59,7 @@ def test_every_root_is_importable_as_zephyrex_extensions(
 ) -> None:
     own, other = roots
     set_extensions_root([own, other])
-    from zephyrex.extensions.world_shared.Contract import NAME  # type: ignore[import-not-found]
+    from zephyrex.extensions.world_shared.Contract import NAME
 
     assert NAME == "world contract"
 

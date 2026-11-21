@@ -8,7 +8,7 @@ manager (lib.RecordTarget). Each column and the index are added only when missin
 whose table was made from the current model is left as it is.
 """
 
-from typing import Sequence, Union
+from typing import Any, Sequence, Tuple, Union
 
 import sqlalchemy as sa
 from alembic import op
@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 TABLE = "metadata"
 INDEX = "ix_metadata_target"
-COLUMNS = (
+COLUMNS: Tuple["sa.Column[Any]", ...] = (
     sa.Column("target_entity_type", sa.String(), nullable=True),
     sa.Column("target_entity_id", sa.String(), nullable=True),
     sa.Column("value_type", sa.String(), nullable=True),

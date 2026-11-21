@@ -31,7 +31,7 @@ def _not_an_elf_named_bob(model: Any) -> Any:
     return model
 
 
-def _target() -> type:
+def _target() -> type[Any]:
     class PersonModel(BaseModel):
         name: str
 
@@ -52,7 +52,7 @@ def _target() -> type:
     return PersonModel
 
 
-def _extension() -> type:
+def _extension() -> type[Any]:
     class Kind_PersonModel(BaseModel):
         kind: Optional[str] = None
 
