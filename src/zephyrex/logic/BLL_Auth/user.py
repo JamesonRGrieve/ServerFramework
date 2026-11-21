@@ -94,6 +94,18 @@ ACCOUNT_STATE_FIELDS = frozenset({"active", "mfa_count"})
 USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
 
 
+USERNAME_MAY_NOT_CONTAIN = "@"
+
+
+def refuse_email_like_username(username: Optional[str]) -> None:
+    """A username may not contain ``@``. Login matches email or username in
+    one namespace, so a username shaped like an email nobody has registered
+    yet would take it: its owner could not register, and signing in as it
+    would reach the other account. ValueError (a 422) when it does."""
+    if username and USERNAME_MAY_NOT_CONTAIN in username:
+        raise ValueError("A username may not contain '@'")
+
+
 class UserModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
@@ -290,6 +302,7 @@ class UserModel(
                 _validate_email(self.email, check_deliverability=False)
             except EmailNotValidError as exc:
                 raise ValueError(f"Invalid email format: {exc}") from exc
+            refuse_email_like_username(self.username)
             return self
 
         invitation_id: Optional[str] = Field(
@@ -300,6 +313,12 @@ class UserModel(
     class Update(BaseModel, ImageMixinModel.Optional):
         email: Optional[str] = Field(None, description="User's email address")
         username: Optional[str] = Field(None, description="User's username")
+
+        @model_validator(mode="after")
+        def validate_username(self):
+            refuse_email_like_username(self.username)
+            return self
+
         display_name: Optional[str] = Field(None, description="User's display name")
         first_name: Optional[str] = Field(None, description="User's first name")
         last_name: Optional[str] = Field(None, description="User's last name")
@@ -799,6 +818,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
             kwargs["username"] = (
                 UserManager._normalize_identifier(kwargs["username"]) or None
             )
+            try:
+                refuse_email_like_username(kwargs["username"])
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             if kwargs["username"] and UserManager._identifier_taken(
                 kwargs["username"], self.model_registry, id
             ):

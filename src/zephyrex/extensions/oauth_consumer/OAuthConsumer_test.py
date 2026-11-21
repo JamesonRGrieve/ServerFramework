@@ -753,6 +753,18 @@ class TestAccounts(OAuthCase):
         user = flow.user_by_email(str(idp.account.email))[0]
         assert user.username is None
 
+    def test_a_provider_username_shaped_like_an_email_is_not_taken(
+        self, flow, idp, set_env
+    ):
+        # A username may not contain '@': one shaped like an unregistered
+        # email would take that address from whoever registers it later.
+        set_env("REGISTRATION_MODE", "open")
+        idp.account.preferred_username = generate_test_email("unregistered")
+        created = flow.sign_in(idp, flow.oidc(idp))
+        assert created.status_code == 200 and created.json()["new_user"]
+        user = flow.user_by_email(str(idp.account.email))[0]
+        assert user.username is None
+
     def test_sso_registration_creates_a_new_user_through_the_provider(
         self, flow, idp, set_env
     ):

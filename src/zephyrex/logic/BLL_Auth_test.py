@@ -4133,20 +4133,30 @@ class TestOneIdentifierNamespace:
             {"password": self.PASSWORD, **fields}, model_registry
         )
 
+    def held_as_username(self, model_registry: Any, address: str) -> Any:
+        """A user whose username is ``address``: stored before usernames
+        refused '@', so written to the row as such an account was."""
+        user = self.register(model_registry)
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        with model_registry.DB.manager._get_db_session() as session:
+            session.query(UserDB).filter(UserDB.id == user.id).update(
+                {UserDB.username: address.lower()}, synchronize_session=False
+            )
+        return user
+
     def test_a_username_cannot_be_set_to_another_users_email(self, model_registry):
         victim = self.register(model_registry)
         attacker = self.register(model_registry)
         manager = UserManager(requester_id=attacker.id, model_registry=model_registry)
         with pytest.raises(HTTPException) as refused:
             manager.update(id=attacker.id, username=f" {victim.email.upper()} ")
-        assert refused.value.status_code == 409
-        assert refused.value.detail == "Username already in use"
+        assert refused.value.status_code == 422  # a username has no '@'
         signed_in = _login(model_registry, victim.email, self.PASSWORD)
         assert signed_in["user"]["id"] == str(victim.id)
 
     def test_an_email_cannot_be_set_to_another_users_username(self, model_registry):
         address = generate_test_email("held_as_username")
-        self.register(model_registry, username=address)
+        self.held_as_username(model_registry, address)
         other = self.register(model_registry)
         manager = UserManager(requester_id=other.id, model_registry=model_registry)
         with pytest.raises(HTTPException) as refused:
@@ -4158,18 +4168,35 @@ class TestOneIdentifierNamespace:
         victim = self.register(model_registry)
         with pytest.raises(HTTPException) as refused:
             self.register(model_registry, username=victim.email.upper())
-        assert refused.value.status_code == 409
-        assert refused.value.detail == "Username already in use"
+        assert refused.value.status_code == 422  # a username has no '@'
 
     def test_registration_refuses_an_email_that_is_a_live_username(
         self, model_registry
     ):
         address = generate_test_email("taken_as_username")
-        self.register(model_registry, username=address)
+        self.held_as_username(model_registry, address)
         with pytest.raises(HTTPException) as refused:
             self.register(model_registry, email=address)
         assert refused.value.status_code == 409
         assert refused.value.detail == "Email already in use"
+
+    @pytest.mark.parametrize("username", ["bob@example.com", "a@b", "@bob"])
+    def test_a_username_may_not_contain_an_at_sign(self, model_registry, username):
+        """A username shaped like an email nobody has registered yet would
+        take that address: its owner could not register, and signing in as
+        it would reach the other account."""
+        with pytest.raises(HTTPException) as refused:
+            self.register(model_registry, username=username)
+        assert refused.value.status_code == 422
+        user = self.register(model_registry)
+        manager = UserManager(requester_id=user.id, model_registry=model_registry)
+        with pytest.raises(HTTPException) as refused:
+            manager.update(id=user.id, username=username)
+        assert refused.value.status_code == 422
+        root = UserManager(requester_id=env("ROOT_ID"), model_registry=model_registry)
+        with pytest.raises(HTTPException) as refused:
+            root.create(email=generate_test_email("root_made"), username=username)
+        assert refused.value.status_code == 422
 
     def test_registration_refuses_a_live_username_in_another_case(self, model_registry):
         username = f"taken_{uuid.uuid4().hex[:8]}"
@@ -4225,13 +4252,14 @@ class TestOneIdentifierNamespace:
     def test_a_deleted_user_holding_an_identifier_locks_no_one_out(
         self, model_registry
     ):
-        gone = self.register(model_registry)
+        username = f"reclaimed_{uuid.uuid4().hex[:8]}"
+        gone = self.register(model_registry, username=username)
         _soft_delete_user(model_registry, gone.id)
         taker = self.register(model_registry)
         UserManager(requester_id=taker.id, model_registry=model_registry).update(
-            id=taker.id, username=gone.email
+            id=taker.id, username=username
         )
-        signed_in = _login(model_registry, gone.email, self.PASSWORD)
+        signed_in = _login(model_registry, username, self.PASSWORD)
         assert signed_in["user"]["id"] == str(taker.id)
 
 

@@ -94,6 +94,7 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
     _invitation_hooks,
+    refuse_email_like_username,
     refuse_internal_account,
 )
 from zephyrex.logic.BLL_Auth.user import issue_browser_session
@@ -753,12 +754,19 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         )
 
     def _username_for(self, identity: Identity) -> Optional[str]:
-        """The provider's username, when no live local user signs in by it.
-        Usernames and emails are one namespace: a username equal to another
-        user's email would make login match two users and lock that user out."""
+        """The provider's username, when it is a valid username no live local
+        user signs in by. Usernames and emails are one namespace: a username
+        equal to another user's email would make login match two users and
+        lock that user out, and one shaped like an email (an IdP's
+        ``preferred_username`` often is) would take that address from whoever
+        registers it later (``refuse_email_like_username``)."""
         if identity.username is None:
             return None
         username = UserManager._normalize_identifier(identity.username)
+        try:
+            refuse_email_like_username(username)
+        except ValueError:
+            return None
         taken = UserManager._identifier_taken(username, self.model_registry)
         return None if taken else username
 

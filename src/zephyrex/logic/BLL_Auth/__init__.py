@@ -38,6 +38,7 @@ from zephyrex.logic.BLL_Auth.user import (
     UserCredentialModel as UserCredentialModel,
     UserManager as UserManager,
     UserModel as UserModel,
+    refuse_email_like_username as refuse_email_like_username,
 )
 from zephyrex.logic.BLL_Auth.team import (
     TeamManager as TeamManager,
