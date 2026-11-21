@@ -182,6 +182,25 @@ def test_get_error_reporter_attaches_traceparent_when_set():
 
 
 @pytest.mark.unit
+def test_sentry_init_never_runs_git(monkeypatch):
+    """The reporter names Sentry's release itself, so the SDK never shells out
+    to ``git rev-parse`` (no timeout) to guess one: a stuck git child hung a
+    whole test run."""
+    sentry_utils = pytest.importorskip("sentry_sdk.utils")
+    from zephyrex.extensions.observability.ErrorReporters import sentry_release
+
+    def no_git() -> None:
+        raise AssertionError("sentry_sdk ran git to guess a release")
+
+    monkeypatch.setattr(sentry_utils, "get_git_revision", no_git)
+    monkeypatch.delenv("SENTRY_RELEASE", raising=False)
+    SentryErrorReporter()
+    assert sentry_release().startswith("zephyrex@")
+    monkeypatch.setenv("SENTRY_RELEASE", "app@1.2.3")
+    assert sentry_release() == "app@1.2.3"
+
+
+@pytest.mark.unit
 def test_sentry_reporter_is_noop_when_sdk_missing():
     """When ``sentry_sdk`` is not installed, the reporter constructs
     cleanly and ``report`` is a no-op (never crashes the framework)."""

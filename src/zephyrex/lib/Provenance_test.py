@@ -44,6 +44,11 @@ def _package(root: Path) -> Path:
     return root
 
 
+# A stuck git fails the test instead of hanging the whole run (a -n 8 run sat
+# at 98% for minutes on a git child that never returned).
+GIT_HELPER_TIMEOUT_SECONDS = 60
+
+
 def _git(directory: Path, *arguments: str) -> None:
     """git on a throwaway repository, never the one running the tests (a
     pre-commit hook exports GIT_INDEX_FILE for the commit in progress)."""
@@ -52,6 +57,7 @@ def _git(directory: Path, *arguments: str) -> None:
         check=True,
         capture_output=True,
         env=Provenance._git_environment(),
+        timeout=GIT_HELPER_TIMEOUT_SECONDS,
     )
 
 

@@ -45,6 +45,18 @@ def _sentry_before_send(event: Any, hint: Any) -> Any:
     return event
 
 
+def sentry_release() -> str:
+    """The release Sentry tags events with: ``SENTRY_RELEASE`` when set (what
+    the SDK would read first), else this framework's version. Naming it here
+    stops the SDK guessing one by running ``git rev-parse`` with no timeout at
+    init, which can hang a process whose filesystem stalls."""
+    import os
+
+    from zephyrex import get_framework_version
+
+    return os.environ.get("SENTRY_RELEASE") or f"zephyrex@{get_framework_version()}"
+
+
 class SentryErrorReporter(ErrorReporter):
     """Routes exceptions to Sentry via ``sentry_sdk``. The SDK is an optional
     dependency: if it is not installed the reporter degrades to a no-op (with a
@@ -69,6 +81,7 @@ class SentryErrorReporter(ErrorReporter):
                         send_default_pii=False,
                         include_local_variables=False,
                         before_send=_sentry_before_send,
+                        release=sentry_release(),
                     )
             except Exception:
                 pass
