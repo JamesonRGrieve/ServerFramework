@@ -157,7 +157,11 @@ class LivePosted(ResponseModel):
 
 
 class LiveMessageEvent(ResponseModel):
-    """A message on a user's channel, as it crosses the event bus."""
+    """A message on a user's channel, as it crosses the event bus. Every
+    process gets each one (``broadcast``): the user's devices may be
+    connected to different processes."""
+
+    broadcast: ClassVar[bool] = True
 
     user_id: str
     channel: str

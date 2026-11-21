@@ -127,7 +127,11 @@ class RoomRef(ResponseModel):
 
 
 class RoomChange(ResponseModel):
-    """A change as clients receive it (and as it crosses the event bus)."""
+    """A change as clients receive it (and as it crosses the event bus). Every
+    process gets each one (``broadcast``): any of them may hold the room's
+    streams."""
+
+    broadcast: ClassVar[bool] = True
 
     id: str
     room: RoomRef

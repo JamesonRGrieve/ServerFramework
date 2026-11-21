@@ -183,6 +183,11 @@ class PRV_Valkey(AbstractDatabaseMemoryProvider):
         )
 
 
+# Pub/sub channels for broadcast events are the topic under this prefix, so
+# they never collide with a stream key of the same topic.
+BROADCAST_PREFIX = "broadcast:"
+
+
 class _ValkeyStreamsTransport:
     """Concrete `BrokerTransport` backed by `PRV_Valkey`.
 
@@ -263,6 +268,49 @@ class _ValkeyStreamsTransport:
                 raise
 
         self._consumer_tasks.append(asyncio.create_task(_consume()))
+
+    async def broadcast(self, topic: str, payload: bytes) -> None:
+        """Every process's ``subscribe_broadcast`` receives it: Valkey pub/sub,
+        not the stream's consumer group, which hands each entry to one
+        consumer. Pub/sub keeps nothing for a process that isn't listening;
+        a live stream that needs catch-up keeps its own log (rooms)."""
+        if self._closed:
+            raise RuntimeError("Valkey streams transport is closed")
+        client = await self._client()
+        await client.publish(f"{BROADCAST_PREFIX}{topic}", payload)
+
+    async def subscribe_broadcast(
+        self, topic: str, handler: Callable[[bytes], Awaitable[None]]
+    ) -> None:
+        if self._closed:
+            raise RuntimeError("Valkey streams transport is closed")
+        client = await self._client()
+        pubsub = client.pubsub()
+        await pubsub.subscribe(f"{BROADCAST_PREFIX}{topic}")
+
+        async def _listen() -> None:
+            try:
+                while not self._closed:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=1.0
+                    )
+                    if message is None or message.get("type") != "message":
+                        continue
+                    try:
+                        await handler(message["data"])
+                    except Exception as exc:  # noqa: BLE001
+                        _logger.error(
+                            "Valkey broadcast handler error on %s: %s", topic, exc
+                        )
+            except asyncio.CancelledError:
+                raise
+            finally:
+                try:
+                    await pubsub.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        self._consumer_tasks.append(asyncio.create_task(_listen()))
 
     async def close(self) -> None:
         self._closed = True

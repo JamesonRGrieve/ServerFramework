@@ -183,6 +183,19 @@ class BrokerTransport(ABC):
     async def close(self) -> None:
         """Drain subscribers and tear down any held connections."""
 
+    async def broadcast(self, topic: str, payload: bytes) -> None:
+        """Publish ``payload`` to every subscriber in every process (see
+        ``is_broadcast``). A transport whose ``send`` already reaches every
+        subscriber (the in-process one) needs nothing more; one that shares
+        work across consumers (a consumer group) overrides this."""
+        await self.send(topic, payload)
+
+    async def subscribe_broadcast(
+        self, topic: str, handler: Callable[[bytes], Awaitable[None]]
+    ) -> None:
+        """Receive every ``broadcast`` on ``topic`` in this process."""
+        await self.subscribe(topic, handler)
+
 
 class InMemoryBrokerTransport(BrokerTransport):
     """Real publish/subscribe semantics, in-process. Production transports
@@ -227,6 +240,14 @@ class InMemoryBrokerTransport(BrokerTransport):
 # ---------------------------------------------------------------------------
 
 
+def is_broadcast(event_class: type[BaseModel]) -> bool:
+    """Whether every process must receive each event of this class (a class
+    declaring ``broadcast: ClassVar[bool] = True``): live streams (rooms,
+    live_sync) whose listeners are spread over the server's processes. Other
+    events are work, handled once by whichever process takes it."""
+    return getattr(event_class, "broadcast", False) is True
+
+
 class _BrokerEventBus(AbstractEventBus):
     """Shared adapter base for broker-backed buses.
 
@@ -257,7 +278,10 @@ class _BrokerEventBus(AbstractEventBus):
     async def publish(self, event: BaseModel) -> None:
         topic = self._topic_for(event.__class__)
         payload = json.dumps(event.model_dump()).encode("utf-8")
-        await self._transport.send(topic, payload)
+        if is_broadcast(event.__class__):
+            await self._transport.broadcast(topic, payload)
+        else:
+            await self._transport.send(topic, payload)
 
     def subscribe(self, event_class: type[BaseModel], handler: EventHandler) -> None:
         topic = self._topic_for(event_class)
@@ -270,16 +294,21 @@ class _BrokerEventBus(AbstractEventBus):
             # async context to wire the topic up.
             try:
                 loop = asyncio.get_event_loop()
+                wire = self._wire_subscription(topic, is_broadcast(event_class))
                 if loop.is_running():
-                    loop.create_task(self._wire_subscription(topic))
+                    loop.create_task(wire)
                 else:
-                    loop.run_until_complete(self._wire_subscription(topic))
+                    loop.run_until_complete(wire)
             except RuntimeError:
                 # No event loop available; subscription is deferred.
                 pass
 
-    async def _wire_subscription(self, topic: str) -> None:
-        await self._transport.subscribe(topic, self._dispatch_factory(topic))
+    async def _wire_subscription(self, topic: str, broadcast: bool = False) -> None:
+        dispatch = self._dispatch_factory(topic)
+        if broadcast:
+            await self._transport.subscribe_broadcast(topic, dispatch)
+        else:
+            await self._transport.subscribe(topic, dispatch)
 
     def _dispatch_factory(self, topic: str) -> Callable[[bytes], Awaitable[None]]:
         async def _dispatch(payload: bytes) -> None:

@@ -104,7 +104,7 @@ can pick a backend by ability without hard-coding the provider name:
 
 - **`key_value`** — `client.set(k, v)` / `client.get(k)` / `client.delete(k)` / `client.expire(k, seconds)`
 - **`streams`** — `transport.send(topic, payload)` / `transport.subscribe(topic, handler)` / `transport.close()` via `provider.build_streams_transport(instance)`
-- **`pubsub`** — `client.publish(channel, payload)` / `client.subscribe(channel)` (consumed only by application code; the EventBus uses streams instead for at-least-once delivery)
+- **`pubsub`** — `client.publish(channel, payload)` / `client.subscribe(channel)`. The EventBus uses streams for work events (at-least-once, one consumer per event through the shared `zephyrex` consumer group). Events whose class declares `broadcast: ClassVar[bool] = True` (`RoomChange`, `LiveMessageEvent`) go over pub/sub instead, on channel `broadcast:<topic>` (`_ValkeyStreamsTransport.broadcast` / `subscribe_broadcast`), because every process must receive them: a consumer group would hand each one to a single process, and streams held by the others would miss it. Pub/sub keeps nothing for a process that isn't listening; rooms' own change log covers catch-up.
 - **`counter`** — `client.incrby(k, n)` / `client.decrby(k, n)` (used by Item 71's multi-process rate limiter and by Item 69's `DistributedCounter` backend)
 
 ## Streams as the EventBus transport
