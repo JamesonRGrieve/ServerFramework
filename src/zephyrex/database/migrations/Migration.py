@@ -9,7 +9,6 @@ import os
 import shutil
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,11 +18,6 @@ from filelock import FileLock, Timeout
 # Get the current file's directory
 current_file_dir = Path(__file__).resolve().parent
 template_dir = current_file_dir / "template"
-src_path = Path(__file__).resolve().parent.parent.parent
-
-# Add project root and src directories to path
-if str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
 
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Paths import extension_roots, find_extension_dir
@@ -121,23 +115,16 @@ class MigrationManager:
     _extensions_dir_name = "extensions"
 
     @staticmethod
-    def env_setup_python_path(file_path):
-        """Sets up the Python path for imports."""
+    def env_paths(file_path):
+        """The migration tree's directories, from ``env.py``'s own path. Leaves
+        ``sys.path`` alone: this module is imported as ``zephyrex.…``, and
+        putting the package directory on the path made bare ``lib``/``extensions``
+        importable too, so a module could load twice under two names."""
         current_file_path = file_path
         migrations_dir = current_file_path.parent
         database_dir = migrations_dir.parent
         src_dir = database_dir.parent
         root_dir = src_dir.parent
-
-        # Normalize paths to avoid duplicated segments
-        src_dir_norm = str(src_dir)
-        root_dir_norm = str(root_dir)
-
-        # Add to Python path if not already present
-        if root_dir_norm not in sys.path:
-            sys.path.insert(0, root_dir_norm)
-        if src_dir_norm not in sys.path:
-            sys.path.insert(0, src_dir_norm)
 
         return {
             "migrations_dir": migrations_dir,
@@ -525,7 +512,7 @@ class MigrationManager:
         # Set class variable for static methods to access
         MigrationManager._extensions_dir_name = extensions_dir
 
-        self.paths = self._setup_python_path()
+        self.paths = self._resolve_paths()
         self.current_extension = None
         self.configured_extensions = self._get_configured_extensions()
         # Extensions an upgrade found without migration files; their tables
@@ -617,8 +604,8 @@ class MigrationManager:
 
     #     return logger
 
-    def _setup_python_path(self):
-        """Set up Python path for imports.
+    def _resolve_paths(self):
+        """The directories migrations work in (it leaves ``sys.path`` alone).
 
         Item 62: Consults ``lib.Paths.extensions_dir()`` for the extensions
         root rather than computing it inline as ``<src>/<extensions_dir_name>``.
@@ -653,10 +640,6 @@ class MigrationManager:
             and getattr(self, "extensions_dir_name", "extensions") != "extensions"
         ):
             extensions_dir = src_dir / self.extensions_dir_name
-
-        for path in [str(root_dir), str(src_dir)]:
-            if path not in sys.path:
-                sys.path.insert(0, path)
 
         return {
             "migrations_dir": migrations_dir,
@@ -1213,7 +1196,7 @@ class MigrationManager:
         self, extension_name=None, all_extensions=False, message=None
     ):
         """Delete existing migrations and regenerate from scratch"""
-        logger.debug(f"Starting regeneration of migrations")
+        logger.debug("Starting regeneration of migrations")
 
         if message is None:
             message = "initial schema"

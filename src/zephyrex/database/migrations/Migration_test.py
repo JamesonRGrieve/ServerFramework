@@ -682,7 +682,7 @@ def test_item62_extensions_path_override_routes_through_paths(tmp_path):
     mgr.extensions_dir_name = "extensions"
     mgr.database_dir_name = "database"
     mgr._extensions_path_override = str(ext_root)
-    mgr.paths = mgr._setup_python_path()
+    mgr.paths = mgr._resolve_paths()
 
     # The resolved extensions_dir must equal the override.
     assert (
@@ -720,7 +720,7 @@ def test_item62_global_paths_override_picked_up(tmp_path):
         mgr.extensions_dir_name = "extensions"
         mgr.database_dir_name = "database"
         mgr._extensions_path_override = None
-        mgr.paths = mgr._setup_python_path()
+        mgr.paths = mgr._resolve_paths()
 
         assert Path(mgr.paths["extensions_dir"]).resolve() == ext_root.resolve()
         names = [n for n, _ in mgr.discover_extension_migration_dirs()]
@@ -742,7 +742,7 @@ def test_item62_no_override_falls_back_to_bundled():
         mgr.extensions_dir_name = "extensions"
         mgr.database_dir_name = "database"
         mgr._extensions_path_override = None
-        mgr.paths = mgr._setup_python_path()
+        mgr.paths = mgr._resolve_paths()
 
         # Bundled extensions dir is at <src>/extensions.
         expected = (Path(mgr.paths["src_dir"]) / "extensions").resolve()

@@ -28,7 +28,7 @@ from zephyrex.lib.Logging import logger
 from zephyrex.lib.Paths import extensions_dir as resolve_extensions_dir
 
 current_file = Path(__file__).resolve()
-paths = MigrationManager.env_setup_python_path(current_file)
+paths = MigrationManager.env_paths(current_file)
 
 # Item 62 — Make the active extensions root discoverable to env_*.
 # ``resolve_extensions_dir`` honors per-instance overrides set via
