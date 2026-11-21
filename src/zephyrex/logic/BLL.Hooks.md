@@ -12,6 +12,7 @@ The BLL hook system allows you to execute custom code before or after any method
 - **Priority ordering**: Control execution order with numeric priorities
 - **Conditional execution**: Use conditions to control when hooks run
 - **Type safety**: Full TypeScript-like type annotations and IDE support
+- **Dry runs skip AFTER hooks**: while the manager's database has an open `rollback_scope()` (the admin CLI's `--dry-run`), AFTER hooks don't run, since their effects (mail, uploads, webhooks) don't roll back. Each is listed in the scope's `skipped_hooks`. BEFORE hooks (validation, security) still run.
 
 ### Extension Hook Path Format
 

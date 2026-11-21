@@ -137,28 +137,9 @@ X-API-Key: <api_key_header>
 ## User Management
 
 ### User Creation & Registration
-```python
-user_manager = UserManager(
-    model_registry=model_registry,
-    requester_id=requester_id
-)
-
-# Standard user creation
-user = user_manager.create(
-    email="user@example.com",
-    username="username",
-    password="secure_password",
-    first_name="John",
-    last_name="Doe"
-)
-
-# Registration with invitation acceptance
-user = user_manager.create(
-    email="user@example.com",
-    password="secure_password",
-    invitation_code="ABC12345"
-)
-```
+- **`UserManager.register(registration_data, model_registry, request, authorization)`** (static; `POST /v1/user`): the public sign-up path. It obeys `REGISTRATION_MODE` (closed, invite and sso refuse with 403), takes credentials from the body or Basic auth (not both), accepts only `REGISTRATION_FIELDS` (anything else becomes metadata only with `ACCEPT_REGISTRATION_METADATA=true`), needs a password, and applies an invitation (`invitation_code`/`invitation_id`) through the auth_invitations hooks.
+- **`UserManager.create(**fields)`**: ROOT only (403 otherwise), whatever `REGISTRATION_MODE` says. It is for server-side creation: the admin CLI's `user create`, and `record create user` as ROOT. It takes `REGISTRATION_FIELDS`, `ACCOUNT_STATE_FIELDS` (`active`, `mfa_count`) and an optional `password`; anything else is 422.
+- **Both share** `_validated_account(fields, password, model_registry, password_required)`, which runs, in order: the Create schema (422), a taken email (409), a missing email or required password (422), the password policy, a taken username (409). Both also share `_store_account(model_fields, password, model_registry)`: the user row as ROOT, then, with a password, the user's own self-created credential.
 
 ### Password Management
 ```python

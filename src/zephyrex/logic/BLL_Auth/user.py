@@ -682,9 +682,97 @@ class UserManager(AbstractBLLManager, RouterMixin):
         return self._sessions
 
     def create(self, **kwargs):
-        raise NotImplementedError(
-            "Intentionally not implemented. Use the `register` method instead."
+        """Create a user directly: ROOT only (the admin CLI, ``record create
+        user`` as ROOT), whatever ``REGISTRATION_MODE`` says; everyone else
+        registers. Takes the registration fields, the account-state ones
+        (``active``, ``mfa_count``) and an optional ``password``, checks
+        them as ``register`` does and stores them through the same path."""
+        from zephyrex.database.StaticPermissions import is_root_id
+
+        if not is_root_id(self.requester.id):
+            raise HTTPException(
+                status_code=403,
+                detail="Users register; only root may create one directly",
+            )
+        self._strip_server_controlled_fields(kwargs)
+        password = kwargs.pop("password", None)
+        for key in ("email", "username"):
+            if isinstance(kwargs.get(key), str):
+                kwargs[key] = UserManager._normalize_identifier(kwargs[key]) or None
+        unknown = sorted(set(kwargs) - REGISTRATION_FIELDS - ACCOUNT_STATE_FIELDS)
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail=f"Not settable on a user: {unknown}"
+            )
+        UserManager._validated_account(
+            kwargs, password, self.model_registry, password_required=False
         )
+        return UserManager._store_account(kwargs, password, self.model_registry)
+
+    @staticmethod
+    def _validated_account(
+        fields: Dict[str, Any],
+        password: Optional[str],
+        model_registry: Any,
+        *,
+        password_required: bool,
+    ) -> "UserModel.Create":
+        """A new account's checks, shared by ``register`` and ``create``, in
+        this order: the Create schema (422); a taken email (409; login
+        matches email or username, ``_identifier_taken``); a missing email,
+        or password where required (422); the password policy; a taken
+        username (409)."""
+        try:
+            entity = UserModel.Create(
+                **{k: v for k, v in fields.items() if k != "password"}
+            )
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Validation error", "details": e.errors()},
+            )
+        if UserManager._identifier_taken(entity.email, model_registry):
+            raise HTTPException(status_code=409, detail="Email already in use")
+        if not fields.get("email") or (password_required and not password):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Email and password are required."
+                    if password_required
+                    else "Email is required."
+                ),
+            )
+        if password is not None:
+            enforce_password_policy(password)
+        if entity.username and UserManager._identifier_taken(
+            entity.username, model_registry
+        ):
+            raise HTTPException(status_code=409, detail="Username already in use")
+        return entity
+
+    @staticmethod
+    def _store_account(
+        model_fields: Dict[str, Any], password: Optional[str], model_registry: Any
+    ) -> "UserModel":
+        """Store a checked account: the user row as ROOT, then, with a
+        password, the user's own credential. The user owns and self-creates
+        it so that the strict permission filter (which hides ROOT-created
+        records from non-ROOT viewers) does not block them from listing or
+        editing it during a password change."""
+        user = UserModel.DB(model_registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            override_dto=model_registry.apply(UserModel),
+            return_type="dto",
+            **model_fields,
+        )
+        if password is not None:
+            UserCredentialManager(
+                requester_id=user.id,
+                target_id=user.id,
+                model_registry=model_registry,
+            ).create(user_id=user.id, password=password)
+        return user  # type: ignore[no-any-return]
 
     def update(self, id: str, **kwargs):
         """Update a user with optional metadata"""
@@ -1870,7 +1958,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         model_registry,
         request: Request | None = None,
         authorization: Optional[str] | None = None,
-    ) -> dict:
+    ) -> "UserModel":
         """
         Register a new user with the provided data.
         Handles validation, creation, metadata, credentials, and invitation acceptance.
@@ -1999,34 +2087,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
         invitation_details = None
 
         # Create a temporary entity for validation
-        temp_entity_data = {
-            k: v for k, v in registration_data.items() if k != "password"
-        }
-        try:
-            temp_entity = UserModel.Create(**temp_entity_data)
-        except ValidationError as e:
-            raise HTTPException(
-                status_code=422,
-                detail={"message": "Validation error", "details": e.errors()},
-            )
-
-        # The email and username must not be a live user's email or
-        # username: login matches either (``_identifier_taken``).
-        if UserManager._identifier_taken(temp_entity.email, model_registry):
-            raise HTTPException(status_code=409, detail="Email already in use")
-
-        if not email or not password:
-            raise HTTPException(
-                status_code=422, detail="Email and password are required."
-            )
-        # Before the user row exists: a refused password must not leave an
-        # account with no credential behind.
-        enforce_password_policy(password)
-
-        if temp_entity.username and UserManager._identifier_taken(
-            temp_entity.username, model_registry
-        ):
-            raise HTTPException(status_code=409, detail="Username already in use")
+        # Checked before the user row exists: a refused password must not
+        # leave an account with no credential behind.
+        UserManager._validated_account(
+            registration_data, password, model_registry, password_required=True
+        )
 
         # Handle invitation acceptance scenarios via the auth_invitations
         # extension hooks. When the extension is not loaded, both branches
@@ -2125,14 +2190,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 f"UserManager.register: Processing invitation with team_id={invitation_details.get('team_id')}, role_id={invitation_details.get('role_id')}"
             )
 
-        # Create the user
-        user = UserModel.DB(model_registry.DB.manager.Base).create(
-            requester_id=root_id,
-            model_registry=model_registry,
-            override_dto=model_registry.apply(UserModel),
-            return_type="dto",
-            **model_fields,
-        )
+        user = UserManager._store_account(model_fields, password, model_registry)
 
         # Create metadata if provided (via metadata extension hook).
         if metadata_fields and user:
@@ -2152,17 +2210,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         model_registry,
                         requester_id=root_id,
                     )
-
-        # Create credentials for the user. The user owns and self-creates their
-        # own credential row so that the strict permission filter (which hides
-        # ROOT-created records from non-ROOT viewers) does not block the user
-        # from listing/editing their own credential during password change.
-        credentials_manager = UserCredentialManager(
-            requester_id=user.id,
-            target_id=user.id,
-            model_registry=model_registry,
-        )
-        credentials_manager.create(user_id=user.id, password=password)
 
         # Handle invitation acceptance via the auth_invitations extension
         # (Scope #4). The `apply_to_user` hook runs the entire invitee +
@@ -2217,7 +2264,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     f"{invitation_details.get('code')} during registration"
                 )
 
-        return user  # type: ignore[no-any-return]
+        return user
 
     def list_invitations_for_user(self) -> Dict[str, List[Dict[str, Any]]]:
         """Invitations awaiting the caller's answer (see the auth_invitations

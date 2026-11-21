@@ -18,7 +18,7 @@ Read **before your first edit**:
 ```
 src/zephyrex/
   app.py                App bootstrap, instance(), build_app()
-  cli.py                CLI entry point (run, bootstrap, version)
+  cli/                  CLI: server commands (run, migrate, bootstrap, version) and the admin CLI (cli/CLI.md)
   __init__.py           Public facade: run(), instance(), set_extensions_root()
   logic/                Business logic managers (BLL_Auth, BLL_Providers, AbstractLogicManager)
   endpoints/            REST endpoints, AbstractEPTest

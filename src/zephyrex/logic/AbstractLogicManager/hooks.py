@@ -16,6 +16,7 @@ from typing import (
 
 import numpy as np
 
+from zephyrex.database.DatabaseManager import RollbackScope
 from zephyrex.lib.ClassMembers import instance_methods
 from zephyrex.lib.Logging import logger
 
@@ -911,8 +912,20 @@ def wrap_method_with_hooks(
         context.result = result
         context.timing = HookTiming.AFTER
 
-        # Execute after hooks
+        # Execute after hooks; a dry run (an open rollback scope) records them
+        # instead, since their effects (mail, uploads, webhooks) don't roll back.
+        rollback = getattr(
+            getattr(getattr(self, "model_registry", None), "database_manager", None),
+            "rollback",
+            None,
+        )
         for hook_info in hooks["after"]:
+            if isinstance(rollback, RollbackScope):
+                rollback.skipped_hooks.append(
+                    f"{type(self).__name__}.{method_name}: "
+                    f"{getattr(hook_info['func'], '__qualname__', hook_info['func'])}"
+                )
+                continue
             if _should_execute_hook(hook_info, context):
                 try:
                     import asyncio

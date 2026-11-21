@@ -11,7 +11,8 @@ Loguru-based logging system with custom levels and environment-driven configurat
 **Key Features:**
 - Custom log level definitions beyond standard levels
 - Environment variable configuration (`LOG_LEVEL` and `TZ`)
-- Structured output to stdout with timezone formatting
+- Structured output to stdout with timezone formatting (JSON lines when `LOG_FORMAT=json`)
+- `route_logs_to(stream)` moves the one framework sink to another stream and returns the previous one; the admin CLI sends logs to stderr while a command runs, so stdout carries only its JSON
 - Color-coded log levels for readability
 - Global logger instance for framework-wide use
 

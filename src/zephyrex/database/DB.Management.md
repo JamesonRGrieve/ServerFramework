@@ -90,6 +90,8 @@ Consolidated database connectivity and engine setup. SQLite is the production-re
 - Support for manual transaction control
 - Thread-local session cleanup via cleanup_thread()
 
+**Rollback scope (`rollback_scope()`):** a context manager yielding a `RollbackScope`. While it is open, every sync session (`get_session`, `_get_db_session`) binds to one connection whose outer transaction is rolled back on exit, even when the body raises. Sessions join it with `join_transaction_mode="create_savepoint"`, so their own `commit()` releases only a savepoint and later reads in the scope see the writes. On SQLite the connection goes into driver autocommit and `BEGIN` is emitted explicitly (pysqlite doesn't begin it), and its isolation level is restored afterwards. An open scope wins over replica routing. Scopes don't nest (`RuntimeError`), and async sessions aren't covered. Managers skip AFTER hooks while it is open, recording each as `Manager.method: hook` in `scope.skipped_hooks`. Used by the admin CLI's `--dry-run` (`cli/CLI.md`).
+
 ### Isolated Instance Support
 **Testing and Multi-Database Support:**
 ```python

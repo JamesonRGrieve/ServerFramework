@@ -57,7 +57,7 @@ uncaught exceptions to the configured backend.
 import re
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Mapping
+from typing import Any, Mapping, TextIO
 from zoneinfo import ZoneInfo
 
 from loguru import logger as _loguru_logger
@@ -262,18 +262,37 @@ logger.level("VERBOSE", no=5, color="<blue>")
 logger.level("SQL", no=3, color="<magenta>")
 
 _log_format_setting = env("LOG_FORMAT")
-# diagnose=False: a traceback never prints its frames' local variables,
-# which hold passwords, hashes and tokens.
-if _log_format_setting.lower() == "json":
-    logger.add(
-        sys.stdout,
-        level=log_level,
-        filter=format_with_timezone,
-        serialize=True,
-        diagnose=False,
+
+
+def _add_log_sink(stream: TextIO) -> int:
+    """Add the framework's log sink on ``stream`` (JSON lines when
+    ``LOG_FORMAT=json``). diagnose=False: a traceback never prints its frames'
+    local variables, which hold passwords, hashes and tokens."""
+    return int(
+        logger.add(
+            stream,
+            level=log_level,
+            filter=format_with_timezone,
+            serialize=_log_format_setting.lower() == "json",
+            diagnose=False,
+        )
     )
-else:
-    logger.add(sys.stdout, level=log_level, filter=format_with_timezone, diagnose=False)
+
+
+_log_stream: TextIO = sys.stdout
+_log_sink_id = _add_log_sink(_log_stream)
+
+
+def route_logs_to(stream: TextIO) -> TextIO:
+    """Move the framework's log sink to ``stream`` and return the stream it
+    left. The admin CLI sends logs to stderr so stdout carries only its JSON
+    result, and moves them back when the command ends."""
+    global _log_sink_id, _log_stream
+    previous = _log_stream
+    logger.remove(_log_sink_id)
+    _log_stream = stream
+    _log_sink_id = _add_log_sink(stream)
+    return previous
 
 
 # ---------------------------------------------------------------------------

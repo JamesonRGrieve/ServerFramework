@@ -1516,6 +1516,49 @@ class {class_name}(Base):
 
         return True
 
+    def status(self, extensions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Where the database stands: core, then each extension that ships
+        revision files, in migration order. Each component gives its heads
+        (from its versions dir), the revisions the database is at (from its
+        version table) and whether those match. Runs no migration."""
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import create_engine
+
+        names = self._compute_migration_order(
+            list(extensions or self._get_configured_extensions())
+        )
+        components = [(None, self._resolve_core_versions_dir())] + [
+            (name, versions_dir)
+            for name in names
+            for versions_dir in [self._resolve_extension_versions_dir(name)]
+            if versions_dir.exists()
+            and any(f.name != "__init__.py" for f in versions_dir.glob("*.py"))
+        ]
+        engine = create_engine(self.db_info["url"])
+        rows: List[Dict[str, Any]] = []
+        try:
+            with engine.connect() as connection:
+                for name, versions_dir in components:
+                    cfg = self._make_alembic_config(name, versions_dir)
+                    heads = sorted(ScriptDirectory.from_config(cfg).get_heads())
+                    context = MigrationContext.configure(
+                        connection,
+                        opts={"version_table": cfg.get_main_option("version_table")},
+                    )
+                    current = sorted(context.get_current_heads())
+                    rows.append(
+                        {
+                            "component": name or "core",
+                            "heads": heads,
+                            "current": current,
+                            "up_to_date": set(current) == set(heads),
+                        }
+                    )
+        finally:
+            engine.dispose()
+        return rows
+
     def run_all_migrations(self, command, target="head", extensions=None):
         """Run migrations for core and all extensions"""
         logger.debug(

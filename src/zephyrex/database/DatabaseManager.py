@@ -10,8 +10,9 @@ import threading
 from contextlib import asynccontextmanager, contextmanager
 from enum import Enum
 from os import makedirs, path
+from dataclasses import dataclass, field
 from threading import local
-from typing import AsyncGenerator, Dict, Generator, List, Optional
+from typing import AsyncGenerator, Dict, Generator, Iterator, List, Optional
 from weakref import WeakSet
 
 from sqlalchemy import UUID, String, create_engine, event
@@ -35,6 +36,16 @@ from zephyrex.lib.Logging import logger
 Operation = Enum("Operation", ["CREATE", "READ", "UPDATE", "DELETE"])
 
 _WORKER_NOT_INITIALIZED = "Session factory not initialized; call init_worker() first"
+
+
+@dataclass
+class RollbackScope:
+    """An open :meth:`DatabaseManager.rollback_scope`: the session factory every
+    sync session binds to while it is open, and the AFTER hooks it kept from
+    running (``Manager.method: hook``), which a dry run reports."""
+
+    session_factory: sessionmaker
+    skipped_hooks: List[str] = field(default_factory=list)
 
 
 def _redact_db_uri(uri: Optional[str]) -> str:
@@ -288,6 +299,7 @@ class DatabaseManager:
         self._session_factory: Optional[sessionmaker] = None
         self._async_session_factory: Optional[async_sessionmaker] = None
         self._worker_initialized = False
+        self.rollback: Optional[RollbackScope] = None
 
         # Item 54 — read-replica routing state.
         # Replica engines and session factories are keyed by URL. The
@@ -565,7 +577,11 @@ class DatabaseManager:
         been called in the current request context, this method binds
         primary regardless of `@read_only`. The contextvar is set by the
         before-flush event listener registered on every primary session.
+        An open rollback scope wins over both: its writes are visible only
+        on its own connection.
         """
+        if self.rollback is not None:
+            return self.rollback.session_factory
         if (
             should_route_to_replica()
             and self._replica_pool is not None
@@ -709,6 +725,54 @@ class DatabaseManager:
             self._active_sessions.add(session)
 
         return session  # type: ignore[no-any-return]
+
+    @contextmanager
+    def rollback_scope(self) -> Iterator[RollbackScope]:
+        """Run every sync session of this manager inside one outer transaction
+        that is rolled back on exit, whatever the sessions commit.
+
+        Sessions join the outer transaction through a savepoint
+        (``join_transaction_mode="create_savepoint"``), so a manager's own
+        ``commit()`` only releases its savepoint and its writes stay visible
+        to later reads in the scope. pysqlite never begins the outer
+        transaction itself, so on SQLite the connection is put in driver
+        autocommit and ``BEGIN`` is emitted explicitly; its isolation level
+        is restored before the connection returns to the pool. Async
+        sessions are not covered (no manager write uses them). While the
+        scope is open, managers skip AFTER hooks (see ``hooks.py``) and list
+        them in ``skipped_hooks``.
+        """
+        if self.rollback is not None:
+            raise RuntimeError("A rollback scope is already open on this database")
+        if not self._worker_initialized:
+            self.init_worker()
+        if self.engine is None:
+            raise RuntimeError(_WORKER_NOT_INITIALIZED)
+        connection = self.engine.connect()
+        raw = connection.connection.dbapi_connection
+        sqlite = self._database_type == "sqlite"
+        previous_isolation = raw.isolation_level if sqlite else None  # type: ignore[union-attr]
+        if sqlite:
+            raw.isolation_level = None  # type: ignore[union-attr]
+        outer = connection.begin()
+        if sqlite:
+            connection.exec_driver_sql("BEGIN")
+        self.rollback = RollbackScope(
+            sessionmaker(
+                bind=connection,
+                join_transaction_mode="create_savepoint",
+                autoflush=False,
+                expire_on_commit=False,
+            )
+        )
+        try:
+            yield self.rollback
+        finally:
+            self.rollback = None
+            outer.rollback()
+            if sqlite:
+                raw.isolation_level = previous_isolation  # type: ignore[union-attr]
+            connection.close()
 
     @staticmethod
     def _attach_primary_write_listener(session: Session) -> None:
