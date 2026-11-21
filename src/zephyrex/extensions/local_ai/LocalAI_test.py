@@ -154,3 +154,34 @@ async def test_a_new_model_is_loaded_pinned(models, monkeypatch, tmp_path):
     assert answer == "a"
     found = models.get("a")
     assert found is not None and found.pins == 0
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda ext: ext.chat(
+            [{"role": "user", "content": "hi"}], model="m", requester_id="u1"
+        ),
+        lambda ext: ext.complete_text("hi", model="m", requester_id="u1"),
+        lambda ext: ext.embed(["hi"], model="m", requester_id="u1"),
+    ],
+    ids=["chat", "complete_text", "embed"],
+)
+async def test_a_named_model_is_looked_up_as_the_requester(call, monkeypatch):
+    """A named model is found as the user asking, so they reach only instances
+    they can see; it was looked up as ROOT, reaching every instance."""
+    from zephyrex.extensions.local_ai.LocalAI import AbstractLocalAIExtension
+
+    seen: dict[str, Any] = {}
+
+    async def on_instance(
+        model: str, method: str, *args: Any, requester_id: Optional[str] = None
+    ) -> dict[str, Any]:
+        seen.update(model=model, method=method, requester_id=requester_id)
+        return {"message": {"content": ""}, "model": model, "usage": {}}
+
+    monkeypatch.setattr(
+        AbstractLocalAIExtension, "rotate_on_instance", staticmethod(on_instance)
+    )
+    await call(AbstractLocalAIExtension)
+    assert (seen["model"], seen["requester_id"]) == ("m", "u1")

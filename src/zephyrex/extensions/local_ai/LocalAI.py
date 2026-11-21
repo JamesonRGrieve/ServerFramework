@@ -378,10 +378,21 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
 
     @classmethod
     async def _call(
-        cls, model: Optional[str], capability: str, method: str, *args: Any
+        cls,
+        model: Optional[str],
+        capability: str,
+        method: str,
+        *args: Any,
+        requester_id: Optional[str] = None,
     ) -> Any:
+        """Run ``method`` on the named ``model`` (an instance's id or name),
+        looked up as ``requester_id`` so a user reaches only instances they
+        can see (without it, as ROOT: the server's own work), else on any
+        instance able to."""
         if model:
-            return await cls.rotate_on_instance(model, method, *args)
+            return await cls.rotate_on_instance(
+                model, method, *args, requester_id=requester_id
+            )
         return await cls.rotate_capable(capability, method, *args)
 
     @classmethod
@@ -460,6 +471,7 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
             max_tokens,
             checked_temperature(temperature),
             requester_id,
+            requester_id=requester_id,
         )
         return result
 
@@ -495,9 +507,11 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         model: Optional[str] = None,
+        requester_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """``prompt`` continued as raw text, no chat template:
-        ``{text, finish_reason, model, usage}``."""
+        ``{text, finish_reason, model, usage}``. A named ``model`` is one
+        ``requester_id`` can see."""
         if not isinstance(prompt, str) or not prompt:
             raise InvalidInputExternalError("prompt is non-empty text")
         result: Dict[str, Any] = await cls._call(
@@ -507,16 +521,25 @@ class AbstractLocalAIExtension(AbstractStaticExtension):
             prompt,
             max_tokens,
             checked_temperature(temperature),
+            requester_id=requester_id,
         )
         return result
 
     @classmethod
     @ability("embed")
     async def embed(
-        cls, texts: List[str], model: Optional[str] = None
+        cls,
+        texts: List[str],
+        model: Optional[str] = None,
+        requester_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """An embedding vector per text: ``{embeddings, model, dimensions}``."""
+        """An embedding vector per text: ``{embeddings, model, dimensions}``.
+        A named ``model`` is one ``requester_id`` can see."""
         result: Dict[str, Any] = await cls._call(
-            model, EMBEDDINGS, "embed", checked_texts(texts)
+            model,
+            EMBEDDINGS,
+            "embed",
+            checked_texts(texts),
+            requester_id=requester_id,
         )
         return result
