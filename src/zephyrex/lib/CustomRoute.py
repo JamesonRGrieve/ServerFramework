@@ -111,6 +111,9 @@ class CustomRouteSpec:
     # file upload): the most it accepts. BodySizeLimitMiddleware lets this
     # route's requests through up to it; the method reads with capped_body.
     max_body_bytes: Optional[int] = None
+    # The REST success status, when not the default 200 (a route that creates
+    # something answers 201).
+    status_code: Optional[int] = None
 
     @property
     def auth_type(self) -> AuthType:
@@ -133,6 +136,7 @@ def custom_route(
     response_class: Optional[Type[Response]] = None,
     raw_body: bool = False,
     max_body_bytes: Optional[int] = None,
+    status_code: Optional[int] = None,
 ) -> Callable:
     """Decorator: tag a method with its route/SDK/GraphQL contract.
 
@@ -141,6 +145,8 @@ def custom_route(
     write route (REST only, no ``input_model``) takes a body that is not
     JSON, which the method reads from its ``request``. A raw_body route may
     declare ``max_body_bytes``, a cap above the app's global one (an upload).
+    ``status_code`` is the REST success status when not 200 (201 for a route
+    that creates something).
     """
 
     def deco(func):
@@ -158,6 +164,7 @@ def custom_route(
             response_class=response_class,
             raw_body=raw_body,
             max_body_bytes=max_body_bytes,
+            status_code=status_code,
         )
         if spec.max_body_bytes is not None and (
             not spec.raw_body or spec.max_body_bytes <= 0
@@ -457,6 +464,8 @@ def register_custom_routes(router, manager_cls) -> int:
         options: Dict[str, Any] = {}
         if spec.response_class is not None:
             options["response_class"] = spec.response_class
+        if spec.status_code is not None:
+            options["status_code"] = spec.status_code
         route_method(
             spec.path,
             summary=spec.summary or f"Custom {spec.method} {spec.path}",

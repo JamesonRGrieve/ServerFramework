@@ -71,6 +71,17 @@ class CustomRouteProbeManager(AbstractBLLManager):
 
     @custom_route(
         method="POST",
+        path="/made",
+        input_model=ProbeInput,
+        output_model=ProbeOutput,
+        authentication_type="jwt",
+        status_code=201,
+    )
+    def made(self, body: ProbeInput) -> ProbeOutput:
+        return ProbeOutput(text=body.text, requester_id=self.requester_id)
+
+    @custom_route(
+        method="POST",
         path="/async-echo",
         input_model=ProbeInput,
         output_model=ProbeOutput,
@@ -134,7 +145,7 @@ def probe(model_registry: Any) -> TestClient:
     app = FastAPI()
     app.state.model_registry = model_registry
     router = APIRouter(prefix=PROBE)
-    assert register_custom_routes(router, CustomRouteProbeManager) == 7
+    assert register_custom_routes(router, CustomRouteProbeManager) == 8
     app.include_router(router)
     return TestClient(app)
 
@@ -159,6 +170,19 @@ class TestCustomRouteDispatch:
             "item_id": None,
             "limit": None,
         }
+
+    def test_a_route_answers_with_its_declared_status(self, probe, admin_a):
+        """A route that creates something can answer 201; one that declares
+        no status still answers 200."""
+        made = probe.post(
+            f"{PROBE}/made", json={"text": "hello"}, headers=_bearer(admin_a.jwt)
+        )
+        assert made.status_code == 201, made.text
+        assert made.json()["text"] == "hello"
+        plain = probe.post(
+            f"{PROBE}/echo", json={"text": "hello"}, headers=_bearer(admin_a.jwt)
+        )
+        assert plain.status_code == 200, plain.text
 
     def test_body_fields_splat_onto_named_parameters(self, probe, admin_a):
         response = probe.post(
