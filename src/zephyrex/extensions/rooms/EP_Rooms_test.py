@@ -246,3 +246,22 @@ class TestRooms(ExtensionServerMixin):
             self._rename(model_registry, admin_a, team_a.id)
         assert any(hook.endswith("rooms_updated") for hook in scope.skipped_hooks)
         assert self._cursor(model_registry, admin_a, team_a.id) == cursor
+
+    def test_the_room_events_schema_matches_its_model(self, server: Any) -> None:
+        """The migrations build exactly the table the model declares, indexes
+        included, so ``zephyrex migrate verify rooms`` finds nothing."""
+        import io
+
+        from zephyrex.cli import main
+
+        out = io.StringIO()
+        code = main(
+            ["migrate", "verify", "rooms"],
+            app=server.app,
+            stdin=io.StringIO(),
+            stdout=out,
+            stderr=io.StringIO(),
+        )
+        result = json.loads(out.getvalue())["result"]
+        assert code == 0, result
+        assert result["blocking"] == [] and result["advisory"] == [], result

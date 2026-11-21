@@ -14,7 +14,7 @@ Hooks registered with core when this module is imported so the
 extension without importing it directly.
 """
 
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
 
 from fastapi import HTTPException, Response
 from pydantic import Field
@@ -25,6 +25,7 @@ from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.RecordTarget import can_edit, can_view
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
+from zephyrex.pydantic2.sqlalchemy.indexes import TableIndex
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -57,6 +58,16 @@ class MetadataModel(
     )
     ordinal: int = Field(0, description="Its place among the record's rows")
     is_private: bool = Field(False, description="Read by the record's editors only")
+    # The lookups the migrations index (001: by user or team and key; 002: by
+    # record), declared so the model and the migrated schema stay in step.
+    table_indexes: ClassVar[Tuple[TableIndex, ...]] = (
+        TableIndex(name="ix_metadata_user_key", columns=("user_id", "key")),
+        TableIndex(name="ix_metadata_team_key", columns=("team_id", "key")),
+        TableIndex(
+            name="ix_metadata_target",
+            columns=("target_entity_type", "target_entity_id"),
+        ),
+    )
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = "Unified metadata table for users and teams"

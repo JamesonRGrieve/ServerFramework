@@ -228,8 +228,9 @@ def test_migrate_revision_writes_an_empty_first_revision(server, tmp_path, monke
 def test_migrate_verify_and_stamp(server):
     code, verified = run(server, "migrate", "verify", "metadata")
     assert code == ExitCode.OK, verified
-    # metadata's migrations and models disagree on indexes only (advisory).
+    # The models declare every index the migrations make (003 added deleted_at).
     assert verified["result"]["blocking"] == [], verified
+    assert verified["result"]["advisory"] == [], verified
     assert verified["result"]["matches"] is True
 
     code, envelope = run(server, "migrate", "stamp", "metadata", "--dry-run")
