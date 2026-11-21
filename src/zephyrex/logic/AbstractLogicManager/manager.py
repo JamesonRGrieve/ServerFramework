@@ -51,6 +51,7 @@ from zephyrex.pydantic2.fastapi import AuthType, CustomRouteSpec, RouteType
 from zephyrex.logic.AbstractLogicManager.hooks import (
     HookRegistry,
     auto_register_hooks,
+    call_with_hooks,
     discover_hookable_methods,
     wrap_method_with_hooks,
 )
@@ -1287,9 +1288,18 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             entities = kwargs.pop("entities")
             results: List[ModelT] = []
             for entity_data in entities:
-                # Merge entity data with remaining kwargs
+                # Merge entity data with remaining kwargs; each entity runs
+                # the create hooks as a single create would.
                 entity_kwargs = {**kwargs, **entity_data}
-                results.append(self._create_single_entity(**entity_kwargs))
+                results.append(
+                    call_with_hooks(
+                        self,
+                        "create",
+                        (),
+                        entity_kwargs,
+                        lambda *_, **fields: self._create_single_entity(**fields),
+                    )
+                )
             return results
         else:
             return cast(ModelT, self._create_single_entity(**kwargs))

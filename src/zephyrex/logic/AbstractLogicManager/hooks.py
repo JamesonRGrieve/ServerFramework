@@ -848,6 +848,118 @@ def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> boo
         return False
 
 
+def call_with_hooks(
+    self: "AbstractBLLManager",
+    method_name: str,
+    args: tuple,
+    kwargs: dict,
+    call: Callable[..., Any],
+) -> Any:
+    """``call(*args, **kwargs)`` with ``method_name``'s BEFORE hooks run
+    first (they may change the arguments or skip the call) and its AFTER
+    hooks after. What every hooked manager method runs through, and what a
+    batch ``create(entities=[...])`` runs once per entity, so each hook sees
+    one record's fields."""
+    # Auto-populate target_id if present and method uses id
+    if hasattr(self, "target_id") and self.target_id and "id" not in kwargs:
+        if method_name in ["get", "update", "delete"] and not args:
+            kwargs["id"] = self.target_id
+
+    context = HookContext(self, method_name, args, kwargs, timing=HookTiming.BEFORE)  # type: ignore[var-annotated]
+
+    # Execute before hooks
+    hooks = (
+        self._hook_registry.get_hooks(method_name)
+        if hasattr(self.__class__, "_hook_registry")
+        else {"before": [], "after": []}
+    )
+
+    for hook_info in hooks["before"]:
+        if _should_execute_hook(hook_info, context):
+            try:
+                hook_info["func"](context)
+                # Update kwargs with any modifications from the hook
+                kwargs.update(context.kwargs)
+            except Exception as e:
+                # Item 22: BEFORE hooks default blocking=True (security
+                # and validation must fail loudly). Authors that
+                # explicitly opt out via blocking=False get the
+                # log+metric+continue path.
+                if _hook_blocking(hook_info, default=True):
+                    logger.error(
+                        f"Error in before hook {hook_info['func'].__name__}: {e}"
+                    )
+                    raise
+                _emit_non_blocking_failure_metric(
+                    method_name=method_name,
+                    timing="before",
+                    hook_func=hook_info["func"],
+                    error=e,
+                )
+
+    # Check if we should skip the original method
+    if context.skip_execution:
+        result = context.modified_result
+    else:
+        # Call the original method with potentially modified arguments
+        result = call(*context.args, **kwargs)
+
+    # Update context with result for after hooks
+    context.result = result
+    context.timing = HookTiming.AFTER
+
+    # Execute after hooks; a dry run (an open rollback scope) records them
+    # instead, since their effects (mail, uploads, webhooks) don't roll back.
+    rollback = getattr(
+        getattr(getattr(self, "model_registry", None), "database_manager", None),
+        "rollback",
+        None,
+    )
+    for hook_info in hooks["after"]:
+        if isinstance(rollback, RollbackScope):
+            rollback.skipped_hooks.append(
+                f"{type(self).__name__}.{method_name}: "
+                f"{getattr(hook_info['func'], '__qualname__', hook_info['func'])}"
+            )
+            continue
+        if _should_execute_hook(hook_info, context):
+            try:
+                import asyncio
+
+                from zephyrex.logic.AbstractLogicManager.manager import (
+                    _fire_and_forget,
+                )
+
+                func = hook_info["func"]
+                if asyncio.iscoroutinefunction(func):
+                    _fire_and_forget(func(context))
+                else:
+                    func(context)
+
+                # Check if hook modified the result
+                if context.modified_result is not None:
+                    result = context.modified_result
+            except Exception as e:
+                # Item 22: AFTER hooks default blocking=False; observers
+                # should not break the operation they are observing.
+                # Authors that opt in via blocking=True get the
+                # propagation path.
+                if _hook_blocking(hook_info, default=False):
+                    logger.error(
+                        f"Error in after hook {hook_info['func'].__name__}: {e}"
+                    )
+                    raise
+                logger.error(f"Error in after hook {hook_info['func'].__name__}: {e}")
+                _emit_non_blocking_failure_metric(
+                    method_name=method_name,
+                    timing="after",
+                    hook_func=hook_info["func"],
+                    error=e,
+                )
+
+    return result
+
+
 def wrap_method_with_hooks(
     manager_class: Type["AbstractBLLManager"], method_name: str
 ) -> Callable:
@@ -864,106 +976,20 @@ def wrap_method_with_hooks(
     original_method = getattr(manager_class, method_name)
 
     def wrapped_method(self: "AbstractBLLManager", *args, **kwargs):
-        # Auto-populate target_id if present and method uses id
-        if hasattr(self, "target_id") and self.target_id and "id" not in kwargs:
-            if method_name in ["get", "update", "delete"] and not args:
-                kwargs["id"] = self.target_id
-
-        context = HookContext(self, method_name, args, kwargs, timing=HookTiming.BEFORE)  # type: ignore[var-annotated]
-
-        # Execute before hooks
-        hooks = (
-            self._hook_registry.get_hooks(method_name)
-            if hasattr(self.__class__, "_hook_registry")
-            else {"before": [], "after": []}
+        # A batch create runs its hooks once per entity, in the base
+        # ``create`` loop (``call_with_hooks``), never once for the list:
+        # a hook checking or filling one record's fields would see none.
+        if method_name == "create" and isinstance(kwargs.get("entities"), list):
+            return original_method(self, *args, **kwargs)
+        return call_with_hooks(
+            self,
+            method_name,
+            args,
+            kwargs,
+            lambda *call_args, **call_kwargs: original_method(
+                self, *call_args, **call_kwargs
+            ),
         )
-
-        for hook_info in hooks["before"]:
-            if _should_execute_hook(hook_info, context):
-                try:
-                    hook_info["func"](context)
-                    # Update kwargs with any modifications from the hook
-                    kwargs.update(context.kwargs)
-                except Exception as e:
-                    # Item 22: BEFORE hooks default blocking=True (security
-                    # and validation must fail loudly). Authors that
-                    # explicitly opt out via blocking=False get the
-                    # log+metric+continue path.
-                    if _hook_blocking(hook_info, default=True):
-                        logger.error(
-                            f"Error in before hook {hook_info['func'].__name__}: {e}"
-                        )
-                        raise
-                    _emit_non_blocking_failure_metric(
-                        method_name=method_name,
-                        timing="before",
-                        hook_func=hook_info["func"],
-                        error=e,
-                    )
-
-        # Check if we should skip the original method
-        if context.skip_execution:
-            result = context.modified_result
-        else:
-            # Call the original method with potentially modified arguments
-            result = original_method(self, *context.args, **kwargs)
-
-        # Update context with result for after hooks
-        context.result = result
-        context.timing = HookTiming.AFTER
-
-        # Execute after hooks; a dry run (an open rollback scope) records them
-        # instead, since their effects (mail, uploads, webhooks) don't roll back.
-        rollback = getattr(
-            getattr(getattr(self, "model_registry", None), "database_manager", None),
-            "rollback",
-            None,
-        )
-        for hook_info in hooks["after"]:
-            if isinstance(rollback, RollbackScope):
-                rollback.skipped_hooks.append(
-                    f"{type(self).__name__}.{method_name}: "
-                    f"{getattr(hook_info['func'], '__qualname__', hook_info['func'])}"
-                )
-                continue
-            if _should_execute_hook(hook_info, context):
-                try:
-                    import asyncio
-
-                    from zephyrex.logic.AbstractLogicManager.manager import (
-                        _fire_and_forget,
-                    )
-
-                    func = hook_info["func"]
-                    if asyncio.iscoroutinefunction(func):
-                        _fire_and_forget(func(context))
-                    else:
-                        func(context)
-
-                    # Check if hook modified the result
-                    if context.modified_result is not None:
-                        result = context.modified_result
-                except Exception as e:
-                    # Item 22: AFTER hooks default blocking=False; observers
-                    # should not break the operation they are observing.
-                    # Authors that opt in via blocking=True get the
-                    # propagation path.
-                    if _hook_blocking(hook_info, default=False):
-                        logger.error(
-                            f"Error in after hook {hook_info['func'].__name__}: {e}"
-                        )
-                        raise
-                    logger.error(
-                        f"Error in after hook {hook_info['func'].__name__}: {e}"
-                    )
-                    _emit_non_blocking_failure_metric(
-                        method_name=method_name,
-                        timing="after",
-                        hook_func=hook_info["func"],
-                        error=e,
-                    )
-
-        return result
 
     # Look like the raw method: name, docs, framework-decorator markers
     # (``@custom_route``, ``@rate_limit``; router/SDK discovery walks
