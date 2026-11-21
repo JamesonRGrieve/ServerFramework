@@ -28,6 +28,34 @@ if str(src_path) not in sys.path:
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Paths import extension_roots, find_extension_dir
 
+# Where an extension's tables may still be made from its models when it ships no migration: a
+# developer's machine and the test runs. Anywhere else (staging, production) that would leave the
+# database with tables and no history, so the boot refuses instead (Session 1 Manager, 2026-11-21:
+# VTT's extensions had none, and every test passed).
+UNMIGRATED_ALLOWED_ENVIRONMENTS = frozenset({"local", "ci"})
+
+
+def refuse_unmigrated_outside_tests(
+    unmigrated: "list[str] | set[str] | tuple[str, ...]",
+    environment: "str | None" = None,
+) -> None:
+    """Raise when extensions without migration files would get their tables from their models
+    outside ``local``/``ci``; otherwise warn, naming them, and let the fallback run."""
+    if not unmigrated:
+        return
+    if environment is None:
+        from zephyrex.lib.Environment import env
+
+        environment = str(env("ENVIRONMENT") or "")
+    names = ", ".join(sorted(unmigrated))
+    if environment not in UNMIGRATED_ALLOWED_ENVIRONMENTS:
+        raise RuntimeError(
+            f"Extensions without migrations: {names}. Their tables would be made from their models "
+            f"with no migration history in ENVIRONMENT={environment!r}; ship "
+            "migrations/versions/*.py for each (allowed only in local and ci)."
+        )
+    logger.warning(f"Extensions without migrations (tables made from models): {names}")
+
 
 class MigrationManager:
     """
@@ -917,6 +945,7 @@ class MigrationManager:
         """
         if not self.unmigrated_extensions:
             return
+        refuse_unmigrated_outside_tests(self.unmigrated_extensions)
         db_manager = self._model_registry.DB.manager
         wanted = set(self.unmigrated_extensions)
         tables = [
