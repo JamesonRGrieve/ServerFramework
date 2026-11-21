@@ -1004,7 +1004,7 @@ class AbstractStaticExtensionSystemComponent(ABC):
         """Check whether this extension/provider has a specific ability."""
         return ability in cls.get_abilities()
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         """Automatically register abilities when extension class is defined."""
         super().__init_subclass__(**kwargs)
 
@@ -1579,7 +1579,7 @@ class AbstractStaticExtension(
 
     AbstractProvider: Type[AbstractStaticProvider]
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         """Automatically register abilities and hooks when extension class is defined."""
         super().__init_subclass__(**kwargs)
 

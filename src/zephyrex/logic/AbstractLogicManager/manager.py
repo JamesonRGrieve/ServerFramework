@@ -248,6 +248,8 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     _cache_ttl: ClassVar[Optional[int]] = None
     _response_cache_ttl: ClassVar[Optional[int]] = None
     _response_cache_vary_on_user: ClassVar[bool] = True
+    # Each subclass's own hook registry, set by __init_subclass__.
+    _hook_registry: ClassVar[HookRegistry]
 
     # Search transformer functions
     search_transformers: Dict[str, Callable] = {}
@@ -304,7 +306,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """Property that returns the SQLAlchemy model class from the Pydantic Model."""
         return self.Model.DB(self.model_registry.DB.manager.Base)
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         """
         Automatically set up hooks when subclass is created.
 

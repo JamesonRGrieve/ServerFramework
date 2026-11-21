@@ -733,9 +733,9 @@ def _register_hook_on_class(
             if hasattr(base, "_hook_registry"):
                 parent_registry = base._hook_registry
                 break
-        target_class._hook_registry = HookRegistry(parent_registry)  # type: ignore[attr-defined]
+        target_class._hook_registry = HookRegistry(parent_registry)
 
-    target_class._hook_registry.register_hook(  # type: ignore[attr-defined]
+    target_class._hook_registry.register_hook(
         target_class,
         method_name,
         timing,
@@ -786,20 +786,20 @@ def auto_register_hooks(manager_class: Type["AbstractBLLManager"]) -> None:
             if hasattr(base, "_hook_registry"):
                 parent_registry = base._hook_registry
                 break
-        manager_class._hook_registry = HookRegistry(parent_registry)  # type: ignore[attr-defined]
+        manager_class._hook_registry = HookRegistry(parent_registry)
 
     hookable_methods = discover_hookable_methods(manager_class)
 
     for method_name in hookable_methods:
-        if method_name not in manager_class._hook_registry.hooks:  # type: ignore[attr-defined]
-            manager_class._hook_registry.hooks[method_name] = {  # type: ignore[attr-defined]
+        if method_name not in manager_class._hook_registry.hooks:
+            manager_class._hook_registry.hooks[method_name] = {
                 "before": [],
                 "after": [],
             }
 
     # This writes directly into the registry's ``hooks`` map, so drop any
     # memoized get_hooks results to keep the cache honest.
-    manager_class._hook_registry._invalidate()  # type: ignore[attr-defined]
+    manager_class._hook_registry._invalidate()
 
 
 def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> bool:
@@ -872,7 +872,7 @@ def wrap_method_with_hooks(
 
         # Execute before hooks
         hooks = (
-            self._hook_registry.get_hooks(method_name)  # type: ignore[attr-defined]
+            self._hook_registry.get_hooks(method_name)
             if hasattr(self.__class__, "_hook_registry")
             else {"before": [], "after": []}
         )
