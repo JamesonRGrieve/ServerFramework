@@ -74,7 +74,12 @@ def team_rooms() -> Iterator[None]:
     """Map teams to their own room and memberships to their team's, for this
     module only."""
     room_of(TeamManager, lambda team: ("team", team.id))
-    room_of(UserTeamManager, lambda membership: ("team", membership.team_id))
+    # A membership belongs to two rooms, its team's and its member's (the
+    # shape of a scene in its own room and its campaign's).
+    room_of(
+        UserTeamManager,
+        lambda membership: [("team", membership.team_id), ("user", membership.user_id)],
+    )
     yield
     for manager in (TeamManager, UserTeamManager):
         registry = manager._hook_registry
@@ -222,6 +227,31 @@ class TestRooms(ExtensionServerMixin):
         assert created[1]["op"] == "created"
         assert deleted[1]["record"] == {"type": "user_team", "id": made.id}
         assert deleted[1]["op"] == "deleted" and deleted[1]["etag"] is None
+
+    async def test_a_record_in_two_rooms_reaches_both(
+        self, model_registry, admin_a, user_b, team_a
+    ):
+        team_room = await self._join(model_registry, admin_a, team_a.id)
+        response = await self._rooms(model_registry, user_b).events_route(
+            request=_request(), room_type="user", room_id=user_b.id
+        )
+        own_room = Stream(response.body_iterator)
+        assert await own_room.frame() == ": connected\n\n"
+
+        memberships = UserTeamManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        made = memberships.create(
+            user_id=user_b.id, team_id=team_a.id, role_id=env("USER_ROLE_ID")
+        )
+        in_team, in_own = await team_room.event(), await own_room.event()
+        await team_room.close()
+        await own_room.close()
+        memberships.delete(made.id)
+        assert in_team[1]["room"] == {"type": "team", "id": team_a.id}
+        assert in_own[1]["room"] == {"type": "user", "id": user_b.id}
+        assert in_team[1]["record"] == in_own[1]["record"]
+        assert in_team[1]["id"] != in_own[1]["id"]
 
     async def test_a_member_who_loses_access_is_revoked(
         self, model_registry, admin_a, user_b, team_a, monkeypatch
