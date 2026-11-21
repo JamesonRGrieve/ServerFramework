@@ -57,6 +57,60 @@ def refuse_unmigrated_outside_tests(
     logger.warning(f"Extensions without migrations (tables made from models): {names}")
 
 
+# Index and constraint differences don't change what a row can hold, so they
+# don't stop a stamp; table, column, type and nullability differences do.
+ADVISORY_OPS = (
+    "add_index",
+    "remove_index",
+    "add_constraint",
+    "remove_constraint",
+    "add_fk",
+    "remove_fk",
+)
+
+
+def schema_differences(
+    connection: Any, metadata: Any, tables: List[str]
+) -> Dict[str, List[str]]:
+    """Alembic's autogenerate comparison of ``metadata`` with the database on
+    ``connection``, over the named tables only (other tables in either are
+    ignored), each difference one line: ``blocking`` (tables, columns,
+    types, nullability) and ``advisory`` (indexes and constraints)."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.runtime.migration import MigrationContext
+
+    wanted = set(tables)
+
+    def include(
+        obj: Any, name: Any, type_: str, reflected: bool, compare_to: Any
+    ) -> bool:
+        return type_ != "table" or name in wanted
+
+    context = MigrationContext.configure(
+        connection, opts={"include_object": include, "compare_type": True}
+    )
+    found: Dict[str, List[str]] = {"blocking": [], "advisory": []}
+    for difference in compare_metadata(context, metadata):
+        line = _describe_difference(difference)
+        kind = "advisory" if line.startswith(ADVISORY_OPS) else "blocking"
+        found[kind].append(line)
+    return found
+
+
+def _describe_difference(difference: Any) -> str:
+    """One alembic diff (a tuple, or a list of ``modify_*`` tuples) as text."""
+    if isinstance(difference, list):
+        return "; ".join(_describe_difference(item) for item in difference)
+    op, *rest = difference
+    parts = []
+    for item in rest:
+        if item is None:
+            continue
+        name = getattr(item, "name", None)
+        parts.append(str(name) if name is not None else str(item))
+    return " ".join([str(op), *parts])
+
+
 class MigrationManager:
     """
     Centralized manager for database migrations.
@@ -1558,6 +1612,62 @@ class {class_name}(Base):
         finally:
             engine.dispose()
         return rows
+
+    def _component_versions_dir(self, component: Optional[str]) -> Path:
+        """Core's (``None``) or an extension's versions directory."""
+        if component is None:
+            return Path(self._resolve_core_versions_dir())
+        return Path(self._resolve_extension_versions_dir(component))
+
+    def _component_tables(self, component: Optional[str]) -> List[str]:
+        """The tables a component's migrations own, by the registry's
+        ownership stamps (``env_include_object``'s rule): an extension owns
+        the tables it defines and the core tables it extends; core owns every
+        table no extension defines."""
+        if component is not None and not self._ensure_extension_models_loaded(
+            component
+        ):
+            raise ValueError(f"Extension {component!r} has no models to compare")
+        metadata = self._model_registry.DB.manager.Base.metadata
+        return sorted(
+            table.name
+            for table in metadata.sorted_tables
+            if (
+                MigrationManager.env_is_table_owned_by_extension(table) == component
+                or (
+                    component is not None
+                    and component in MigrationManager.env_table_extenders(table)
+                )
+            )
+        )
+
+    def schema_differences(self, component: Optional[str]) -> Dict[str, List[str]]:
+        """How the live database differs from the models in the tables one
+        component (core: ``None``) owns: alembic's ``compare_metadata``
+        limited to those tables, split into ``blocking`` and ``advisory``
+        (module-level ``schema_differences``). With no blocking difference
+        the component's head can be stamped onto it."""
+        from sqlalchemy import create_engine
+
+        names = self._component_tables(component)
+        metadata = self._model_registry.DB.manager.Base.metadata
+        engine = create_engine(self.db_info["url"])
+        try:
+            with engine.connect() as connection:
+                return schema_differences(connection, metadata, names)
+        finally:
+            engine.dispose()
+
+    def stamp(self, component: Optional[str], target: str = "head") -> bool:
+        """Record ``target`` in the component's version table without running
+        any migration: for adopting a schema that already exists. Callers
+        check ``schema_differences`` first."""
+        versions_dir = self._component_versions_dir(component)
+        if not any(f.name != "__init__.py" for f in versions_dir.glob("*.py")):
+            logger.error(f"No revision files to stamp in {versions_dir}")
+            return False
+        cfg = self._make_alembic_config(component, versions_dir)
+        return bool(self._dispatch_alembic(cfg, "stamp", target))
 
     def run_all_migrations(self, command, target="head", extensions=None):
         """Run migrations for core and all extensions"""

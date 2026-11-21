@@ -223,3 +223,22 @@ def test_migrate_revision_writes_an_empty_first_revision(server, tmp_path, monke
         "--empty",
     )
     assert code == ExitCode.ERROR
+
+
+def test_migrate_verify_and_stamp(server):
+    code, verified = run(server, "migrate", "verify", "metadata")
+    assert code == ExitCode.OK, verified
+    # metadata's migrations and models disagree on indexes only (advisory).
+    assert verified["result"]["blocking"] == [], verified
+    assert verified["result"]["matches"] is True
+
+    code, envelope = run(server, "migrate", "stamp", "metadata", "--dry-run")
+    assert code == ExitCode.DRY_RUN_REFUSED, envelope
+
+    code, stamped = run(server, "migrate", "stamp", "metadata")
+    assert code == ExitCode.OK, stamped
+    (row,) = stamped["result"]["status"]
+    assert row["component"] == "metadata" and row["up_to_date"] is True
+
+    code, envelope = run(server, "migrate", "verify", "no_such_extension")
+    assert code == ExitCode.NOT_FOUND, envelope
