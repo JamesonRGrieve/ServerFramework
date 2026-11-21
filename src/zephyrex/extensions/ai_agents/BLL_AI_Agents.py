@@ -52,6 +52,7 @@ from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import rate_limit
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.RecordTarget import can_edit
 from zephyrex.lib.SecretEncryption import encrypt_secret
 from zephyrex.lib.SessionCookies import accept_cross_site_writes
 from zephyrex.lib.SignedRequests import SIGNATURE_HEADER, TIMESTAMP_HEADER
@@ -1700,7 +1701,11 @@ def create_agent_on_team_creation(context: HookContext) -> None:
 @hook_bll(ConversationManager.create, timing=HookTiming.AFTER, priority=10)
 def associate_agent_with_conversation(context: HookContext) -> None:
     """A new conversation gets an agent of one of its creator's teams, one
-    with a rotation to think with, auto-responding."""
+    with a rotation to think with, auto-responding, among the agents the
+    creator may seat: those they may edit. A member who can only view a team
+    agent may not seat it (#257: their messages would drive its creator's
+    granted tools), so their conversation gets none, quietly, rather than an
+    attempt the permission layer refuses with a logged 403."""
     if not _ai_agents_loaded(context.manager):
         return
     requester_id = context.manager.requester.id
@@ -1716,6 +1721,7 @@ def associate_agent_with_conversation(context: HookContext) -> None:
             for membership in memberships.list(user_id=conversation.user_id)
             for agent in agents.list(team_id=membership.team_id)
             if agent.rotation_id
+            and can_edit(registry, str(requester_id), "agent", str(agent.id))
         )
         agent = next(team_agents, None)
         if agent is not None:

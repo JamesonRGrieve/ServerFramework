@@ -470,6 +470,54 @@ class TestAgentHooks(ExtensionServerMixin):
             True,
         )
 
+    def test_a_members_new_conversation_seats_nothing_quietly(
+        self, server, admin_b, team_b, model_registry
+    ):
+        """A plain member's new conversation gets no team agent (#257: they
+        may only view it), and the hook no longer tries and fails with 403.
+        (On team_b, so its agent can never be seated for admin_a.)"""
+        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+            associate_agent_with_conversation,
+        )
+        from zephyrex.extensions.conversations.BLL_Conversations import (
+            ConversationManager,
+        )
+        from zephyrex.logic.AbstractLogicManager.hooks import (
+            HookContext,
+            HookTiming,
+        )
+        from zephyrex.logic.BLL_Providers import RotationManager
+        from zephyrex.testing.factories import add_user_to_team, create_user
+
+        rotation = RotationManager(
+            requester_id=admin_b.id, model_registry=model_registry
+        ).create(name=f"Rotation {uuid.uuid4()}")
+        AgentManager(requester_id=admin_b.id, model_registry=model_registry).create(
+            name="Team agent", team_id=team_b.id, rotation_id=rotation.id
+        )
+        member = create_user(server)
+        add_user_to_team(server, member.id, team_b.id, env("USER_ROLE_ID"))
+        conversations = ConversationManager(
+            requester_id=member.id, model_registry=model_registry
+        )
+        conversation = conversations.create(name="Mine")
+        seats = ConversationAgentManager(
+            requester_id=admin_b.id, model_registry=model_registry
+        )
+        assert seats.list(conversation_id=conversation.id) == []
+        # Run directly, it raises nothing (it used to raise 403 here).
+        associate_agent_with_conversation(
+            HookContext(
+                conversations,
+                "create",
+                (),
+                {},
+                result=conversation,
+                timing=HookTiming.AFTER,
+            )
+        )
+        assert seats.list(conversation_id=conversation.id) == []
+
     def test_a_new_conversation_seats_a_team_agent(
         self, admin_a, team_a, model_registry
     ):
