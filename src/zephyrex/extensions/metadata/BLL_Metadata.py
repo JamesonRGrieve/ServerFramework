@@ -4,6 +4,10 @@ Owns:
 - ``MetadataModel`` — unified user/team metadata table.
 - ``MetadataManager`` — base preference-setting/getting logic.
 - ``UserMetadataManager`` / ``TeamMetadataManager`` — filtered managers.
+- ``RecordMetadataManager`` — a record's own key/values (``/v1/record_metadata``): rows that
+  belong to a record by ``target_entity_type`` + ``target_entity_id`` (a character's height, a
+  city's population), read by anyone who can view the record and written by its editors; a
+  private row is read by its editors only.
 
 Hooks registered with core when this module is imported so the
 ``BLL_Auth.UserManager`` registration / login flow can talk to this
@@ -12,9 +16,14 @@ extension without importing it directly.
 
 from typing import Any, ClassVar, Dict, List, Optional, Type
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from pydantic import Field
 
+from pydantic import BaseModel as RouteModel
+
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route
+from zephyrex.lib.RecordTarget import can_edit, can_view
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -38,6 +47,17 @@ class MetadataModel(
     key: str = Field(..., description="Metadata key")
     value: Optional[str] = Field(None, description="Metadata value")
 
+    # A record's own row (instead of a user's or team's): see RecordMetadataManager.
+    target_entity_type: Optional[str] = Field(
+        None, description="The record's type, its model's snake-case name"
+    )
+    target_entity_id: Optional[str] = Field(None, description="The record's id")
+    value_type: Optional[str] = Field(
+        None, description="How to read the value: text, number, boolean, date or link"
+    )
+    ordinal: int = Field(0, description="Its place among the record's rows")
+    is_private: bool = Field(False, description="Read by the record's editors only")
+
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = "Unified metadata table for users and teams"
     seed_data: ClassVar[List[Dict[str, Any]]] = []
@@ -47,22 +67,43 @@ class MetadataModel(
         team_id: Optional[str] = Field(None, description="Team ID if team metadata")
         key: str = Field(..., description="Metadata key")
         value: Optional[str] = Field(None, description="Metadata value")
+        target_entity_type: Optional[str] = None
+        target_entity_id: Optional[str] = None
+        value_type: Optional[str] = None
+        ordinal: int = 0
+        is_private: bool = False
 
     class Update(BaseModel):
         value: Optional[str] = Field(None, description="Metadata value")
+        key: Optional[str] = None
+        value_type: Optional[str] = None
+        ordinal: Optional[int] = None
+        is_private: Optional[bool] = None
 
     class Search(ApplicationModel.Search):
         user_id: Optional[StringSearchModel] = None
         team_id: Optional[StringSearchModel] = None
         key: Optional[StringSearchModel] = None
         value: Optional[StringSearchModel] = None
+        target_entity_type: Optional[StringSearchModel] = None
+        target_entity_id: Optional[StringSearchModel] = None
 
 
 class MetadataManager(AbstractBLLManager):
     _model = MetadataModel
 
     def create_validation(self, entity):
-        """Validate metadata creation"""
+        """Validate metadata creation: a user's and/or team's row, or a record's, never both."""
+        target = getattr(entity, "target_entity_type", None) or getattr(
+            entity, "target_entity_id", None
+        )
+        if target:
+            if entity.user_id or entity.team_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A record's metadata belongs to the record, not a user or team",
+                )
+            return
         if not entity.user_id and not entity.team_id:
             raise HTTPException(
                 status_code=400, detail="Either user_id or team_id must be provided"
@@ -198,6 +239,200 @@ MetadataModel.Manager = MetadataManager
 
 
 # ---------------------------------------------------------------------------
+# A record's own key/values (W4 in Zephyrex RPG Wiki: a character's height, a city's population).
+# ---------------------------------------------------------------------------
+
+VALUE_TYPES = ("text", "number", "boolean", "date", "link")
+MAX_RECORD_KEYS = 200
+
+
+class RecordMetadataList(RouteModel):
+    metadata: List[MetadataModel]
+
+
+class RecordMetadataWrite(RouteModel):
+    target_entity_type: str
+    target_entity_id: str
+    key: str = Field(..., min_length=1, max_length=100)
+    value: Optional[str] = Field(None, max_length=10_000)
+    value_type: Optional[str] = None
+    ordinal: int = 0
+    is_private: bool = False
+
+
+class RecordMetadataEnvelope(RouteModel):
+    record_metadata: RecordMetadataWrite
+
+
+class RecordMetadataChange(RouteModel):
+    key: Optional[str] = Field(None, min_length=1, max_length=100)
+    value: Optional[str] = Field(None, max_length=10_000)
+    value_type: Optional[str] = None
+    ordinal: Optional[int] = None
+    is_private: Optional[bool] = None
+
+
+class RecordMetadataChangeEnvelope(RouteModel):
+    record_metadata: RecordMetadataChange
+
+
+class RecordMetadataOne(RouteModel):
+    record_metadata: MetadataModel
+
+
+class RecordMetadataManager(AbstractBLLManager, RouterMixin):
+    """A record's rows, under the record's own access: VIEW reads them (private ones need EDIT),
+    EDIT writes them. Rows are read and stored as SYSTEM (which, unlike ROOT, never sees deleted rows), so the user/team permission paths never reach them;
+    every route here checks the record first, through its own manager (lib.RecordTarget).
+
+    Custom routes only, over no table of its own (an action manager, as SDKManager): router
+    generation reaches a model's routes through ``Model.Manager``, and MetadataModel's is the
+    route-less MetadataManager, which the user/team hooks rely on."""
+
+    prefix: ClassVar[Optional[str]] = "/v1/record_metadata"
+    tags: ClassVar[Optional[List[str]]] = ["Metadata"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = []
+
+    def _root(self) -> MetadataManager:
+        from zephyrex.lib.Environment import env
+
+        return MetadataManager(
+            requester_id=env("SYSTEM_ID"), model_registry=self.model_registry
+        )
+
+    def _require_edit(self, target_entity_type: str, target_entity_id: str) -> None:
+        requester = str(self.requester.id)
+        if not can_edit(
+            self.model_registry, requester, target_entity_type, target_entity_id
+        ):
+            # The same 404 whether the record is missing or merely not the requester's to change.
+            raise HTTPException(status_code=404, detail="Record not found")
+
+    @staticmethod
+    def _check_type(value_type: Optional[str]) -> None:
+        if value_type is not None and value_type not in VALUE_TYPES:
+            raise HTTPException(
+                status_code=422, detail=f"value_type is one of {', '.join(VALUE_TYPES)}"
+            )
+
+    @custom_route(
+        method="GET",
+        path="/of",
+        output_model=RecordMetadataList,
+        authentication_type="jwt",
+        openapi_tags=("Metadata",),
+        summary="A record's key/values, in order, to anyone who can view it (private ones to its editors)",
+        expose_in=(ExposeIn.REST,),
+    )
+    def of_route(
+        self, target_entity_type: str, target_entity_id: str
+    ) -> RecordMetadataList:
+        requester = str(self.requester.id)
+        if not can_view(
+            self.model_registry, requester, target_entity_type, target_entity_id
+        ):
+            raise HTTPException(status_code=404, detail="Record not found")
+        rows = self._root().list(
+            target_entity_type=target_entity_type, target_entity_id=target_entity_id
+        )
+        if any(row.is_private for row in rows) and not can_edit(
+            self.model_registry, requester, target_entity_type, target_entity_id
+        ):
+            rows = [row for row in rows if not row.is_private]
+        return RecordMetadataList(
+            metadata=sorted(rows, key=lambda row: (row.ordinal, row.key))
+        )
+
+    @custom_route(
+        method="POST",
+        path="",
+        output_model=RecordMetadataOne,
+        input_model=RecordMetadataEnvelope,
+        authentication_type="jwt",
+        status_code=201,
+        openapi_tags=("Metadata",),
+        summary="Add a key/value to a record one may edit (one row per key)",
+        expose_in=(ExposeIn.REST,),
+    )
+    def add_route(self, record_metadata: RecordMetadataWrite) -> RecordMetadataOne:
+        fields = RecordMetadataWrite.model_validate(record_metadata)
+        self._check_type(fields.value_type)
+        self._require_edit(fields.target_entity_type, fields.target_entity_id)
+        root = self._root()
+        existing = root.list(
+            target_entity_type=fields.target_entity_type,
+            target_entity_id=fields.target_entity_id,
+        )
+        if any(row.key == fields.key for row in existing):
+            raise HTTPException(
+                status_code=409, detail=f"The record already has {fields.key!r}"
+            )
+        if len(existing) >= MAX_RECORD_KEYS:
+            raise HTTPException(
+                status_code=422, detail=f"A record has at most {MAX_RECORD_KEYS} keys"
+            )
+        row = root.create(**fields.model_dump())
+        return RecordMetadataOne(record_metadata=row)
+
+    def _row(self, id: str) -> MetadataModel:
+        row: MetadataModel = self._root().get(id=id)
+        if not row.target_entity_type or not row.target_entity_id:
+            raise HTTPException(status_code=404, detail="Not found")
+        self._require_edit(row.target_entity_type, row.target_entity_id)
+        return row
+
+    @custom_route(
+        method="PATCH",
+        path="/{id}",
+        output_model=RecordMetadataOne,
+        input_model=RecordMetadataChangeEnvelope,
+        authentication_type="jwt",
+        openapi_tags=("Metadata",),
+        summary="Change a record's key/value (its editors)",
+        expose_in=(ExposeIn.REST,),
+    )
+    def change_route(
+        self, id: str, record_metadata: RecordMetadataChange
+    ) -> RecordMetadataOne:
+        row = self._row(id)
+        # The body may arrive with every field present (None for those not sent): only real values change.
+        changes = {
+            name: value
+            for name, value in RecordMetadataChange.model_validate(record_metadata)
+            .model_dump()
+            .items()
+            if value is not None
+        }
+        self._check_type(changes.get("value_type"))
+        if "key" in changes and changes["key"] != row.key:
+            siblings = self._root().list(
+                target_entity_type=row.target_entity_type,
+                target_entity_id=row.target_entity_id,
+            )
+            if any(other.key == changes["key"] for other in siblings):
+                raise HTTPException(
+                    status_code=409, detail=f"The record already has {changes['key']!r}"
+                )
+        updated = self._root().update(id=id, **changes)
+        return RecordMetadataOne(record_metadata=updated)
+
+    @custom_route(
+        method="DELETE",
+        path="/{id}",
+        authentication_type="jwt",
+        response_class=Response,
+        openapi_tags=("Metadata",),
+        summary="Remove a record's key/value (its editors)",
+        expose_in=(ExposeIn.REST,),
+    )
+    def remove_route(self, id: str) -> Response:
+        self._row(id)
+        self._root().delete(id=id)
+        return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
 # Hook registration (Scope #3). Runs at module-import time, mirroring the
 # `PasswordlessGrantRegistry.register(...)` pattern used by auth_magic_link.
 # When this BLL file is imported (which happens during ModelRegistry's
@@ -225,7 +460,7 @@ def _list_preferences(user_id: str, model_registry) -> Dict[str, str]:
     from zephyrex.lib.Environment import env
 
     items = MetadataModel.DB(model_registry.DB.manager.Base).list(
-        requester_id=env("ROOT_ID"),
+        requester_id=env("SYSTEM_ID"),
         model_registry=model_registry,
         user_id=user_id,
     )
@@ -239,7 +474,7 @@ def _list_user_metadata(user_id: str, model_registry):
 
     return (
         MetadataModel.DB(model_registry.DB.manager.Base).list(
-            requester_id=env("ROOT_ID"),
+            requester_id=env("SYSTEM_ID"),
             model_registry=model_registry,
             user_id=user_id,
         )
@@ -275,7 +510,7 @@ def _create_user_metadata(user_id, key, value, model_registry, *, requester_id=N
     from zephyrex.lib.Environment import env
 
     with UserMetadataManager(
-        requester_id=requester_id or env("ROOT_ID"),
+        requester_id=requester_id or env("SYSTEM_ID"),
         model_registry=model_registry,
     ) as mgr:
         mgr.create(user_id=user_id, key=key, value=str(value))
@@ -287,7 +522,7 @@ def _update_user_metadata(id, value, model_registry, *, requester_id=None):
     from zephyrex.lib.Environment import env
 
     with UserMetadataManager(
-        requester_id=requester_id or env("ROOT_ID"),
+        requester_id=requester_id or env("SYSTEM_ID"),
         model_registry=model_registry,
     ) as mgr:
         mgr.update(id=id, value=str(value))
