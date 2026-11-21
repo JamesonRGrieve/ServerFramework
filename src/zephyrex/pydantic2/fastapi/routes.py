@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel as RouteModel
 from pydantic import Field, ValidationError, create_model
 
-from zephyrex.lib.Environment import inflection
+from zephyrex.lib.Environment import inflection, plural_noun
 from zephyrex.lib.InboundSecurity import carry_rate_limit
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import (
@@ -322,7 +322,7 @@ def register_route(
         target_model = child_base_model
     else:
         resource_name = manager_resource_name(manager_class)
-        resource_name_plural = inflection.plural(resource_name)
+        resource_name_plural = plural_noun(resource_name)
         if not hasattr(bound_base_model, "Network"):
             logger.error(
                 f"Base model {bound_base_model} does not define Network model."

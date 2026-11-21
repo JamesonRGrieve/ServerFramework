@@ -29,6 +29,27 @@ inflection.defnoun("team_metadata", "team_metadata")
 # Add a general rule for any word ending in "data"
 inflection.classical(all=True)  # Use classical Latin plurals
 
+# Nouns whose plural is the word itself on purpose (the defnoun lines above).
+_INVARIANT_NOUNS = frozenset(
+    {"metadata", "userdata", "teamdata", "user_metadata", "team_metadata"}
+)
+_modern = engine()
+
+
+def plural_noun(word: str) -> str:
+    """The plural a resource carries on the wire (list envelopes, GraphQL
+    collections, SDK names): ``inflection``'s classical plural, unless that is
+    the word itself and the word isn't a declared invariant. Classical Latin
+    gives ``status`` -> ``status`` (and ``entity_status``, ``apparatus``,
+    ``nexus``), so a list envelope couldn't be told from a single record's
+    (a create of ``{"status": {...}}`` read as a malformed plural); those take
+    the modern plural (``statuses``) instead. Every other name, ``personae``
+    and ``metadata`` included, is unchanged."""
+    plural = inflection.plural(word)
+    if plural != word or word in _INVARIANT_NOUNS:
+        return str(plural)
+    return str(_modern.plural(word))
+
 
 class AppSettings(BaseModel):
     ENVIRONMENT: Literal["local", "staging", "development", "production", "ci"] = (

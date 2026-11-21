@@ -34,7 +34,7 @@ from pydantic import BaseModel
 from strawberry.types import Info
 
 from zephyrex.lib.AbstractPydantic2 import ErrorHandlerMixin
-from zephyrex.lib.Environment import inflection
+from zephyrex.lib.Environment import inflection, plural_noun
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import PreconditionError, expect_versions
 from zephyrex.lib.TypeUnions import unwrap_optional
@@ -600,7 +600,7 @@ class GraphQLManager(ErrorHandlerMixin):
         # Strip "Model" suffix for GraphQL field names and convert to camelCase
         base_name = model_name.removesuffix("Model")
         model_name_camel = convert_field_name(base_name)
-        model_name_plural = inflection.plural(model_name_camel)
+        model_name_plural = plural_noun(model_name_camel)
 
         try:
             # Apply model registry to get extension-enhanced version

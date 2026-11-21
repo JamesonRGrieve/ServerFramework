@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - fallback for alternate Pydantic packag
 
         PydanticUndefined = _UndefinedSentinel()  # type: ignore
 
-from zephyrex.lib.Environment import inflection
+from zephyrex.lib.Environment import plural_noun
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.TypeUnions import is_optional, non_none_args
 
@@ -423,7 +423,7 @@ class ExampleGenerator:
         """
         logger.debug(f"Generating operation examples for {resource_name}")
         examples = {}
-        resource_name_plural = inflection.plural(resource_name)
+        resource_name_plural = plural_noun(resource_name)
 
         # Get model classes using introspection
         response_single_cls = getattr(network_model_cls, "ResponseSingle", None)

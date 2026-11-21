@@ -200,7 +200,7 @@ class ModelRegistry(AbstractRegistry):
 
         from pydantic import BaseModel, Field
 
-        from zephyrex.lib.Environment import inflection
+        from zephyrex.lib.Environment import plural_noun
         from zephyrex.lib.Logging import logger
 
         # Get the model name for the network fields (snake_case)
@@ -414,7 +414,7 @@ class ModelRegistry(AbstractRegistry):
 
         # ResponsePlural class - wraps a list of the base model
         # Use inflection for proper pluralization
-        plural_field_name = inflection.plural(field_name)
+        plural_field_name = plural_noun(field_name)
         network_attrs["ResponsePlural"] = type(
             "ResponsePlural",
             (BaseModel,),

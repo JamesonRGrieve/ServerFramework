@@ -43,7 +43,7 @@ from zephyrex.lib.ContentNegotiation import (
     deserialize,
     serialize,
 )
-from zephyrex.lib.Environment import env, inflection
+from zephyrex.lib.Environment import env, inflection, plural_noun
 from zephyrex.lib.InboundSecurity import reset_rate_limit_counts
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import IF_MATCH_HEADER, entity_etag
@@ -259,7 +259,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     @property
     def resource_name_plural(self) -> str:
         """Get the pluralized resource name for requests."""
-        return inflection.plural(self.entity_name)
+        return plural_noun(self.entity_name)
 
     def _get_nesting_level(self, operation: str) -> int:
         """Get the nesting level for a given operation, respecting overrides."""

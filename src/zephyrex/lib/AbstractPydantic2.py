@@ -20,7 +20,7 @@ from typing import (
 import stringcase
 from pydantic import BaseModel, ConfigDict
 
-from zephyrex.lib.Environment import inflection
+from zephyrex.lib.Environment import inflection, plural_noun
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
 
@@ -83,7 +83,7 @@ class NameProcessor:
     def generate_resource_name(class_name: str, use_plural: bool = True) -> str:
         base_name = NameProcessor.extract_base_name(class_name)
         snake_case_name = stringcase.snakecase(base_name)
-        return inflection.plural(snake_case_name) if use_plural else snake_case_name
+        return plural_noun(snake_case_name) if use_plural else snake_case_name
 
     @staticmethod
     def generate_unique_name(

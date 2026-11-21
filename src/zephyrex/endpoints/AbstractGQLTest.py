@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import pytest
 import stringcase
 
-from zephyrex.lib.Environment import env, inflection
+from zephyrex.lib.Environment import env, plural_noun
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Preconditions import entity_etag
 from zephyrex.pydantic2.strawberry import convert_field_name
@@ -558,9 +558,9 @@ class AbstractGraphQLTest:
 
         # Convert to plural camelCase for GraphQL field name
         if "_" in self.entity_name:
-            plural_name = stringcase.camelcase(inflection.plural(self.entity_name))
+            plural_name = stringcase.camelcase(plural_noun(self.entity_name))
         else:
-            plural_name = inflection.plural(self.entity_name)
+            plural_name = plural_noun(self.entity_name)
         # Note: GraphQL list resolvers don't accept parent entity arguments like teamId
         # They handle filtering internally based on the authenticated user's context
         query_params_str = ""
@@ -1118,7 +1118,7 @@ class AbstractGraphQLTest:
         if not references:
             pytest.skip("Entity references no parent")
 
-        collection = convert_field_name(inflection.plural(self.entity_name))
+        collection = convert_field_name(plural_noun(self.entity_name))
         for parent, parent_id in references:
             parent_field = convert_field_name(
                 reference_relationship_name(parent.foreign_key)
