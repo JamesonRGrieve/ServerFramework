@@ -945,7 +945,6 @@ class MigrationManager:
         """
         if not self.unmigrated_extensions:
             return
-        refuse_unmigrated_outside_tests(self.unmigrated_extensions)
         db_manager = self._model_registry.DB.manager
         wanted = set(self.unmigrated_extensions)
         tables = [
@@ -953,6 +952,12 @@ class MigrationManager:
             for table in db_manager.Base.metadata.sorted_tables
             if table.info.get("extension") in wanted
         ]
+        # Only an extension that owns tables needs migrations: one with none (privacy, cloud, ai
+        # as bundled) has nothing to migrate, so it boots anywhere (Session 1 Manager, 2026-11-21:
+        # fb6bbaa1 refused Chronos's boot over privacy).
+        refuse_unmigrated_outside_tests(
+            sorted({str(table.info.get("extension")) for table in tables})
+        )
         db_manager.Base.metadata.create_all(
             bind=db_manager._setup_engine, tables=tables
         )
