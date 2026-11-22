@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from faker import Faker
 
-from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
+from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
 from zephyrex.database.DB_Auth_test import TestUser as CoreUserTests
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin

@@ -3,7 +3,7 @@ import uuid
 
 from faker import Faker
 
-from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
+from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
 from zephyrex.database.DB_Auth_test import TestTeam as CoreTeamTests
 from zephyrex.database.DB_Auth_test import TestUser as CoreUserTests

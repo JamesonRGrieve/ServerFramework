@@ -658,9 +658,32 @@ class MigrationManager:
                 "No APP_EXTENSIONS environment variable set. No extensions will be processed."
             )
             return []
-        else:
-            logger.debug(f"Using extensions from APP_EXTENSIONS: {extension_list}")
-        return extension_list
+        logger.debug(f"Using extensions from APP_EXTENSIONS: {extension_list}")
+        return self._with_required_dependencies(extension_list)
+
+    def _with_required_dependencies(self, extension_list):
+        """``extension_list`` with each one's required dependencies, as the
+        app loads them (``ExtensionRegistry`` registers them, so their models
+        are bound): a dependency's tables must be migrated too, or it runs
+        with none. A listed name the registry can't load is kept, so the run
+        still reports it."""
+        from zephyrex.extensions.AbstractExtensionProvider import (
+            ExtensionRegistry,
+        )
+
+        try:
+            registry = ExtensionRegistry(
+                ",".join(extension_list),
+                extensions_path=getattr(self, "_extensions_path_override", None),
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not resolve extension dependencies, migrating only "
+                f"the configured extensions: {e}"
+            )
+            return extension_list
+        resolved = [ext.name for ext in registry.extensions]
+        return resolved + [name for name in extension_list if name not in resolved]
 
     def debug_file_info(self, file_path):
         """Debug a file by showing its permissions, size, and other metadata."""

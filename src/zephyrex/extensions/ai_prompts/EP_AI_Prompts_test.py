@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 from faker import Faker
 
-from AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
+from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
 from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptModel

@@ -241,7 +241,10 @@ class PromptArgumentManager(AbstractBLLManager, RouterMixin):
 
 
 # Messages record the prompt they were generated from, when the
-# conversations extension is present.
+# conversations extension is loaded. The name MessageModel must not stay in
+# this module: model binding scans each BLL module's names and would bind
+# conversations' MessageModel (and its foreign key to conversations) into an
+# app that loaded ai_prompts without conversations, which then cannot start.
 try:
     from zephyrex.extensions.conversations.BLL_Conversations import MessageModel
     from zephyrex.pydantic2.sqlalchemy import extension_model
@@ -252,5 +255,6 @@ try:
             None, description="ID of the prompt used to generate this message"
         )
 
+    del MessageModel
 except ImportError:
     pass

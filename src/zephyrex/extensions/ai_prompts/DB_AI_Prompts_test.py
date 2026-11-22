@@ -1,6 +1,6 @@
 from faker import Faker
 
-from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
+from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import (

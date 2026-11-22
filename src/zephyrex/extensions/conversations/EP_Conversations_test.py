@@ -5,7 +5,12 @@ from typing import Any, Dict, List, Optional
 import pytest
 from faker import Faker
 
-from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity, SkipThisTest
+from zephyrex.AbstractTest import (
+    CategoryOfTest,
+    ClassOfTestsConfig,
+    ParentEntity,
+    SkipThisTest,
+)
 from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
 from zephyrex.endpoints.EP_Auth_test import (
     TestUserAndSessionEndpoints as CoreUserAndSessionEndpointTests,

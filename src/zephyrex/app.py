@@ -204,6 +204,18 @@ def create_registry_with_db_manager(db_manager, extensions_list: Optional[str] =
     # Create ExtensionRegistry with CSV initialization (replaces deprecated scoped_import)
     extension_registry = ExtensionRegistry(extensions_list or "")
 
+    # The registry registered each listed extension's required dependencies
+    # too (``loaded_extension_names`` names them), so installs, model
+    # discovery and model binding take its resolved list, in dependency
+    # order: a dependency read only from the configured list was "loaded"
+    # with none of its models bound. A configured name the registry couldn't
+    # load is kept, so the scoped import still refuses to start without it.
+    resolved = parse_extension_csv(extension_registry.csv)
+    configured = parse_extension_csv(extensions_list or "")
+    extensions_list = ",".join(
+        resolved + [name for name in configured if name not in resolved]
+    )
+
     install_extension_dependencies_with_restart(extensions_list)
 
     # Discover extension models for backward compatibility
