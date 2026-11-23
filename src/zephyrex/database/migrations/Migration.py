@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1619,6 +1620,46 @@ class {class_name}(Base):
             engine.dispose()
         return rows
 
+    def seed_fixed_users(self) -> bool:
+        """Insert the fixed users (ROOT, SYSTEM, TEMPLATE) that are not there
+        yet, once core's migrations have made the users table and before any
+        extension's run: an extension's seed migration may name one as a
+        row's creator, and on a fresh database the seeder (which creates
+        them too, and skips them when present) runs only after migrations.
+        """
+        from sqlalchemy import MetaData, Table, create_engine, select
+
+        from zephyrex.logic.BLL_Auth.user import UserModel
+
+        engine = create_engine(self.db_info["url"])
+        try:
+            with engine.begin() as connection:
+                users = Table("users", MetaData(), autoload_with=connection)
+                present: set[str] = set(connection.scalars(select(users.c.id)).all())
+                missing = [
+                    {
+                        **row,
+                        "active": True,
+                        "created_at": now,
+                        "created_by_user_id": row["id"],
+                    }
+                    for row in UserModel.seed_data
+                    if row["id"] not in present
+                    for now in [datetime.now(timezone.utc).replace(tzinfo=None)]
+                ]
+                if missing:
+                    connection.execute(users.insert(), missing)
+                    logger.info(
+                        "Seeded fixed users before extension migrations: %s",
+                        ", ".join(row["id"] for row in missing),
+                    )
+            return True
+        except Exception as exc:
+            logger.error("Seeding the fixed users failed: %s", exc)
+            return False
+        finally:
+            engine.dispose()
+
     def _component_versions_dir(self, component: Optional[str]) -> Path:
         """Core's (``None``) or an extension's versions directory."""
         if component is None:
@@ -1728,6 +1769,9 @@ class {class_name}(Base):
                 logger.error(
                     f"[Worker {worker_id}] Core migrations {command} failed for db={self.db_info['name']}"
                 )
+                return False
+
+            if command == "upgrade" and not self.seed_fixed_users():
                 return False
 
             extension_migrations = []
