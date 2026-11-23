@@ -107,6 +107,8 @@ _INLINE_PATTERNS = [
     ),
     re.compile(r"(?i)Bearer\s+(?P<v>[A-Za-z0-9._\-+/=]+)"),
     re.compile(r"(?i)Basic\s+(?P<v>[A-Za-z0-9+/=]+)"),
+    # A URL's userinfo password, as in postgresql://user:PASSWORD@host/db.
+    re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s/:@'\"]*:(?P<v>[^\s/@'\"]+)@"),
 ]
 
 
@@ -126,12 +128,21 @@ def _scrub_value(value):
     return value
 
 
+def _redact_match(match: "re.Match[str]") -> str:
+    """The match with only its secret group replaced, so a user name that
+    happens to equal the password stays readable."""
+    whole, start = match.group(0), match.start()
+    return (
+        whole[: match.start("v") - start] + _REDACTED + whole[match.end("v") - start :]
+    )
+
+
 def _scrub_string(text):
     """Apply inline-secret regex scrubbing to a message string."""
     if not text:
         return text
     for pattern in _INLINE_PATTERNS:
-        text = pattern.sub(lambda m: m.group(0).replace(m.group("v"), _REDACTED), text)
+        text = pattern.sub(_redact_match, text)
     return text
 
 

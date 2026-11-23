@@ -187,3 +187,24 @@ def test_a_traceback_never_prints_frame_locals(log_format):
     )
     assert "login failed" in result.stdout
     assert "CANARY-LOCAL-737373" not in result.stdout + result.stderr
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://rpg:CANARY-db-pass@127.0.0.1:5432/rpg",
+        "postgresql+asyncpg://canary:CANARY-db-pass@db/rpg?sslmode=require",
+        "redis://:CANARY-db-pass@valkey:6379/0",
+    ],
+)
+def test_log_redacts_a_urls_password(captured_log_output, url):
+    """A database URL's password never reaches a log line, whether it is
+    interpolated into the message (as a dict's repr) or bound as an extra."""
+    logger.bind(target={"url": url}).info(
+        f"Migration target database: {{'url': {url!r}}}"
+    )
+    output = captured_log_output.getvalue()
+    assert "CANARY-db-pass" not in output
+    assert "[REDACTED]@" in output
+    assert url.split("://")[0] + "://" in output  # the rest stays readable

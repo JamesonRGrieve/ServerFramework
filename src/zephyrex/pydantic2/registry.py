@@ -906,7 +906,11 @@ class ModelRegistry(AbstractRegistry):
                     self.database_manager, "_database_file_path", None
                 ),
             }
-            logger.info(f"Migration target database: {custom_db_info}")
+            logger.info(
+                "Migration target database: type=%s name=%s",
+                custom_db_info["type"],
+                custom_db_info["name"],
+            )
 
             migration_manager = MigrationManager(
                 custom_db_info=custom_db_info, model_registry=self
