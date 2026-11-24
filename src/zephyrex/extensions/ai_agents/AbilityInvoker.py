@@ -47,7 +47,15 @@ SERVER_ONLY = frozenset({"as_user", "instance_ids", "params"})
 # turns, changing what agents may do, and a stream (an async iterator, which a
 # tool call can't consume).
 NEVER_AGENT_INVOCABLE: frozenset[str] = frozenset(
-    {"thinking_turn", "take_turn", "grant_ability", "chat_stream"}
+    {
+        "thinking_turn",
+        "take_turn",
+        "grant_ability",
+        "chat_stream",
+        # A GM approving it in the app is a tabletop write's approval.
+        "vtt_create_documents",
+        "vtt_update_documents",
+    }
 )
 
 _JSON_TYPE_OF = {
