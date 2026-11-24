@@ -3,6 +3,7 @@ import base64
 import binascii
 import json
 from abc import ABC
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date, datetime, time, timedelta
 from typing import (
@@ -13,6 +14,7 @@ from typing import (
     Dict,
     FrozenSet,
     Generic,
+    Iterator,
     List,
     Optional,
     Protocol,
@@ -27,7 +29,7 @@ from typing import (
 )
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
@@ -101,6 +103,12 @@ def _escape_like(v: object) -> str:
 # ContextVar, so concurrent requests never see another's, and matched on manager and record.
 _TRUSTED_UPDATE: ContextVar[Optional[Tuple[Any, str, FrozenSet[str]]]] = ContextVar(
     "zephyrex_trusted_update", default=None
+)
+# The fields trusted_fields lets this manager's creates set beyond its Create schema, as
+# (manager, field names): matched on the manager, so a create by another manager inside the
+# scope (a hook's) still goes through its own Create schema.
+_TRUSTED_CREATE: ContextVar[Optional[Tuple[Any, FrozenSet[str]]]] = ContextVar(
+    "zephyrex_trusted_create", default=None
 )
 
 _type_hints_cache: Dict[type, Dict[str, Any]] = {}
@@ -1376,6 +1384,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             for k, v in args.model_dump(exclude_unset=True).items()
             if v is not None or k == "user_id"  # Keep user_id even if None
         }
+        create_args.update(self._trusted_create_fields(kwargs, type(args)))
 
         # Check if the database class has a user_id column and add target_id if it does
         # Only add user_id if it wasn't explicitly set in the original kwargs
@@ -1955,6 +1964,93 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             # Convert arguments to dictionary, excluding unset values
             update_args = {k: v for k, v in args.model_dump(exclude_unset=True).items()}
         return self._write_update(id, update_args, entity_before)
+
+    @contextmanager
+    def trusted_fields(self, *names: str) -> Iterator[None]:
+        """Let this manager's creates inside the block set the named model
+        fields too, beyond its ``Create`` schema (the client's view, which
+        drops every field it doesn't declare). For a ``create`` override that
+        fills fields the caller doesn't send::
+
+            def create(self, **kwargs):
+                kwargs["chat_id"] = self._chat_of(kwargs)
+                with self.trusted_fields("chat_id"):
+                    return super().create(**kwargs)
+
+        Each named value is validated against the full model's field (422
+        otherwise; a name that is no field of the model is a 422 too).
+        Server-managed fields (audit, identity) are still stripped, and
+        caller-owned fields still checked. Name only fields the code sets
+        itself, never ones taken from a client's payload."""
+        token = _TRUSTED_CREATE.set((self, frozenset(names)))
+        try:
+            yield
+        finally:
+            _TRUSTED_CREATE.reset(token)
+
+    def create_trusted(self, **kwargs: Any) -> Any:
+        """``create`` that may also set model fields its ``Create`` schema
+        doesn't declare (:meth:`trusted_fields` for every such field given),
+        for server-side code calling a manager directly; the counterpart of
+        :meth:`update_trusted`. Never call it with a client's payload, and
+        never expose it through a route."""
+        create_fields = set(self.model_registry.apply(self.Model).Create.model_fields)
+        with self.trusted_fields(*(set(kwargs) - create_fields)):
+            return self.create(**kwargs)
+
+    def _trusted_create_fields(
+        self, kwargs: Dict[str, Any], create_schema: type
+    ) -> Dict[str, Any]:
+        """The fields beyond ``create_schema`` that :meth:`trusted_fields`
+        lets this create set, each validated against the full model. Any
+        other model field given is dropped, as the schema drops it, but
+        logged: a manager that sets one without ``trusted_fields`` would
+        otherwise lose it silently (and fail later, a NOT NULL column at
+        insert)."""
+        extra = set(kwargs) - set(create_schema.model_fields)  # type: ignore[attr-defined]
+        if not extra:
+            return {}
+        trusted = _TRUSTED_CREATE.get()
+        allowed = (
+            trusted[1] if trusted is not None and trusted[0] is self else frozenset()
+        )
+        named = {name: kwargs[name] for name in extra if name in allowed}
+        full_fields = self.model_registry.apply(self.Model).model_fields
+        dropped = sorted(name for name in extra - set(named) if name in full_fields)
+        if dropped:
+            logger.warning(
+                "%s.create dropped %s: not on its Create schema (set them inside "
+                "trusted_fields, or use create_trusted)",
+                type(self).__name__,
+                ", ".join(dropped),
+            )
+        unknown = sorted(set(named) - set(full_fields))
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Validation error",
+                    "details": [
+                        {"loc": [name], "msg": "Not a field of the model"}
+                        for name in unknown
+                    ],
+                },
+            )
+        validated: Dict[str, Any] = {}
+        errors: List[Any] = []
+        for name, value in named.items():
+            try:
+                validated[name] = TypeAdapter(
+                    full_fields[name].annotation
+                ).validate_python(value)
+            except ValidationError as e:
+                errors.extend({**err, "loc": [name, *err["loc"]]} for err in e.errors())
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Validation error", "details": errors},
+            )
+        return validated
 
     def update_trusted(self, id: str, **kwargs) -> ModelT:
         """Update fields a client may not change, for server-side operations only.
