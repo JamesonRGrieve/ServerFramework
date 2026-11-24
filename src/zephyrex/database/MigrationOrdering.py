@@ -1,6 +1,6 @@
 """FK-aware cross-extension migration ordering (Item 49).
 
-Migration ordering is computed as a topological sort over the union of two
+Migration ordering is computed as a topological sort over the union of three
 edge sources:
 
   (a) **Declared ``EXT_Dependency`` relationships** — for each non-optional
@@ -12,6 +12,11 @@ edge sources:
       FK references between **core and extension** tables don't add edges;
       core always migrates first by structural rule (the migration runner
       sequences core before extensions unconditionally).
+  (c) **Extended tables** — for each table owned by extension ``A`` that
+      extension ``B`` adds columns to (``@extension_model``, recorded in the
+      table's ``info["extensions"]``), the edge ``A -> B``: B's migration
+      adds a column to a table A's must have made, whether or not B
+      declares A as a dependency (an optional one adds no edge of its own).
 
 Cycles in the merged graph (for example, an FK from A.x → B.y combined
 with an FK from B.z → A.w) raise :class:`MigrationOrderingError` whose
@@ -141,6 +146,7 @@ def compute_migration_order(
     # Walk metadata once to harvest FK edges + extend the node set with
     # any owner that surfaces only via SA tables.
     fk_edges: List[Tuple[str, str, Tuple[str, str, str, str]]] = []
+    extender_edges: List[Tuple[str, str, str]] = []
     if metadata is not None:
         tables = getattr(metadata, "tables", None) or {}
         for table_name, table in tables.items():
@@ -148,6 +154,15 @@ def compute_migration_order(
             if owner is None:
                 continue
             nodes.add(owner)
+            # (c) An extension that adds columns to this table
+            # (@extension_model) migrates after the table's owner: its
+            # migration adds a column to a table that must already exist.
+            for extender in (getattr(table, "info", None) or {}).get(
+                "extensions"
+            ) or ():
+                if extender and extender != owner:
+                    nodes.add(extender)
+                    extender_edges.append((owner, extender, table_name))
             for fk in getattr(table, "foreign_keys", ()) or ():
                 ref_col = getattr(fk, "column", None)
                 ref_table = (
@@ -207,6 +222,14 @@ def compute_migration_order(
             f"FK {fk_record[0]}.{fk_record[1]} -> {fk_record[2]}.{fk_record[3]}"
         )
         fk_edge_record.setdefault((src_ext, dst_ext), []).append(fk_record)
+
+    # (c) extended-table edges
+    for owner, extender, table_name in extender_edges:
+        predecessors[extender].add(owner)
+        successors[owner].add(extender)
+        edge_provenance.setdefault((owner, extender), []).append(
+            f"{extender} adds columns to {owner}'s table {table_name}"
+        )
 
     # Kahn's algorithm with deterministic tie-breaking via sorted ready set.
     ready = sorted([n for n in sorted_nodes if not predecessors[n]])

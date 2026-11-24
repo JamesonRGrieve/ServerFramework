@@ -242,8 +242,9 @@ class MigrationManager:
         attached registry:
 
          (a) Declared ``EXT_Dependency`` relationships, looked up via the
-             ExtensionRegistry attached to ``self._model_registry``. Optional
-             dependencies are filtered out (only required deps contribute edges).
+             ExtensionRegistry attached to ``self._model_registry``. An
+             optional dependency contributes an edge only when it is among
+             the extensions being migrated.
          (b) The live ``Base.metadata`` so FK references can be inspected.
 
         Returns a list of extension names — restricted to the input set —
@@ -284,7 +285,13 @@ class MigrationManager:
                 elif hasattr(deps, "__iter__"):
                     ext_deps = list(deps)
                 for dep in ext_deps:
-                    if not isinstance(dep, EXT_Dependency) or dep.optional:
+                    if not isinstance(dep, EXT_Dependency):
+                        continue
+                    # An optional dependency orders only when it is loaded:
+                    # an extension that uses it when present (ai_prompts
+                    # adding prompt_id to conversations' messages) migrates
+                    # after it.
+                    if dep.optional and dep.name not in ext_dependencies:
                         continue
                     if dep.name and dep.name != ext_name:
                         ext_dependencies[ext_name].append(dep.name)
