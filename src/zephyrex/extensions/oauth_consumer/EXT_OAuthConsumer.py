@@ -139,12 +139,24 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
     @classmethod
     def on_start(cls) -> None:
         """The operator's sign-in instance, when its issuer is configured
-        (``ensure_sign_in_instance``)."""
+        (``ensure_sign_in_instance``). With an issuer set and no ``oidc``
+        provider in the database, the server refuses to start."""
         from fastapi import HTTPException
+
+        from zephyrex import ExtensionLoadError
 
         try:
             ensure_sign_in_instance(cls.as_requester)
         except HTTPException as error:
+            if error.status_code == 404:
+                # An issuer is set, so this server signs people in through it
+                # (often as the only way in): starting without it would leave
+                # nobody able to sign in, with only a warning to show for it.
+                raise ExtensionLoadError(
+                    "oauth_consumer: OIDC_CONSUMER_ISSUER_URL is set but the "
+                    "oidc provider is not in the database (seeding off: "
+                    "SEED_DATA=false?), so no sign-in instance can be made"
+                ) from error
             logger.warning("oauth_consumer: no sign-in instance: %s", error.detail)
 
     @classmethod

@@ -5,20 +5,23 @@ the operator's sign-in instance at startup when an issuer is configured."""
 
 import importlib.util
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from fastapi import HTTPException
 
+from zephyrex import ExtensionLoadError
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
     GRANT_TYPE,
-    configured_providers,
-    public_names,
     OAuthIdentityModel,
     OAuthLoginStateModel,
+    configured_providers,
+    public_names,
 )
 from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
     EXT_OAuthConsumer,
@@ -88,6 +91,29 @@ class TestExtension:
     @pytest.mark.parametrize("ability", sorted(EXT_OAuthConsumer._abilities))
     def test_each_declared_ability_is_implemented(self, ability):
         assert callable(getattr(EXT_OAuthConsumer, ability))
+
+
+class TestSignInWithoutTheProvider:
+    """Seeding off (SEED_DATA=false) leaves no oidc provider row: with an
+    issuer set the server must not start with nobody able to sign in."""
+
+    @staticmethod
+    def _no_provider(manager_class: Any, requester_id: str) -> Any:
+        def get(**_: Any) -> Any:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        return SimpleNamespace(get=get)
+
+    def test_with_an_issuer_it_refuses_to_start(self, set_env, monkeypatch):
+        set_env("OIDC_CONSUMER_ISSUER_URL", ISSUER)
+        monkeypatch.setattr(EXT_OAuthConsumer, "as_requester", self._no_provider)
+        with pytest.raises(ExtensionLoadError, match="SEED_DATA"):
+            EXT_OAuthConsumer.on_start()
+
+    def test_without_one_it_starts(self, set_env, monkeypatch):
+        set_env("OIDC_CONSUMER_ISSUER_URL", "")
+        monkeypatch.setattr(EXT_OAuthConsumer, "as_requester", self._no_provider)
+        EXT_OAuthConsumer.on_start()
 
 
 ISSUER = "https://auth.example/application/o/app/"
