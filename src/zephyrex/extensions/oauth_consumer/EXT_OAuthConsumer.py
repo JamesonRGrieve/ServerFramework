@@ -12,7 +12,7 @@ The complementary ``oauth_provider`` extension is the server side: other
 applications signing in against this server.
 """
 
-from typing import Any, ClassVar, Dict, List, Set
+from typing import Any, ClassVar, Dict, List, Optional, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -20,6 +20,54 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Logging import logger
+
+SIGN_IN_INSTANCE_DEFAULT = "authentik"
+
+
+def live_instances(model_registry: Any, provider_id: str, name: str) -> List[Any]:
+    """The provider's instances named ``name`` that aren't deleted (a lookup
+    as root sees deleted rows unless told not to)."""
+    from zephyrex.lib.Environment import env
+    from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+    InstanceDB = ProviderInstanceModel.DB(model_registry.DB.manager.Base)
+    rows = InstanceDB.list(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        filters=[
+            InstanceDB.provider_id == provider_id,
+            InstanceDB.name == name,
+            InstanceDB.deleted_at.is_(None),
+        ],
+        return_type="dto",
+        override_dto=ProviderInstanceModel,
+    )
+    return list(rows or [])
+
+
+def ensure_sign_in_instance(as_requester: Any) -> Optional[str]:
+    """The root-scoped ``oidc`` instance the server signs people in with,
+    made once when ``OIDC_CONSUMER_ISSUER_URL`` is set; its name, or None.
+
+    The instance is named by ``OIDC_CONSUMER_INSTANCE`` (default
+    ``authentik``): the client's button and the redirect URI
+    ``<APP_URI>/user/close/<name>`` use the name. Its client id, secret and
+    issuer stay in the environment (``OIDC_CONSUMER_*``, read by PRV_OIDC).
+    A live instance already there by that name is left as it is."""
+    from zephyrex.lib.Environment import env
+    from zephyrex.logic.BLL_Providers import ProviderInstanceManager, ProviderManager
+
+    if not (env("OIDC_CONSUMER_ISSUER_URL") or "").strip():
+        return None
+    name = (env("OIDC_CONSUMER_INSTANCE") or "").strip() or SIGN_IN_INSTANCE_DEFAULT
+    root_id = env("ROOT_ID")
+    provider = as_requester(ProviderManager, root_id).get(name="oidc")
+    instances = as_requester(ProviderInstanceManager, root_id)
+    live = live_instances(instances.model_registry, provider.id, name)
+    if not live:
+        instances.create(name=name, provider_id=provider.id, scope="root")
+        logger.info("oauth_consumer: made the %s sign-in instance (oidc)", name)
+    return name
 
 
 class EXT_OAuthConsumer(AbstractStaticExtension):
@@ -30,7 +78,10 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         "OpenID Connect provider (OAuth 2.0 with PKCE)"
     )
 
-    _env: ClassVar[Dict[str, Any]] = {"OAUTH_CONSUMER_REDIRECT_URIS": ""}
+    _env: ClassVar[Dict[str, Any]] = {
+        "OAUTH_CONSUMER_REDIRECT_URIS": "",
+        "OIDC_CONSUMER_INSTANCE": SIGN_IN_INSTANCE_DEFAULT,
+    }
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
@@ -74,6 +125,17 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
 
         register_merge_participation()
         return True
+
+    @classmethod
+    def on_start(cls) -> None:
+        """The operator's sign-in instance, when its issuer is configured
+        (``ensure_sign_in_instance``)."""
+        from fastapi import HTTPException
+
+        try:
+            ensure_sign_in_instance(cls.as_requester)
+        except HTTPException as error:
+            logger.warning("oauth_consumer: no sign-in instance: %s", error.detail)
 
     @classmethod
     def validate_config(cls) -> List[str]:

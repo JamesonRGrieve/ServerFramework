@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The extension itself: its migration creates exactly the models' tables,
-it registers its grant, and it refuses to run without encryption."""
+it registers its grant, it refuses to run without encryption, and it makes
+the operator's sign-in instance at startup when an issuer is configured."""
 
 import importlib.util
 from pathlib import Path
@@ -17,8 +18,14 @@ from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
     OAuthIdentityModel,
     OAuthLoginStateModel,
 )
-from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import EXT_OAuthConsumer
+from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
+    EXT_OAuthConsumer,
+    ensure_sign_in_instance,
+    live_instances,
+)
+from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import PasswordlessGrantRegistry
+from zephyrex.logic.BLL_Providers import ProviderInstanceManager, ProviderManager
 
 _MIGRATION = Path(__file__).parent / "migrations" / "versions" / "001_initial.py"
 
@@ -79,3 +86,50 @@ class TestExtension:
     @pytest.mark.parametrize("ability", sorted(EXT_OAuthConsumer._abilities))
     def test_each_declared_ability_is_implemented(self, ability):
         assert callable(getattr(EXT_OAuthConsumer, ability))
+
+
+ISSUER = "https://auth.example/application/o/app/"
+
+
+class TestSignInInstance(ExtensionServerMixin):
+    extension_class = EXT_OAuthConsumer
+
+    @staticmethod
+    def _instances(server, name: str) -> list:
+        oidc = EXT_OAuthConsumer.as_requester(ProviderManager, env("ROOT_ID")).get(
+            name="oidc"
+        )
+        return live_instances(server.app.state.model_registry, oidc.id, name)
+
+    def test_without_an_issuer_nothing_is_made(self, server, set_env):
+        set_env("OIDC_CONSUMER_ISSUER_URL", "")
+        assert ensure_sign_in_instance(EXT_OAuthConsumer.as_requester) is None
+        assert self._instances(server, "authentik") == []
+
+    def test_with_an_issuer_the_root_instance_is_made_once(self, server, set_env):
+        set_env("OIDC_CONSUMER_ISSUER_URL", ISSUER)
+        set_env("OIDC_CONSUMER_INSTANCE", "")
+        assert ensure_sign_in_instance(EXT_OAuthConsumer.as_requester) == "authentik"
+        assert ensure_sign_in_instance(EXT_OAuthConsumer.as_requester) == "authentik"
+        made = self._instances(server, "authentik")
+        assert len(made) == 1
+        assert made[0].scope == "root"
+
+    def test_the_instance_is_named_by_the_environment(self, server, set_env):
+        set_env("OIDC_CONSUMER_ISSUER_URL", ISSUER)
+        set_env("OIDC_CONSUMER_INSTANCE", "zephyrex-sso")
+        assert ensure_sign_in_instance(EXT_OAuthConsumer.as_requester) == "zephyrex-sso"
+        assert len(self._instances(server, "zephyrex-sso")) == 1
+
+    def test_a_deleted_instance_is_made_again(self, server, set_env):
+        set_env("OIDC_CONSUMER_ISSUER_URL", ISSUER)
+        set_env("OIDC_CONSUMER_INSTANCE", "gone-sso")
+        ensure_sign_in_instance(EXT_OAuthConsumer.as_requester)
+        (first,) = self._instances(server, "gone-sso")
+        EXT_OAuthConsumer.as_requester(ProviderInstanceManager, env("ROOT_ID")).delete(
+            first.id
+        )
+        assert self._instances(server, "gone-sso") == []
+        ensure_sign_in_instance(EXT_OAuthConsumer.as_requester)
+        (again,) = self._instances(server, "gone-sso")
+        assert again.id != first.id
