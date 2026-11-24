@@ -89,18 +89,12 @@ async def _call(ability: Any, **arguments: Any) -> Any:
     return await result if inspect.isawaitable(result) else result
 
 
-async def campaign_world(
+async def _ask(
+    backend: Any,
     requester_id: str,
     campaign_id: Optional[str] = None,
     world_id: Optional[str] = None,
-) -> Tuple[str, str]:
-    """``(campaign_id, world_id)`` for a requester in a Foundry campaign;
-    404-like invalid input for anyone else, or a campaign kept natively."""
-    backend = loaded_ability(_registry(), "rpg_core", "campaign_backend")
-    if backend is None:
-        raise InvalidInputExternalError(
-            "Foundry campaigns need the wiki's rpg_core.campaign_backend"
-        )
+) -> Doc:
     found = await _call(
         backend,
         model_registry=_registry(),
@@ -108,9 +102,48 @@ async def campaign_world(
         campaign_id=campaign_id,
         world_id=world_id,
     )
-    if not found or found.get("backend") != FOUNDRY or not found.get("world_id"):
-        raise InvalidInputExternalError("No such Foundry campaign for this requester")
-    return str(found.get("campaign_id") or campaign_id or ""), str(found["world_id"])
+    return found if isinstance(found, dict) else {}
+
+
+async def campaign_world(
+    requester_id: str,
+    campaign_id: Optional[str] = None,
+    world_id: Optional[str] = None,
+) -> Tuple[str, str]:
+    """``(campaign_id, world_id)`` of a Foundry campaign the requester is
+    in; invalid input for anyone else, or a campaign kept natively.
+
+    The wiki resolves a campaign for routing whoever asks, so membership is
+    its own question: an answer's ``member`` when it gives one, else the
+    wiki's answer for the requester on that world (which is the requester's
+    own campaign there, or none) must be this campaign."""
+    backend = loaded_ability(_registry(), "rpg_core", "campaign_backend")
+    if backend is None:
+        raise InvalidInputExternalError(
+            "Foundry campaigns need the wiki's rpg_core.campaign_backend"
+        )
+    refused = InvalidInputExternalError("No such Foundry campaign for this requester")
+    if campaign_id:
+        found = await _ask(backend, requester_id, campaign_id=campaign_id)
+        if found.get("backend") != FOUNDRY or not found.get("world_id"):
+            raise refused
+        world = str(found["world_id"])
+        if found.get("member") is True:
+            return str(campaign_id), world
+        if found.get("member") is False:
+            raise refused
+        mine = await _ask(backend, requester_id, world_id=world)
+        if str(mine.get("campaign_id") or "") != str(campaign_id):
+            raise refused
+        return str(campaign_id), world
+    mine = await _ask(backend, requester_id, world_id=world_id)
+    if (
+        mine.get("backend") != FOUNDRY
+        or not mine.get("campaign_id")
+        or str(mine.get("world_id") or world_id) != str(world_id)
+    ):
+        raise refused
+    return str(mine["campaign_id"]), str(world_id)
 
 
 async def _world_of(requester_id: str, *ids: str) -> str:

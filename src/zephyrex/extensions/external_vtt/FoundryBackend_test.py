@@ -110,16 +110,21 @@ def world(monkeypatch) -> List[tuple]:
         monkeypatch.setattr(EXT_External_VTT, name, classmethod(fn))
 
     async def campaign_backend(
+        model_registry: Any,
         requester_id: str,
         campaign_id: Optional[str] = None,
+        person_id: Optional[str] = None,
         world_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """The wiki's answer: only the campaign's GM is in it."""
-        if requester_id != GM or (campaign_id or CAMPAIGN) != CAMPAIGN:
-            return None
-        if world_id not in (None, WORLD):
-            return None
-        return {"backend": "foundry", "world_id": WORLD, "campaign_id": CAMPAIGN}
+    ) -> Dict[str, Any]:
+        """The wiki's answer (e715c6b): a campaign resolves for routing
+        whoever asks; a world answers the requester's own campaign there."""
+        if campaign_id is not None:
+            if campaign_id != CAMPAIGN:
+                return {"backend": "native", "world_id": None, "campaign_id": None}
+            return {"backend": "foundry", "world_id": WORLD, "campaign_id": CAMPAIGN}
+        if world_id == WORLD and requester_id == GM:
+            return {"backend": "foundry", "world_id": WORLD, "campaign_id": CAMPAIGN}
+        return {"backend": "native", "world_id": None, "campaign_id": None}
 
     monkeypatch.setattr(backend, "_registry", lambda: None)
     monkeypatch.setattr(
@@ -249,3 +254,25 @@ def test_each_read_implements_the_contracts_ability():
         ("rpg_combat", "current_encounter", "foundry"),
         ("rpg_dice", "character_sheet", "foundry"),
     }
+
+
+async def test_a_member_answer_decides_when_the_wiki_gives_one(world, monkeypatch):
+    async def answering_member(
+        model_registry: Any,
+        requester_id: str,
+        campaign_id: Optional[str] = None,
+        **_: Any,
+    ) -> Dict[str, Any]:
+        return {
+            "backend": "foundry",
+            "world_id": WORLD,
+            "campaign_id": CAMPAIGN,
+            "member": requester_id == GM,
+        }
+
+    monkeypatch.setattr(
+        backend, "loaded_ability", lambda registry, ext, name: answering_member
+    )
+    assert (await EXT_External_VTT.foundry_current_scene(GM, CAMPAIGN)) is not None
+    with pytest.raises(InvalidInputExternalError):
+        await EXT_External_VTT.foundry_current_scene("stranger", CAMPAIGN)
