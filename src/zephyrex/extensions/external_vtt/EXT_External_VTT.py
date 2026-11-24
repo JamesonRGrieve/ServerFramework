@@ -8,9 +8,11 @@ so every
 ability names the world it acts on (the instance's id) and runs on that
 instance alone: failing over to another world is never right. Writes are
 held to the document types a GM's table needs from outside (a narration in
-the chat, a token moved, the turn advanced), and an agent can never make one
-on its own: the GM approving it in the app is the approval, so the app calls
-the write abilities itself.
+the chat, a token moved, the turn advanced). Who approves a write follows
+the world instance's mode: in ``assistant`` mode a human GM runs the table,
+so every write names the GM who approved it (``approved_by``, server-only:
+never a model's to fill), and one without is refused; in ``campaign`` mode
+the app's AI is the GM, so writes need no approval.
 """
 
 from abc import abstractmethod
@@ -149,6 +151,7 @@ class AbstractVTTProvider(AbstractStaticProvider):
         document_type: str,
         docs: List[Doc],
         parent_uuid: Optional[str],
+        approved: bool = False,
     ) -> List[str]:
         """Create documents; their ids."""
 
@@ -160,6 +163,7 @@ class AbstractVTTProvider(AbstractStaticProvider):
         document_type: str,
         updates: List[Doc],
         parent_uuid: Optional[str],
+        approved: bool = False,
     ) -> List[str]:
         """Update documents by ``_id``; the ids updated."""
 
@@ -280,6 +284,7 @@ class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
         documents: List[Doc],
         parent_uuid: Optional[str] = None,
         as_user: Optional[str] = None,
+        approved_by: Optional[str] = None,
     ) -> List[str]:
         checked_type(document_type, CREATABLE_TYPES, "created")
         ids: List[str] = await cls._on_world(
@@ -288,7 +293,8 @@ class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
             document_type,
             checked_documents(documents, need_id=False),
             parent_uuid,
-            as_user=as_user,
+            bool(approved_by),
+            as_user=approved_by or as_user,
         )
         return ids
 
@@ -301,6 +307,7 @@ class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
         updates: List[Doc],
         parent_uuid: Optional[str] = None,
         as_user: Optional[str] = None,
+        approved_by: Optional[str] = None,
     ) -> List[str]:
         checked_type(document_type, UPDATABLE_TYPES, "updated")
         if document_type in {"Token", "Combatant"} and not parent_uuid:
@@ -313,6 +320,7 @@ class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
             document_type,
             checked_documents(updates, need_id=True),
             parent_uuid,
-            as_user=as_user,
+            bool(approved_by),
+            as_user=approved_by or as_user,
         )
         return ids

@@ -10,7 +10,12 @@ read and write is one of the server's tools (``list_documents``,
 itself, so it never signs the server's GM out.
 
 Writes need both switches: the server's own (``FOUNDRY_ALLOW_WRITES``) and
-this instance's ``allow_writes``, off by default.
+this instance's ``allow_writes``, off by default. The instance's ``mode``
+says who runs the table: ``assistant`` (the default: a human GM runs it and
+the app assists, so every write waits for that GM's approval, the call's
+``approved_by``) or ``campaign`` (the app's AI is the GM and Foundry its
+tabletop, so writes need no approval). A world serving both is two
+instances.
 """
 
 from __future__ import annotations
@@ -32,6 +37,9 @@ from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 TRUE = ("1", "true", "yes", "on")
+ASSISTANT = "assistant"
+CAMPAIGN = "campaign"
+MODES = (ASSISTANT, CAMPAIGN)
 WRITE_TOOLS = frozenset({"create_documents", "update_documents"})
 
 
@@ -85,6 +93,12 @@ class PRV_Foundry(AbstractVTTProvider):
             "allow_writes", "true to let the app write to the world", default="false"
         ),
         InstanceSetting(
+            "mode",
+            "assistant (a human GM runs the table; every write needs their "
+            "approval) or campaign (the app's AI is the GM)",
+            default=ASSISTANT,
+        ),
+        InstanceSetting(
             "webhook_secret",
             "The secret the world's foundry-webhooks module signs its events with",
             secret=True,
@@ -105,15 +119,37 @@ class PRV_Foundry(AbstractVTTProvider):
         return (cls.setting(instance, "allow_writes") or "").strip().lower() in TRUE
 
     @classmethod
-    async def tool(
-        cls, instance: ProviderInstanceModel, name: str, arguments: Dict[str, Any]
-    ) -> Any:
-        """Call the world's server's tool ``name``; its JSON value."""
-        server = cls._server(instance)
-        if name in WRITE_TOOLS and not cls.writes_allowed(instance):
+    def mode(cls, instance: ProviderInstanceModel) -> str:
+        value = (cls.setting(instance, "mode") or ASSISTANT).strip().lower()
+        return value if value in MODES else ASSISTANT
+
+    @classmethod
+    def check_write(cls, instance: ProviderInstanceModel, approved: bool) -> None:
+        """A write this world takes now: its writes on, and in assistant mode
+        approved by its GM."""
+        if not cls.writes_allowed(instance):
             raise PermanentExternalError(
                 "writes are off for this world (allow_writes)", provider=cls.name
             )
+        if cls.mode(instance) == ASSISTANT and not approved:
+            raise PermanentExternalError(
+                "this world is in assistant mode: a write needs its GM's "
+                "approval (approved_by)",
+                provider=cls.name,
+            )
+
+    @classmethod
+    async def tool(
+        cls,
+        instance: ProviderInstanceModel,
+        name: str,
+        arguments: Dict[str, Any],
+        approved: bool = False,
+    ) -> Any:
+        """Call the world's server's tool ``name``; its JSON value."""
+        server = cls._server(instance)
+        if name in WRITE_TOOLS:
+            cls.check_write(instance, approved)
         try:
             from zephyrex.extensions.mcp_client.EXT_MCPClient import EXT_MCPClient
         except ImportError:
@@ -133,6 +169,7 @@ class PRV_Foundry(AbstractVTTProvider):
         return {
             **(status if isinstance(status, dict) else {}),
             "writes": cls.writes_allowed(instance),
+            "mode": cls.mode(instance),
         }
 
     @classmethod
@@ -189,6 +226,7 @@ class PRV_Foundry(AbstractVTTProvider):
         document_type: str,
         docs: List[Doc],
         parent_uuid: Optional[str],
+        approved: bool = False,
     ) -> List[str]:
         return _ids(
             await cls.tool(
@@ -199,6 +237,7 @@ class PRV_Foundry(AbstractVTTProvider):
                     "docs": docs,
                     "parent_uuid": parent_uuid,
                 },
+                approved,
             )
         )
 
@@ -209,6 +248,7 @@ class PRV_Foundry(AbstractVTTProvider):
         document_type: str,
         updates: List[Doc],
         parent_uuid: Optional[str],
+        approved: bool = False,
     ) -> List[str]:
         return _ids(
             await cls.tool(
@@ -219,5 +259,6 @@ class PRV_Foundry(AbstractVTTProvider):
                     "updates": updates,
                     "parent_uuid": parent_uuid,
                 },
+                approved,
             )
         )

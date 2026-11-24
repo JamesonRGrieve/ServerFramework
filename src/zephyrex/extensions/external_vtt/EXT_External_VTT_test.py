@@ -103,8 +103,37 @@ class TestTheWorldIsNamed:
         ]
 
 
-def test_an_agent_can_never_write():
-    assert WRITE_ABILITIES <= NEVER_AGENT_INVOCABLE
+def test_an_agent_can_never_approve_a_write():
+    """Agents may call the writes (an AI campaign's GM is one), but never
+    name who approved one: in assistant mode only the app, after the GM's
+    tap, can."""
+    from zephyrex.extensions.ai_agents.AbilityInvoker import (
+        SERVER_ONLY,
+        ability_to_tool_schema,
+    )
+
+    assert not WRITE_ABILITIES & NEVER_AGENT_INVOCABLE
+    assert "approved_by" in SERVER_ONLY
+    for name in WRITE_ABILITIES:
+        schema = ability_to_tool_schema(name, getattr(EXT_External_VTT, name))
+        assert "approved_by" not in schema["function"]["parameters"]["properties"]
+
+
+async def test_an_approved_write_runs_as_the_approver_on_the_world(monkeypatch):
+    seen: List[Dict[str, Any]] = []
+
+    async def rotate_among(cls, names, method, *args, **kwargs):
+        seen.append({"method": method, "args": args, **kwargs})
+        return ["d1"]
+
+    monkeypatch.setattr(EXT_External_VTT, "rotate_among", classmethod(rotate_among))
+    await EXT_External_VTT.vtt_create_documents(
+        "w", "ChatMessage", [{"content": "x"}], approved_by="gm-1"
+    )
+    await EXT_External_VTT.vtt_update_documents("w", "Combat", [{"_id": "c1"}])
+    approved, unapproved = seen
+    assert approved["as_user"] == "gm-1" and approved["args"][-1] is True
+    assert unapproved["as_user"] is None and unapproved["args"][-1] is False
 
 
 class TestFoundry:
@@ -150,6 +179,7 @@ class TestFoundry:
         assert (await PRV_Foundry.status(instance)) == {
             "title": "Solenne",
             "writes": False,
+            "mode": "assistant",
         }
         assert await PRV_Foundry.list_documents(instance, "Combat", "", ["round"]) == [
             {"_id": "c1"}
@@ -181,15 +211,15 @@ class TestFoundry:
             )
         assert server == []
 
-    async def test_an_allowed_write_is_the_servers_tool(
+    async def test_an_approved_write_is_the_servers_tool(
         self, provider_instance, server
     ):
         instance = self._world(provider_instance, allow_writes="true")
         assert await PRV_Foundry.create_documents(
-            instance, "ChatMessage", [{"content": "The door groans."}], None
+            instance, "ChatMessage", [{"content": "The door groans."}], None, True
         ) == ["m1"]
         assert await PRV_Foundry.update_documents(
-            instance, "Token", [{"_id": "t1", "x": 5}], "Scene.s1"
+            instance, "Token", [{"_id": "t1", "x": 5}], "Scene.s1", True
         ) == ["t1"]
         assert [(c[2], c[3]) for c in server] == [
             (
@@ -209,6 +239,33 @@ class TestFoundry:
                 },
             ),
         ]
+
+    async def test_in_assistant_mode_a_write_waits_for_its_gm(
+        self, provider_instance, server
+    ):
+        instance = self._world(provider_instance, allow_writes="true")
+        assert (await PRV_Foundry.status(instance))["mode"] == "assistant"
+        with pytest.raises(PermanentExternalError, match="assistant mode"):
+            await PRV_Foundry.create_documents(
+                instance, "ChatMessage", [{"content": "x"}], None
+            )
+        assert [c[2] for c in server] == ["foundry_status"]
+
+    async def test_in_campaign_mode_the_ai_gm_writes_freely(
+        self, provider_instance, server
+    ):
+        instance = self._world(provider_instance, allow_writes="true", mode="campaign")
+        assert await PRV_Foundry.update_documents(
+            instance, "Combat", [{"_id": "k1", "turn": 1}], None
+        ) == ["t1"]
+
+    async def test_campaign_mode_still_needs_writes_on(self, provider_instance, server):
+        instance = self._world(provider_instance, mode="campaign")
+        with pytest.raises(PermanentExternalError, match="allow_writes"):
+            await PRV_Foundry.update_documents(
+                instance, "Combat", [{"_id": "k1"}], None, True
+            )
+        assert server == []
 
 
 def _error(text: str) -> Dict[str, Any]:

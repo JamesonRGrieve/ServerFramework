@@ -38,10 +38,12 @@ from zephyrex.extensions.ExternalErrors import BaseExternalError
 CALLING_CONVENTION = frozenset({"cls", "self", "requester_id"})
 REQUESTER = "requester_id"
 # Parameters only server code sets: whose provider instances serve a call,
-# which ones, and its raw request fields (EXT_AI's as_user, instance_ids and
-# params). A model naming them could run on another user's instances, on any
-# instance by its id, or send fields that multiply its cost (n, best_of).
-SERVER_ONLY = frozenset({"as_user", "instance_ids", "params"})
+# which ones, its raw request fields (EXT_AI's as_user, instance_ids and
+# params), and who approved it (external_vtt's approved_by, a GM's tap). A
+# model naming them could run on another user's instances, on any instance
+# by its id, send fields that multiply its cost (n, best_of), or approve its
+# own write to a human GM's table.
+SERVER_ONLY = frozenset({"as_user", "instance_ids", "params", "approved_by"})
 
 # Abilities no agent may use, granted or not: the turn itself, running other
 # turns, changing what agents may do, and a stream (an async iterator, which a
@@ -52,9 +54,6 @@ NEVER_AGENT_INVOCABLE: frozenset[str] = frozenset(
         "take_turn",
         "grant_ability",
         "chat_stream",
-        # A GM approving it in the app is a tabletop write's approval.
-        "vtt_create_documents",
-        "vtt_update_documents",
     }
 )
 
