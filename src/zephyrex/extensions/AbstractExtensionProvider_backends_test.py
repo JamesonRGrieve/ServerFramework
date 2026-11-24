@@ -139,3 +139,74 @@ def test_a_dispatcher_reads_as_the_native_ability():
     assert ability_to_tool_schema(
         "world_entities", world_entities
     ) == ability_to_tool_schema("world_entities", native)
+
+
+class Positional:
+    """A native extension called positionally, with a sync ability."""
+
+    name = "rpg_core"
+
+    @classmethod
+    @ability("world_entities")
+    async def world_entities(
+        cls, model_registry: Any, requester_id: str, campaign_id: str
+    ) -> str:
+        return "native"
+
+    @classmethod
+    @ability("current_attitudes")
+    def current_attitudes(
+        cls, model_registry: Any, requester_id: str, campaign_id: str
+    ) -> str:
+        return "native"
+
+    @classmethod
+    @backend_selector
+    def backend(cls, ability_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+        return "foundry" if arguments.get("campaign_id") in FOUNDRY_CAMPAIGNS else None
+
+
+class PositionalFoundry:
+    name = "external_vtt"
+
+    @classmethod
+    @implements("rpg_core", "world_entities", backend="foundry")
+    async def world_entities(
+        cls, model_registry: Any, requester_id: str, campaign_id: str
+    ) -> str:
+        return "foundry"
+
+    @classmethod
+    @implements("rpg_core", "current_attitudes", backend="foundry")
+    async def current_attitudes(
+        cls, model_registry: Any, requester_id: str, campaign_id: str
+    ) -> str:
+        return "foundry, awaited for a sync caller"
+
+
+async def test_a_positional_call_reaches_its_backend():
+    world_entities = loaded_ability(
+        _registry(Positional, PositionalFoundry), "rpg_core", "world_entities"
+    )
+    assert world_entities is not None
+    assert await world_entities(None, "gm", "c-foundry") == "foundry"
+    assert await world_entities(None, "gm", "c-native") == "native"
+
+
+def test_a_sync_ability_stays_sync_for_its_callers():
+    import inspect
+
+    attitudes = loaded_ability(
+        _registry(Positional, PositionalFoundry), "rpg_core", "current_attitudes"
+    )
+    assert attitudes is not None and not inspect.iscoroutinefunction(attitudes)
+    assert attitudes(None, "gm", "c-native") == "native"
+    assert attitudes(None, "gm", "c-foundry") == "foundry, awaited for a sync caller"
+
+
+async def test_a_sync_ability_stays_sync_inside_a_running_loop():
+    attitudes = loaded_ability(
+        _registry(Positional, PositionalFoundry), "rpg_core", "current_attitudes"
+    )
+    assert attitudes is not None
+    assert attitudes(None, "gm", "c-foundry") == "foundry, awaited for a sync caller"

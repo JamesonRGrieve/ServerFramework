@@ -222,27 +222,73 @@ def loaded_ability(
     return None
 
 
+def _run_to_completion(awaitable: Any) -> Any:
+    """A coroutine's result, for a sync caller: on a fresh event loop in a
+    worker thread, so it works whether or not the calling thread is already
+    running one."""
+    import asyncio
+    import concurrent.futures
+
+    async def run() -> Any:
+        return await awaitable
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, run()).result()
+
+
 def _dispatcher(
     ability_name: str,
     own: Callable[..., Any],
     backends: Dict[str, Callable[..., Any]],
     select: Callable[..., Any],
 ) -> Callable[..., Any]:
-    # The native ability's name, docs, annotations and signature: an agent's
-    # tool schema and the invoker's argument binding read them.
+    """A callable in ``own``'s calling style (sync or async, its signature)
+    that runs the backend the selector picks for each call. The selector gets
+    the call's arguments bound to ``own``'s parameters, positional ones
+    included."""
+    signature = inspect.signature(own)
+
+    def target_for(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Tuple[Any, Any]:
+        try:
+            arguments = dict(signature.bind_partial(*args, **kwargs).arguments)
+        except TypeError:
+            arguments = dict(kwargs)
+        return select(ability_name, arguments), arguments
+
+    def resolve(chosen: Any) -> Callable[..., Any]:
+        return backends.get(chosen, own) if chosen else own
+
+    if inspect.iscoroutinefunction(own):
+
+        # The native ability's name, docs, annotations and signature: an
+        # agent's tool schema and the invoker's argument binding read them.
+        @functools.wraps(own)
+        async def dispatch(*args: Any, **kwargs: Any) -> Any:
+            chosen, _ = target_for(args, kwargs)
+            if inspect.isawaitable(chosen):
+                chosen = await chosen
+            result = resolve(chosen)(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        setattr(dispatch, "_ability_backends", sorted(backends))
+        return dispatch
+
     @functools.wraps(own)
-    async def dispatch(*args: Any, **kwargs: Any) -> Any:
-        chosen = select(ability_name, kwargs)
+    def dispatch_sync(*args: Any, **kwargs: Any) -> Any:
+        # A sync ability stays sync for its callers; an async selector or
+        # backend (a remote world's) is run to completion for them.
+        chosen, _ = target_for(args, kwargs)
         if inspect.isawaitable(chosen):
-            chosen = await chosen
-        target = backends.get(chosen, own) if chosen else own
-        result = target(*args, **kwargs)
+            chosen = _run_to_completion(chosen)
+        result = resolve(chosen)(*args, **kwargs)
         if inspect.isawaitable(result):
-            result = await result
+            result = _run_to_completion(result)
         return result
 
-    setattr(dispatch, "_ability_backends", sorted(backends))
-    return dispatch
+    setattr(dispatch_sync, "_ability_backends", sorted(backends))
+    return dispatch_sync
 
 
 class ExtensionRegistry(AbstractRegistry):
