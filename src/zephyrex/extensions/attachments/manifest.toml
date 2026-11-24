@@ -13,3 +13,7 @@ minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "cloud"
+optional = false
