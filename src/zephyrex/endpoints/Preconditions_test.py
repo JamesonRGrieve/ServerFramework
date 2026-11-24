@@ -637,3 +637,61 @@ class TestGraphQL:
 def _graphql_string(value: str) -> str:
     """A GraphQL string literal (the ETag holds quotes)."""
     return '"%s"' % value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+class TestPerRowBatch:
+    """A per-row batch update (``{"teams": [{"id", "if_match", ...}]}``)
+    holds each row to its own version: a stale or unversioned row fails
+    alone, with its own status, and the rest are saved."""
+
+    def _batch(self, server: Any, user: Any, rows: List[Dict[str, Any]]) -> Any:
+        return server.put(TEAMS, json={"teams": rows}, headers=_headers(user))
+
+    def test_each_row_saves_its_own_fields(self, server, admin_a):
+        one, two = _team(server, admin_a), _team(server, admin_a)
+        saved = self._batch(
+            server,
+            admin_a,
+            [
+                {"id": one["id"], "if_match": entity_etag(one), "description": "1"},
+                {"id": two["id"], "if_match": entity_etag(two), "description": "2"},
+            ],
+        )
+        assert saved.status_code == 200, saved.text
+        assert [t["description"] for t in saved.json()["teams"]] == ["1", "2"]
+
+    def test_a_stale_row_fails_alone(self, server, admin_a):
+        fresh, stale = _team(server, admin_a), _team(server, admin_a)
+        answered = self._batch(
+            server,
+            admin_a,
+            [
+                {
+                    "id": fresh["id"],
+                    "if_match": entity_etag(fresh),
+                    "description": "ok",
+                },
+                {"id": stale["id"], "if_match": STALE, "description": "lost"},
+            ],
+        )
+        assert answered.status_code == 207, answered.text
+        body = answered.json()
+        assert [r["outcome"] for r in body["results"]] == ["updated", "error"]
+        assert body["results"][1]["status_code"] == 412
+        assert _get(server, admin_a, stale["id"]).json()["team"] == stale
+        assert _get(server, admin_a, fresh["id"]).json()["team"]["description"] == "ok"
+
+    def test_an_unversioned_row_is_428_when_required(
+        self, server, admin_a, if_match_required
+    ):
+        versioned, bare = _team(server, admin_a), _team(server, admin_a)
+        answered = self._batch(
+            server,
+            admin_a,
+            [
+                {"id": versioned["id"], "if_match": entity_etag(versioned)},
+                {"id": bare["id"], "description": "unversioned"},
+            ],
+        )
+        assert answered.status_code == 207, answered.text
+        assert answered.json()["results"][1]["status_code"] == 428

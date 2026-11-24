@@ -107,6 +107,7 @@ def _envelope_key(envelope: Any, fallback: str) -> str:
 
 
 _BATCH_CREATED = "created"
+_BATCH_UPDATED = "updated"
 _BATCH_ERROR = "error"
 
 
@@ -158,6 +159,37 @@ def _create_batch_item(
     record = serialize_for_response(created)
     record_id = record.get("id") if isinstance(record, dict) else None
     return {"index": index, "outcome": _BATCH_CREATED, "id": record_id}, created
+
+
+def _update_batch_item(
+    manager: Any,
+    index: int,
+    item: Any,
+    parent_scope: Dict[str, Any],
+    resource_name: str,
+) -> Tuple[Dict[str, Any], Any]:
+    """Update one row of a per-row batch (``{"id", "if_match"?, ...fields}``)
+    as its own PUT would: held to its own If-Match and, on a nested route, to
+    the path's parent. Its outcome (``updated`` or ``error``) and the updated
+    record, or None when nothing changed."""
+    entity_id = item.get("id") if isinstance(item, dict) else None
+    try:
+        if not isinstance(item, dict) or not entity_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Each batch item must be an object with an 'id'",
+            )
+        fields = {k: v for k, v in item.items() if k not in ("id", "if_match")}
+        _refuse_parent_change(fields, parent_scope)
+        _require_under_parent(manager, [entity_id], parent_scope, resource_name)
+        with expect_versions(manager, {entity_id: item.get("if_match")}):
+            updated = manager.update(id=entity_id, **fields)
+    except Exception as err:  # stored as this row's outcome; the batch goes on
+        outcome: Dict[str, Any] = {"index": index, "outcome": _BATCH_ERROR}
+        if entity_id:
+            outcome["id"] = entity_id
+        return {**outcome, **_batch_item_error(err)}, None
+    return {"index": index, "outcome": _BATCH_UPDATED, "id": entity_id}, updated
 
 
 def _single_response(
@@ -1911,6 +1943,59 @@ def _build_search_route(
             handle_resource_operation_error(err)
 
 
+def _per_row_update(
+    actual_manager: Any,
+    rows: List[Any],
+    parent_scope: Dict[str, Any],
+    resource_name: str,
+    resource_name_plural: str,
+    network_model: Any,
+    manager: Any,
+    target_model: Any,
+) -> JSONResponse:
+    """A per-row batch update answered as a plural create is: 200 with every
+    record, 207 with each row's outcome in order when some failed, and the
+    first row's error when all did (nothing was written)."""
+    outcomes: List[Dict[str, Any]] = []
+    updated: List[Any] = []
+    for index, row in enumerate(rows):
+        outcome, record = _update_batch_item(
+            actual_manager, index, row, parent_scope, resource_name
+        )
+        outcomes.append(outcome)
+        if record is not None:
+            updated.append(record)
+    if rows and not updated:
+        raise HTTPException(
+            status_code=outcomes[0]["status_code"], detail=outcomes[0]["error"]
+        )
+    validated = network_model.ResponsePlural(
+        **{resource_name_plural: serialize_for_response(updated)}
+    ).model_dump()
+    records = apply_field_acl_to_payload(
+        validated[resource_name_plural], manager, target_model
+    )
+    if len(updated) < len(rows):
+        errors = [o for o in outcomes if o["outcome"] == _BATCH_ERROR]
+        return JSONResponse(
+            status_code=status.HTTP_207_MULTI_STATUS,
+            content=jsonable_encoder(
+                {
+                    "message": "Partial success",
+                    "results": outcomes,
+                    "errors": errors,
+                    "successful_updates": len(updated),
+                    "failed_updates": len(errors),
+                    resource_name_plural: records,
+                }
+            ),
+        )
+    return JSONResponse(
+        content=jsonable_encoder({resource_name_plural: records}),
+        status_code=status.HTTP_200_OK,
+    )
+
+
 def _build_batch_update_route(
     router: Any,
     examples: Any,
@@ -1931,13 +2016,26 @@ def _build_batch_update_route(
 
     # Create dynamic batch update model: each target is an id, or an id with
     # the version (ETag) the client read it at.
+    # Or, per row, each record's own fields:
+    # {"<plural>": [{"id", "if_match"?, ...fields}]}.
     BatchUpdateModel = create_model(  # type: ignore[call-overload]
         f"{stringcase.capitalcase(resource_name)}BatchUpdateModel",
         **{
-            resource_name: (Dict[str, Any], ...),
+            resource_name: (Optional[Dict[str, Any]], None),
             "target_ids": (
-                List[Union[str, BatchTarget]],
-                Field(..., max_length=MAX_BATCH_SIZE),
+                Optional[List[Union[str, BatchTarget]]],
+                Field(None, max_length=MAX_BATCH_SIZE),
+            ),
+            # A resource whose plural is its singular has no per-row form.
+            **(
+                {
+                    resource_name_plural: (
+                        Optional[List[Any]],
+                        Field(None, max_length=MAX_BATCH_SIZE),
+                    )
+                }
+                if resource_name_plural != resource_name
+                else {}
             ),
         },
     )
@@ -1963,10 +2061,40 @@ def _build_batch_update_route(
         manager=Depends(manager_factory),
     ):
         try:
+            rows = (
+                getattr(body, resource_name_plural)
+                if resource_name_plural != resource_name
+                else None
+            )
             update_data = getattr(body, resource_name)
+            target_ids = body.target_ids  # type: ignore[attr-defined]
+            per_row = rows is not None and update_data is None and target_ids is None
+            one_change = (
+                rows is None and update_data is not None and target_ids is not None
+            )
+            if not (per_row or one_change):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=(
+                        f"Send either '{resource_name}' with 'target_ids' (one "
+                        f"change to every target) or '{resource_name_plural}' "
+                        "(each record's own fields)"
+                    ),
+                )
+            if rows is not None:
+                return _per_row_update(
+                    get_manager(manager, manager_property),
+                    rows,
+                    _parent_scope(parent_param_name, request),
+                    resource_name,
+                    resource_name_plural,
+                    network_model,
+                    manager,
+                    target_model,
+                )
             targets = [
                 target if isinstance(target, BatchTarget) else BatchTarget(id=target)
-                for target in body.target_ids  # type: ignore[attr-defined]
+                for target in target_ids
             ]
 
             items = [{"id": target.id, "data": update_data} for target in targets]

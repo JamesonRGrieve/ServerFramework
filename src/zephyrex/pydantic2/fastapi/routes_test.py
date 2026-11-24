@@ -624,6 +624,120 @@ def test_batch_create_reports_a_non_object_item():
     assert body["results"][1]["status_code"] == 422
 
 
+class PickyWidgetManager(WidgetManager):
+    """Refuses to rename a widget to "bad"."""
+
+    prefix = "/v1/picky"
+
+    def update(self, id, **kwargs):
+        if kwargs.get("name") == "bad":
+            raise ValueError("bad name")
+        return super().update(id, **kwargs)
+
+
+def _widgets(*names):
+    return [_seed(name=name) for name in names]
+
+
+def test_a_per_row_batch_update_gives_each_record_its_own_fields():
+    first, second = _widgets("a", "b")
+    response = _client(WidgetManager).put(
+        "/v1/widget",
+        json={
+            "widgets": [
+                {"id": first.id, "name": "a2"},
+                {"id": second.id, "name": "b2", "owner_id": "o9"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert [w["name"] for w in response.json()["widgets"]] == ["a2", "b2"]
+    assert (WidgetManager.rows[second.id].owner_id, first.owner_id) == ("o9", None)
+
+
+def test_a_per_row_batch_update_attempts_every_row_and_reports_each():
+    first, second, third = _widgets("a", "b", "c")
+    response = _client(PickyWidgetManager).put(
+        "/v1/picky",
+        json={
+            "widgets": [
+                {"id": first.id, "name": "a2"},
+                {"id": second.id, "name": "bad"},
+                {"name": "no id"},
+                "not-an-object",
+                {"id": third.id, "name": "c2"},
+            ]
+        },
+    )
+
+    assert response.status_code == 207, response.text
+    body = response.json()
+    assert [r["outcome"] for r in body["results"]] == [
+        "updated",
+        "error",
+        "error",
+        "error",
+        "updated",
+    ]
+    assert [r["index"] for r in body["results"]] == [0, 1, 2, 3, 4]
+    assert body["results"][1]["id"] == second.id
+    assert [body["results"][2]["status_code"], body["results"][3]["status_code"]] == [
+        422,
+        422,
+    ]
+    assert body["errors"] == body["results"][1:4]
+    assert [w["name"] for w in body["widgets"]] == ["a2", "c2"]
+    assert (body["successful_updates"], body["failed_updates"]) == (2, 3)
+    assert WidgetManager.rows[second.id].name == "b"
+
+
+def test_a_per_row_batch_update_in_which_every_row_fails_is_the_first_rows_error():
+    (only,) = _widgets("a")
+    response = _client(PickyWidgetManager).put(
+        "/v1/picky", json={"widgets": [{"id": only.id, "name": "bad"}]}
+    )
+
+    assert response.status_code == 422, response.text
+    assert WidgetManager.rows[only.id].name == "a"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"widgets": [], "widget": {"name": "x"}, "target_ids": []},
+        {"widgets": [], "target_ids": []},
+        {"widget": {"name": "x"}},
+        {},
+    ],
+    ids=["both", "rows-and-targets", "no-targets", "neither"],
+)
+def test_a_batch_update_takes_exactly_one_shape(body):
+    response = _client(WidgetManager).put("/v1/widget", json=body)
+    assert response.status_code == 422, response.text
+
+
+def test_a_nested_per_row_batch_update_refuses_another_parents_children(two_owners):
+    mine, theirs = two_owners
+    response = _client(OwnerManager).put(
+        "/v1/owner/o1/kid",
+        json={
+            "widgets": [
+                {"id": mine.id, "name": "renamed"},
+                {"id": theirs.id, "name": "renamed"},
+                {"id": mine.id, "owner_id": "o2"},
+            ]
+        },
+    )
+
+    assert response.status_code == 207, response.text
+    results = response.json()["results"]
+    assert [r["outcome"] for r in results] == ["updated", "error", "error"]
+    assert [results[1]["status_code"], results[2]["status_code"]] == [404, 422]
+    assert WidgetManager.rows[theirs.id].name == "theirs"
+    assert WidgetManager.rows[mine.id].owner_id == "o1"
+
+
 # ---------------------------------------------------------------------------
 # Every response path applies the field ACL (#263)
 # ---------------------------------------------------------------------------
