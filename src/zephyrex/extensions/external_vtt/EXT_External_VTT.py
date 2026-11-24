@@ -22,6 +22,7 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticProvider,
     ability,
 )
+from zephyrex.extensions.external_vtt.FoundryBackend import FoundryBackend
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
@@ -30,7 +31,16 @@ Doc = Dict[str, Any]
 
 # What can be read: the world's documents the app follows.
 READABLE_TYPES: FrozenSet[str] = frozenset(
-    {"Actor", "ChatMessage", "Combat", "Item", "JournalEntry", "Scene", "User"}
+    {
+        "Actor",
+        "ChatMessage",
+        "Combat",
+        "Folder",
+        "Item",
+        "JournalEntry",
+        "Scene",
+        "User",
+    }
 )
 # Embedded documents read through their parent.
 READABLE_EMBEDDED: FrozenSet[str] = frozenset(
@@ -154,7 +164,7 @@ class AbstractVTTProvider(AbstractStaticProvider):
         """Update documents by ``_id``; the ids updated."""
 
 
-class EXT_External_VTT(AbstractStaticExtension):
+class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
     name: ClassVar[str] = "external_vtt"
     version: ClassVar[str] = "1.0.0"
     description: ClassVar[str] = (

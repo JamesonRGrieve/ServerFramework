@@ -55,7 +55,7 @@ class TestTheWorldIsNamed:
     @pytest.mark.parametrize(
         "call",
         [
-            lambda: EXT_External_VTT.vtt_list_documents("w", "Folder"),
+            lambda: EXT_External_VTT.vtt_list_documents("w", "Macro"),
             lambda: EXT_External_VTT.vtt_get_document("w", "Macro.abc"),
             lambda: EXT_External_VTT.vtt_list_embedded("w", "Scene.s", "Wall"),
             lambda: EXT_External_VTT.vtt_create_documents("w", "Actor", [{}]),
