@@ -924,6 +924,7 @@ def _build_list_route(
                 "lteq",
                 "gteq",
                 "inc",
+                "in",
                 "sw",
                 "ew",
                 "before",
@@ -962,6 +963,16 @@ def _build_list_route(
                     search_params[base] = {}
                 elif not isinstance(search_params[base], dict):
                     search_params[base] = {"eq": search_params[base]}
+                if op == "in":
+                    # One of these values: comma-separated, as many as a batch.
+                    values = [v.strip() for v in str(raw_val).split(",") if v.strip()]
+                    if len(values) > MAX_BATCH_SIZE:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"'{raw_key}' names at most {MAX_BATCH_SIZE} values",
+                        )
+                    search_params[base][op] = values
+                    continue
                 search_params[base][op] = raw_val
 
             # A nested LIST is scoped to the path's parent, applied last: a

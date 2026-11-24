@@ -88,6 +88,33 @@ class CachedRequester(BaseModel):
     email: Optional[str] = None
 
 
+def _in_values(raw: Any, numeric: bool, boolean: bool) -> List[Any]:
+    """An ``in`` filter's values: a list, or a comma-separated string (as a
+    query string carries it), each read as the field's type."""
+    items = raw.split(",") if isinstance(raw, str) else list(raw)
+    values: List[Any] = []
+    for item in items:
+        if isinstance(item, str):
+            item = item.strip()
+            if not item:
+                continue
+            if boolean:
+                item = item.lower() in ("true", "1", "yes")
+            elif numeric:
+                try:
+                    item = int(item)
+                except ValueError:
+                    try:
+                        item = float(item)
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"'in' value {item!r} is not a number",
+                        ) from exc
+        values.append(item)
+    return values
+
+
 def _escape_like(v: object) -> str:
     """Escape LIKE/ILIKE wildcard characters (%, _) in user input."""
     s = str(v) if not isinstance(v, str) else v
@@ -671,6 +698,21 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 continue
 
             field = getattr(self.DB, field_name)
+
+            # ``in``, on any field: one of the listed values (``?id__in=a,b``).
+            if isinstance(value, dict) and value.get("in") is not None:
+                filters.append(
+                    field.in_(
+                        _in_values(
+                            value["in"],
+                            field_name in numeric_fields,
+                            field_name in boolean_fields,
+                        )
+                    )
+                )
+                value = {k: v for k, v in value.items() if k != "in"}
+                if not any(v is not None for v in value.values()):
+                    continue
 
             # Handle string pattern matching operations
             if field_name in string_fields and isinstance(value, dict):
