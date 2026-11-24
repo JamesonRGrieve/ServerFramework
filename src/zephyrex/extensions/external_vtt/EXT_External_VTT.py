@@ -48,16 +48,54 @@ READABLE_TYPES: FrozenSet[str] = frozenset(
 READABLE_EMBEDDED: FrozenSet[str] = frozenset(
     {"Combatant", "Item", "JournalEntryPage", "Token"}
 )
-# What can be created, and updated: a narration or an NPC's line; a token
-# moved; the turn or round advanced, a combatant's initiative set.
-CREATABLE_TYPES: FrozenSet[str] = frozenset({"ChatMessage"})
-UPDATABLE_TYPES: FrozenSet[str] = frozenset({"Combat", "Combatant", "Token"})
+# What can be created, updated and deleted: a narration or an NPC's line; a
+# person (an actor) and their token on a scene; a fight, its combatants, its
+# turns; a session's report (a journal and its pages); a scene's picture.
+CREATABLE_TYPES: FrozenSet[str] = frozenset(
+    {
+        "Actor",
+        "ChatMessage",
+        "Combat",
+        "Combatant",
+        "JournalEntry",
+        "JournalEntryPage",
+        "Token",
+    }
+)
+UPDATABLE_TYPES: FrozenSet[str] = frozenset(
+    {"Actor", "Combat", "Combatant", "Scene", "Token"}
+)
+DELETABLE_TYPES: FrozenSet[str] = frozenset({"Combat", "Combatant", "Token"})
+# Embedded documents, written through their parent.
+EMBEDDED_TYPES: FrozenSet[str] = frozenset({"Combatant", "JournalEntryPage", "Token"})
+# The game settings the app reads and sets: the world's clock.
+SETTINGS: FrozenSet[str] = frozenset({"core.time"})
 # The largest batch one call takes.
 MAX_DOCUMENTS = 100
 
 WRITE_ABILITIES: FrozenSet[str] = frozenset(
-    {"vtt_create_documents", "vtt_update_documents"}
+    {
+        "vtt_create_documents",
+        "vtt_update_documents",
+        "vtt_delete_documents",
+        "vtt_set_setting",
+    }
 )
+
+
+def checked_parent(document_type: str, parent_uuid: Optional[str]) -> None:
+    if document_type in EMBEDDED_TYPES and not parent_uuid:
+        raise InvalidInputExternalError(
+            f"a {document_type} is written through its parent (parent_uuid)"
+        )
+
+
+def checked_setting(key: str) -> str:
+    if key not in SETTINGS:
+        raise InvalidInputExternalError(
+            f"{key!r} is not a setting the app uses; one of {', '.join(sorted(SETTINGS))}"
+        )
+    return key
 
 
 def checked_type(document_type: str, allowed: FrozenSet[str], verb: str) -> str:
@@ -96,6 +134,7 @@ class AbstractVTTProvider(AbstractStaticProvider):
         "vtt_list_documents",
         "vtt_get_document",
         "vtt_list_embedded",
+        "vtt_get_setting",
         *WRITE_ABILITIES,
     }
     _env: ClassVar[Dict[str, Any]] = {}
@@ -166,6 +205,34 @@ class AbstractVTTProvider(AbstractStaticProvider):
         approved: bool = False,
     ) -> List[str]:
         """Update documents by ``_id``; the ids updated."""
+
+    @classmethod
+    @abstractmethod
+    async def delete_documents(
+        cls,
+        instance: ProviderInstanceModel,
+        document_type: str,
+        ids: List[str],
+        parent_uuid: Optional[str],
+        approved: bool = False,
+    ) -> Doc:
+        """Delete documents by id, each backed up first."""
+
+    @classmethod
+    @abstractmethod
+    async def game_setting(cls, instance: ProviderInstanceModel, key: str) -> Any:
+        """A game setting's value."""
+
+    @classmethod
+    @abstractmethod
+    async def set_game_setting(
+        cls,
+        instance: ProviderInstanceModel,
+        key: str,
+        value: Any,
+        approved: bool = False,
+    ) -> Any:
+        """Set a game setting."""
 
 
 class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
@@ -287,6 +354,7 @@ class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
         approved_by: Optional[str] = None,
     ) -> List[str]:
         checked_type(document_type, CREATABLE_TYPES, "created")
+        checked_parent(document_type, parent_uuid)
         ids: List[str] = await cls._on_world(
             world_id,
             "create_documents",
@@ -310,10 +378,7 @@ class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
         approved_by: Optional[str] = None,
     ) -> List[str]:
         checked_type(document_type, UPDATABLE_TYPES, "updated")
-        if document_type in {"Token", "Combatant"} and not parent_uuid:
-            raise InvalidInputExternalError(
-                f"a {document_type} is updated through its parent (parent_uuid)"
-            )
+        checked_parent(document_type, parent_uuid)
         ids: List[str] = await cls._on_world(
             world_id,
             "update_documents",
@@ -324,3 +389,58 @@ class EXT_External_VTT(FoundryBackend, AbstractStaticExtension):
             as_user=approved_by or as_user,
         )
         return ids
+
+    @classmethod
+    @ability("vtt_delete_documents")
+    async def vtt_delete_documents(
+        cls,
+        world_id: str,
+        document_type: str,
+        ids: List[str],
+        parent_uuid: Optional[str] = None,
+        as_user: Optional[str] = None,
+        approved_by: Optional[str] = None,
+    ) -> Doc:
+        """Delete documents by id; the world's server backs each up first."""
+        checked_type(document_type, DELETABLE_TYPES, "deleted")
+        checked_parent(document_type, parent_uuid)
+        if not isinstance(ids, list) or not ids or len(ids) > MAX_DOCUMENTS:
+            raise InvalidInputExternalError(f"ids is a list of 1-{MAX_DOCUMENTS} ids")
+        result: Doc = await cls._on_world(
+            world_id,
+            "delete_documents",
+            document_type,
+            [str(one) for one in ids],
+            parent_uuid,
+            bool(approved_by),
+            as_user=approved_by or as_user,
+        )
+        return result
+
+    @classmethod
+    @ability("vtt_get_setting")
+    async def vtt_get_setting(
+        cls, world_id: str, key: str, as_user: Optional[str] = None
+    ) -> Any:
+        return await cls._on_world(
+            world_id, "game_setting", checked_setting(key), as_user=as_user
+        )
+
+    @classmethod
+    @ability("vtt_set_setting")
+    async def vtt_set_setting(
+        cls,
+        world_id: str,
+        key: str,
+        value: Any,
+        as_user: Optional[str] = None,
+        approved_by: Optional[str] = None,
+    ) -> Any:
+        return await cls._on_world(
+            world_id,
+            "set_game_setting",
+            checked_setting(key),
+            value,
+            bool(approved_by),
+            as_user=approved_by or as_user,
+        )

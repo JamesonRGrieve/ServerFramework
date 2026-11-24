@@ -58,8 +58,10 @@ class TestTheWorldIsNamed:
             lambda: EXT_External_VTT.vtt_list_documents("w", "Macro"),
             lambda: EXT_External_VTT.vtt_get_document("w", "Macro.abc"),
             lambda: EXT_External_VTT.vtt_list_embedded("w", "Scene.s", "Wall"),
-            lambda: EXT_External_VTT.vtt_create_documents("w", "Actor", [{}]),
-            lambda: EXT_External_VTT.vtt_update_documents("w", "Actor", [{"_id": "a"}]),
+            lambda: EXT_External_VTT.vtt_create_documents("w", "Scene", [{}]),
+            lambda: EXT_External_VTT.vtt_update_documents(
+                "w", "JournalEntry", [{"_id": "a"}]
+            ),
             lambda: EXT_External_VTT.vtt_update_documents(
                 "w", "Token", [{"_id": "t", "x": 1}]
             ),
@@ -180,6 +182,7 @@ class TestFoundry:
             "title": "Solenne",
             "writes": False,
             "mode": "assistant",
+            "npc_actor_type": "npc",
         }
         assert await PRV_Foundry.list_documents(instance, "Combat", "", ["round"]) == [
             {"_id": "c1"}

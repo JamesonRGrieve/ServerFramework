@@ -246,41 +246,272 @@ async def test_without_the_wikis_campaign_backend_nothing_is_read(world, monkeyp
     assert world == []
 
 
-def test_each_read_implements_the_contracts_ability():
+def test_each_implements_the_contracts_ability():
     from zephyrex.extensions.AbstractExtensionProvider import _marked
 
     implemented = {
-        (info["extension"], info["ability"], info["backend"])
+        (info["extension"], info["ability"])
         for _, info in _marked(EXT_External_VTT, "_implements_info")
+        if info["backend"] == "foundry"
     }
     assert implemented == {
-        ("rpg_core", "world_entities", "foundry"),
-        ("rpg_core", "world_entities_by_id", "foundry"),
-        ("rpg_core", "campaign_framing", "foundry"),
-        ("rpg_scene", "current_scene", "foundry"),
-        ("rpg_scene", "scene_tokens", "foundry"),
-        ("rpg_combat", "current_encounter", "foundry"),
-        ("rpg_dice", "character_sheet", "foundry"),
+        ("rpg_core", "world_entities"),
+        ("rpg_core", "world_entities_by_id"),
+        ("rpg_core", "world_entities_matching"),
+        ("rpg_core", "campaign_framing"),
+        ("rpg_core", "campaign_documents"),
+        ("rpg_core", "ensure_person"),
+        ("rpg_core", "update_person"),
+        ("rpg_core", "move_person"),
+        ("rpg_core", "session_report"),
+        ("rpg_core", "advance_clock"),
+        ("rpg_scene", "current_scene"),
+        ("rpg_scene", "scene_tokens"),
+        ("rpg_scene", "place_person"),
+        ("rpg_scene", "remove_person_from_scene"),
+        ("rpg_scene", "set_scene_background"),
+        ("rpg_combat", "current_encounter"),
+        ("rpg_combat", "start_encounter"),
+        ("rpg_combat", "start_combat"),
+        ("rpg_combat", "next_turn"),
+        ("rpg_combat", "end_encounter"),
+        ("rpg_combat", "set_disposition"),
+        ("rpg_dice", "character_sheet"),
     }
 
 
-async def test_a_member_answer_decides_when_the_wiki_gives_one(world, monkeypatch):
-    async def answering_member(
-        model_registry: Any,
-        requester_id: str,
-        campaign_id: Optional[str] = None,
-        **_: Any,
-    ) -> Dict[str, Any]:
-        return {
-            "backend": "foundry",
-            "world_id": WORLD,
-            "campaign_id": CAMPAIGN,
-            "member": requester_id == GM,
-        }
+# -- writes ---------------------------------------------------------------------
 
-    monkeypatch.setattr(
-        backend, "loaded_ability", lambda registry, ext, name: answering_member
+
+@pytest.fixture
+def writes(world, monkeypatch) -> List[tuple]:
+    """The stand-in world takes writes too, recording each."""
+    done: List[tuple] = []
+    clock = {"core.time": 3600}
+
+    async def vtt_create_documents(
+        cls,
+        world_id,
+        document_type,
+        documents,
+        parent_uuid=None,
+        as_user=None,
+        approved_by=None,
+    ):
+        done.append(("create", document_type, documents, parent_uuid))
+        prefix = {
+            "Actor": "a-new",
+            "Combat": "k-new",
+            "JournalEntry": "j-new",
+            "Token": "t-new",
+        }
+        return [prefix.get(document_type, "x-new")]
+
+    async def vtt_update_documents(
+        cls,
+        world_id,
+        document_type,
+        updates,
+        parent_uuid=None,
+        as_user=None,
+        approved_by=None,
+    ):
+        done.append(("update", document_type, updates, parent_uuid))
+        return [u["_id"] for u in updates]
+
+    async def vtt_delete_documents(
+        cls,
+        world_id,
+        document_type,
+        ids,
+        parent_uuid=None,
+        as_user=None,
+        approved_by=None,
+    ):
+        done.append(("delete", document_type, ids, parent_uuid))
+        return {"deleted": ids}
+
+    async def vtt_status(cls, world_id, as_user=None):
+        return {"npc_actor_type": "npc"}
+
+    async def vtt_get_setting(cls, world_id, key, as_user=None):
+        return clock[key]
+
+    async def vtt_set_setting(
+        cls, world_id, key, value, as_user=None, approved_by=None
+    ):
+        done.append(("setting", key, value, None))
+        clock[key] = value
+
+    stand_ins: List[Tuple[str, Any]] = [
+        ("vtt_create_documents", vtt_create_documents),
+        ("vtt_update_documents", vtt_update_documents),
+        ("vtt_delete_documents", vtt_delete_documents),
+        ("vtt_status", vtt_status),
+        ("vtt_get_setting", vtt_get_setting),
+        ("vtt_set_setting", vtt_set_setting),
+    ]
+    for name, fn in stand_ins:
+        monkeypatch.setattr(EXT_External_VTT, name, classmethod(fn))
+    FULL["Actor.a2"] = {
+        "_id": "a2",
+        "name": "The Ordo",
+        "prototypeToken": {"disposition": -1},
+    }
+    FULL["Scene.s2"] = {"_id": "s2", "name": "Docks", "width": 2000, "height": 1000}
+    FULL["Scene.s1"] = {"_id": "s1", "name": "Vell", "width": 4000, "height": 3000}
+    FULL["Combat.k1"] = {"_id": "k1", "round": 2, "turn": 1, "scene": "s1"}
+    FULL["Combat.k-new"] = {"_id": "k-new", "round": 0, "turn": None, "scene": "s1"}
+    EMBEDDED[("Combat.k-new", "Combatant")] = []
+    return done
+
+
+async def test_ensure_person_finds_or_makes_the_actor(writes):
+    kol = await EXT_External_VTT.foundry_ensure_person(None, GM, CAMPAIGN, "Kol")
+    assert kol["id"] == "fvtt:w1:Actor.a1" and writes == []
+    made = await EXT_External_VTT.foundry_ensure_person(None, GM, CAMPAIGN, "Sefa")
+    assert made["id"] == "fvtt:w1:Actor.a-new"
+    assert writes == [("create", "Actor", [{"name": "Sefa", "type": "npc"}], None)]
+
+
+async def test_update_person_changes_what_an_actor_keeps(writes):
+    await EXT_External_VTT.foundry_update_person(
+        None, GM, "fvtt:w1:Actor.a1", {"name": "Kol the Grey", "summary": "ignored"}
     )
-    assert (await EXT_External_VTT.foundry_current_scene(GM, CAMPAIGN)) is not None
+    assert writes == [
+        ("update", "Actor", [{"_id": "a1", "name": "Kol the Grey"}], None)
+    ]
+
+
+async def test_placing_and_removing_a_person(writes):
+    placed = await EXT_External_VTT.foundry_place_person(
+        GM, "fvtt:w1:Scene.s1", "fvtt:w1:Actor.a2", near_person_id="fvtt:w1:Actor.a1"
+    )
+    assert placed["id"] == "fvtt:w1:Scene.s1.Token.t-new"
+    [(_, kind, [token], parent)] = writes
+    assert (kind, parent) == ("Token", "Scene.s1")
+    assert (token["actorId"], token["x"], token["y"], token["disposition"]) == (
+        "a2",
+        200,
+        50,
+        -1,
+    )
+    already = await EXT_External_VTT.foundry_place_person(
+        GM, "fvtt:w1:Scene.s1", "fvtt:w1:Actor.a1"
+    )
+    assert already["id"] == "fvtt:w1:Scene.s1.Token.t1" and len(writes) == 1
+    gone = await EXT_External_VTT.foundry_remove_person_from_scene(
+        GM, "fvtt:w1:Scene.s1", "fvtt:w1:Actor.a1"
+    )
+    assert gone == {"removed": True}
+    assert writes[-1] == ("delete", "Token", ["t1"], "Scene.s1")
+
+
+async def test_moving_a_person_takes_their_token_with_them(writes):
+    assert await EXT_External_VTT.foundry_move_person(
+        None, GM, "fvtt:w1:Actor.a1", "fvtt:w1:Scene.s2"
+    )
+    assert writes[0] == ("delete", "Token", ["t1"], "Scene.s1")
+    _, kind, [token], parent = writes[1]
+    assert (kind, parent, token["actorId"], token["x"], token["y"]) == (
+        "Token",
+        "Scene.s2",
+        "a1",
+        1000,
+        500,
+    )
+
+
+async def test_a_fight_from_start_to_end(writes):
+    order = await EXT_External_VTT.foundry_start_encounter(
+        GM,
+        CAMPAIGN,
+        "fvtt:w1:Scene.s1",
+        ["fvtt:w1:Actor.a1"],
+        {"fvtt:w1:Actor.a1": "hostile"},
+    )
+    assert order["id"] == "fvtt:w1:Combat.k-new" and order["status"] == "setup"
+    assert writes[0] == ("create", "Combat", [{"scene": "s1", "active": True}], None)
+    assert writes[1] == (
+        "create",
+        "Combatant",
+        [{"actorId": "a1", "tokenId": "t1", "sceneId": "s1"}],
+        "Combat.k-new",
+    )
+    assert writes[2] == (
+        "update",
+        "Token",
+        [{"_id": "t1", "disposition": -1}],
+        "Scene.s1",
+    )
+    started = await EXT_External_VTT.foundry_start_combat(GM, "fvtt:w1:Combat.k1")
+    assert started["status"] == "running" and started["round"] == 1
+    assert started["current_combatant_id"] == "fvtt:w1:Combat.k1.Combatant.m2"
+    ended = await EXT_External_VTT.foundry_end_encounter(GM, "fvtt:w1:Combat.k1")
+    assert ended["status"] == "ended"
+    assert writes[-1] == ("delete", "Combat", ["k1"], None)
+
+
+async def test_the_turn_after_the_last_is_the_next_round(writes):
+    order = await EXT_External_VTT.foundry_next_turn(GM, "fvtt:w1:Combat.k1")
+    assert (order["round"], order["turn"]) == (3, 0)
+    assert writes == [
+        ("update", "Combat", [{"_id": "k1", "round": 3, "turn": 0}], None)
+    ]
+
+
+async def test_a_disposition_is_the_persons_token_on_the_fights_scene(writes):
+    await EXT_External_VTT.foundry_set_disposition(
+        GM, "fvtt:w1:Combat.k1", "fvtt:w1:Actor.a1", "friendly"
+    )
+    assert writes == [
+        ("update", "Token", [{"_id": "t1", "disposition": 1}], "Scene.s1")
+    ]
     with pytest.raises(InvalidInputExternalError):
-        await EXT_External_VTT.foundry_current_scene("stranger", CAMPAIGN)
+        await EXT_External_VTT.foundry_set_disposition(
+            GM, "fvtt:w1:Combat.k1", "fvtt:w1:Actor.a1", "furious"
+        )
+
+
+async def test_a_session_report_is_a_journal(writes):
+    report = await EXT_External_VTT.foundry_session_report(
+        None, GM, CAMPAIGN, "Session 3", "<p>They drowned.</p>"
+    )
+    assert report == {"id": "fvtt:w1:JournalEntry.j-new"}
+    assert writes[0] == ("create", "JournalEntry", [{"name": "Session 3"}], None)
+    assert writes[1][1:] == (
+        "JournalEntryPage",
+        [
+            {
+                "name": "Session 3",
+                "type": "text",
+                "text": {"content": "<p>They drowned.</p>"},
+            }
+        ],
+        "JournalEntry.j-new",
+    )
+
+
+async def test_the_clock_moves_forward(writes):
+    assert await EXT_External_VTT.foundry_advance_clock(None, GM, CAMPAIGN, 90) == {
+        "day": 1,
+        "time": "02:30",
+        "seconds": 9000,
+    }
+    with pytest.raises(InvalidInputExternalError):
+        await EXT_External_VTT.foundry_advance_clock(None, GM, CAMPAIGN, -5)
+
+
+async def test_matching_names(writes):
+    found = await EXT_External_VTT.foundry_world_entities_matching(
+        None, GM, CAMPAIGN, "ve", 5
+    )
+    assert [e["name"] for e in found] == ["Vell"]
+
+
+async def test_a_stranger_writes_nothing(writes):
+    with pytest.raises(InvalidInputExternalError):
+        await EXT_External_VTT.foundry_ensure_person(None, "stranger", CAMPAIGN, "Sefa")
+    with pytest.raises(InvalidInputExternalError):
+        await EXT_External_VTT.foundry_next_turn("stranger", "fvtt:w1:Combat.k1")
+    assert writes == []

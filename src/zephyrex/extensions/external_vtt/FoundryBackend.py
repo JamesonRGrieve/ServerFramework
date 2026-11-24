@@ -265,6 +265,170 @@ def _active_scene(scenes: List[Doc]) -> Optional[Doc]:
     return None
 
 
+COMBAT_FIELDS = ["active", "round", "turn", "scene"]
+TOKEN_FIELDS = ["actorId", "x", "y", "hidden", "disposition"]
+DISPOSITION_OF = {name: value for value, name in DISPOSITIONS.items()}
+SESSIONS_FOLDER = "Sessions"
+DOCUMENTS_FOLDERS = ("documents", "campaign documents", "handouts")
+DAY_SECONDS = 86400
+
+
+def _local(uuid: str) -> str:
+    """A document's own id: the last part of its UUID."""
+    return uuid.rsplit(".", 1)[-1]
+
+
+def _first(ids: Any) -> str:
+    if not isinstance(ids, list) or not ids:
+        raise InvalidInputExternalError("the world's server created nothing")
+    return str(ids[0])
+
+
+async def _active_combat(world: str) -> Optional[Doc]:
+    combats = await _vtt().vtt_list_documents(world, "Combat", fields=COMBAT_FIELDS)
+    active = [c for c in combats if c.get("active")] or combats[:1]
+    return active[0] if active else None
+
+
+async def _combat(world: str, encounter_id: str) -> Doc:
+    uuid = parse_fvtt_id(encounter_id)[1]
+    if not uuid.startswith("Combat."):
+        raise InvalidInputExternalError(f"{encounter_id!r} is not a Foundry combat")
+    doc = await _vtt().vtt_get_document(world, uuid)
+    return {**doc, "uuid": uuid, "id": doc.get("_id") or _local(uuid)}
+
+
+async def _order(world: str, combat: Doc, campaign_id: Optional[str]) -> Doc:
+    """A combat as the app's fights read: in initiative order, the one whose
+    turn it is, who has yet to roll."""
+    combat_uuid = _uuid(combat, "Combat")
+    combatants = await _vtt().vtt_list_embedded(
+        world, combat_uuid, "Combatant", fields=["actorId", "initiative", "defeated"]
+    )
+    ordered = sorted(combatants, key=lambda c: -(c.get("initiative") or float("-inf")))
+    entries = [
+        {
+            "id": fvtt_id(
+                world, f"{combat_uuid}.Combatant.{c.get('id') or c.get('_id')}"
+            ),
+            "person_id": (
+                fvtt_id(world, f"Actor.{c['actorId']}") if c.get("actorId") else None
+            ),
+            "name": c.get("name") or "",
+            "initiative": c.get("initiative"),
+            "defeated": bool(c.get("defeated")),
+        }
+        for c in ordered
+    ]
+    round_number = int(combat.get("round") or 0)
+    turn = combat.get("turn")
+    current = (
+        entries[turn]["id"]
+        if round_number > 0 and isinstance(turn, int) and 0 <= turn < len(entries)
+        else None
+    )
+    return {
+        "id": fvtt_id(world, combat_uuid),
+        "campaign_id": campaign_id,
+        "status": combat.get("status") or ("running" if round_number > 0 else "setup"),
+        "round": round_number,
+        "turn": turn,
+        "current_combatant_id": current,
+        "combatants": entries,
+        "order": entries,
+        "open_choices": [],
+        "unrolled": [e["id"] for e in entries if e["initiative"] is None],
+    }
+
+
+async def _tokens(world: str, scene_uuid: str) -> List[Doc]:
+    tokens: List[Doc] = await _vtt().vtt_list_embedded(
+        world, scene_uuid, "Token", fields=TOKEN_FIELDS
+    )
+    return tokens
+
+
+def _disposition(value: Any) -> Optional[str]:
+    return DISPOSITIONS.get(value) if isinstance(value, int) else None
+
+
+def _token(world: str, scene_uuid: str, token: Doc) -> Doc:
+    actor = token.get("actorId")
+    return {
+        "id": fvtt_id(
+            world, f"{scene_uuid}.Token.{token.get('id') or token.get('_id')}"
+        ),
+        "scene_id": fvtt_id(world, scene_uuid),
+        "entity_id": fvtt_id(world, f"Actor.{actor}") if actor else None,
+        "name": token.get("name") or "",
+        "x": token.get("x"),
+        "y": token.get("y"),
+        "hidden": bool(token.get("hidden")),
+        "disposition": _disposition(token.get("disposition")),
+    }
+
+
+async def _scene_of(world: str, scene_id: str) -> str:
+    uuid = parse_fvtt_id(scene_id)[1]
+    if not uuid.startswith("Scene.") or uuid.count(".") != 1:
+        raise InvalidInputExternalError(f"{scene_id!r} is not a Foundry scene")
+    return uuid
+
+
+def _actor_of(person_id: str) -> str:
+    uuid = parse_fvtt_id(person_id)[1]
+    if not uuid.startswith("Actor.") or uuid.count(".") != 1:
+        raise InvalidInputExternalError(f"{person_id!r} is not a Foundry person")
+    return uuid
+
+
+async def _place(
+    world: str, scene_uuid: str, actor_uuid: str, near: Optional[Doc] = None
+) -> Doc:
+    """A token for the actor on the scene: beside ``near``, else at the
+    scene's centre."""
+    actor = await _vtt().vtt_get_document(world, actor_uuid)
+    if near is not None:
+        x, y = int(near.get("x") or 0) + 100, int(near.get("y") or 0)
+    else:
+        scene = await _vtt().vtt_get_document(world, scene_uuid)
+        x, y = int(scene.get("width") or 0) // 2, int(scene.get("height") or 0) // 2
+    prototype = actor.get("prototypeToken") or {}
+    token = {
+        "actorId": _local(actor_uuid),
+        "name": actor.get("name") or "",
+        "x": x,
+        "y": y,
+        "disposition": prototype.get("disposition", 0),
+    }
+    created = await _vtt().vtt_create_documents(
+        world, "Token", [token], parent_uuid=scene_uuid
+    )
+    return _token(world, scene_uuid, {**token, "id": _local(_first(created))})
+
+
+async def _remove(world: str, scene_uuid: str, actor_uuid: str) -> int:
+    actor = _local(actor_uuid)
+    ids = [
+        str(t.get("id") or t.get("_id"))
+        for t in await _tokens(world, scene_uuid)
+        if t.get("actorId") == actor
+    ]
+    if ids:
+        await _vtt().vtt_delete_documents(world, "Token", ids, parent_uuid=scene_uuid)
+    return len(ids)
+
+
+def _clock(seconds: Any) -> Doc:
+    total = int(seconds or 0)
+    day, rest = divmod(total, DAY_SECONDS)
+    return {
+        "day": day + 1,
+        "time": f"{rest // 3600:02d}:{rest % 3600 // 60:02d}",
+        "seconds": total,
+    }
+
+
 class FoundryBackend:
     """The Foundry backend's implementations, mixed into EXT_External_VTT so
     they belong to a loaded extension."""
@@ -385,47 +549,8 @@ class FoundryBackend:
     ) -> Optional[Doc]:
         """The world's active combat: running once its first round began."""
         _, world = await campaign_world(requester_id, campaign_id=campaign_id)
-        combats = await _vtt().vtt_list_documents(
-            world, "Combat", fields=["active", "round", "turn"]
-        )
-        active = [c for c in combats if c.get("active")] or combats[:1]
-        if not active:
-            return None
-        combat = active[0]
-        combat_uuid = _uuid(combat, "Combat")
-        combatants = await _vtt().vtt_list_embedded(
-            world,
-            combat_uuid,
-            "Combatant",
-            fields=["actorId", "initiative", "defeated"],
-        )
-        round_number = int(combat.get("round") or 0)
-        return {
-            "id": fvtt_id(world, combat_uuid),
-            "campaign_id": campaign_id,
-            "status": "running" if round_number > 0 else "setup",
-            "round": round_number,
-            "turn": combat.get("turn"),
-            "order": [
-                {
-                    "id": fvtt_id(
-                        world, f"{combat_uuid}.Combatant.{c.get('id') or c.get('_id')}"
-                    ),
-                    "person_id": (
-                        fvtt_id(world, f"Actor.{c['actorId']}")
-                        if c.get("actorId")
-                        else None
-                    ),
-                    "name": c.get("name") or "",
-                    "initiative": c.get("initiative"),
-                    "defeated": bool(c.get("defeated")),
-                }
-                for c in sorted(
-                    combatants,
-                    key=lambda c: -(c.get("initiative") or float("-inf")),
-                )
-            ],
-        }
+        combat = await _active_combat(world)
+        return None if combat is None else await _order(world, combat, campaign_id)
 
     @classmethod
     @implements("rpg_dice", "character_sheet", backend=FOUNDRY)
@@ -450,3 +575,375 @@ class FoundryBackend:
                 for item in actor.get("items") or []
             ],
         }
+
+    # -- writes: like native ones in a campaign-mode world (no approval);
+    # an assistant-mode world refuses them, its GM approving vtt_* writes
+    # one by one instead.
+
+    @classmethod
+    @implements("rpg_core", "world_entities_matching", backend=FOUNDRY)
+    async def foundry_world_entities_matching(
+        cls,
+        model_registry: Any,
+        requester_id: str,
+        campaign_id: str,
+        text: str,
+        limit: int = 20,
+    ) -> List[Doc]:
+        _, world = await campaign_world(requester_id, campaign_id=campaign_id)
+        needle = (text or "").strip().lower()
+        found = [
+            e
+            for e in await _entities(world, KIND_OF_TYPE)
+            if needle in e["name"].lower()
+        ]
+        return found[: max(0, int(limit or 0))]
+
+    @classmethod
+    @implements("rpg_core", "campaign_documents", backend=FOUNDRY)
+    async def foundry_campaign_documents(
+        cls, model_registry: Any, requester_id: str, campaign_id: str
+    ) -> List[Doc]:
+        """The pages of the journals in a top-level "Documents" (or
+        "Handouts") folder."""
+        _, world = await campaign_world(requester_id, campaign_id=campaign_id)
+        folders = await _folders(world)
+        wanted = {
+            fid
+            for fid, name in folders.items()
+            if name.strip().lower() in DOCUMENTS_FOLDERS
+        }
+        documents: List[Doc] = []
+        for journal in await _vtt().vtt_list_documents(
+            world, "JournalEntry", fields=["folder"]
+        ):
+            if journal.get("folder") not in wanted:
+                continue
+            entry = await _vtt().vtt_get_document(
+                world, _uuid(journal, "JournalEntry"), embedded=True
+            )
+            for page in entry.get("pages") or []:
+                documents.append(
+                    {
+                        "title": page.get("name") or journal.get("name") or "",
+                        "text": str((page.get("text") or {}).get("content") or ""),
+                    }
+                )
+        return documents
+
+    @classmethod
+    @implements("rpg_core", "ensure_person", backend=FOUNDRY)
+    async def foundry_ensure_person(
+        cls,
+        model_registry: Any,
+        requester_id: str,
+        campaign_id: str,
+        name: str,
+        summary: Optional[str] = None,
+    ) -> Doc:
+        """The world's actor of that name, made (of the world's NPC type)
+        when there is none."""
+        _, world = await campaign_world(requester_id, campaign_id=campaign_id)
+        if not (name or "").strip():
+            raise InvalidInputExternalError("a person has a name")
+        for actor in await _vtt().vtt_list_documents(
+            world, "Actor", name_filter=name, fields=ENTITY_FIELDS
+        ):
+            if actor.get("name") == name:
+                return _entity(world, "Actor", actor, {}, {})
+        status = await _vtt().vtt_status(world)
+        actor_type = str(status.get("npc_actor_type") or "npc")
+        created = await _vtt().vtt_create_documents(
+            world, "Actor", [{"name": name, "type": actor_type}]
+        )
+        uuid = _first(created)
+        uuid = uuid if uuid.startswith("Actor.") else f"Actor.{uuid}"
+        return _entity(
+            world, "Actor", {"uuid": uuid, "name": name, "type": actor_type}, {}, {}
+        )
+
+    @classmethod
+    @implements("rpg_core", "update_person", backend=FOUNDRY)
+    async def foundry_update_person(
+        cls, model_registry: Any, requester_id: str, person_id: str, fields: Doc
+    ) -> Doc:
+        """A person's name and picture (what Foundry keeps on an actor)."""
+        world = await _world_of(requester_id, person_id)
+        uuid = _actor_of(person_id)
+        change = {k: v for k, v in (fields or {}).items() if k in ("name", "img")}
+        if change:
+            await _vtt().vtt_update_documents(
+                world, "Actor", [{"_id": _local(uuid), **change}]
+            )
+        doc = await _vtt().vtt_get_document(world, uuid)
+        return _entity(world, "Actor", {**doc, "uuid": uuid}, {}, {})
+
+    @classmethod
+    @implements("rpg_core", "move_person", backend=FOUNDRY)
+    async def foundry_move_person(
+        cls,
+        model_registry: Any,
+        requester_id: str,
+        person_id: str,
+        location_id: str,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """A person goes to a place: their token leaves every other scene and
+        stands on that one."""
+        world = await _world_of(requester_id, person_id, location_id)
+        actor_uuid = _actor_of(person_id)
+        target = await _scene_of(world, location_id)
+        for scene in await _vtt().vtt_list_documents(world, "Scene"):
+            scene_uuid = _uuid(scene, "Scene")
+            if scene_uuid != target:
+                await _remove(world, scene_uuid, actor_uuid)
+        on_target = [
+            t
+            for t in await _tokens(world, target)
+            if t.get("actorId") == _local(actor_uuid)
+        ]
+        if not on_target:
+            await _place(world, target, actor_uuid)
+        return True
+
+    @classmethod
+    @implements("rpg_scene", "place_person", backend=FOUNDRY)
+    async def foundry_place_person(
+        cls,
+        requester_id: str,
+        scene_id: str,
+        person_id: str,
+        near_person_id: Optional[str] = None,
+    ) -> Doc:
+        world = await _world_of(requester_id, scene_id, person_id)
+        scene_uuid = await _scene_of(world, scene_id)
+        actor_uuid = _actor_of(person_id)
+        tokens = await _tokens(world, scene_uuid)
+        for token in tokens:
+            if token.get("actorId") == _local(actor_uuid):
+                return _token(world, scene_uuid, token)
+        near = None
+        if near_person_id:
+            near_actor = _local(_actor_of(near_person_id))
+            near = next((t for t in tokens if t.get("actorId") == near_actor), None)
+        return await _place(world, scene_uuid, actor_uuid, near)
+
+    @classmethod
+    @implements("rpg_scene", "remove_person_from_scene", backend=FOUNDRY)
+    async def foundry_remove_person_from_scene(
+        cls, requester_id: str, scene_id: str, person_id: str
+    ) -> Doc:
+        world = await _world_of(requester_id, scene_id, person_id)
+        removed = await _remove(
+            world, await _scene_of(world, scene_id), _actor_of(person_id)
+        )
+        return {"removed": removed > 0}
+
+    @classmethod
+    @implements("rpg_scene", "set_scene_background", backend=FOUNDRY)
+    async def foundry_set_scene_background(
+        cls, requester_id: str, scene_id: str, link: Optional[str]
+    ) -> Doc:
+        world = await _world_of(requester_id, scene_id)
+        scene_uuid = await _scene_of(world, scene_id)
+        await _vtt().vtt_update_documents(
+            world, "Scene", [{"_id": _local(scene_uuid), "background.src": link}]
+        )
+        scene = await _vtt().vtt_get_document(world, scene_uuid)
+        return {
+            "id": scene_id,
+            "name": scene.get("name") or "",
+            "location_id": scene_id,
+            "background_url": link,
+        }
+
+    @classmethod
+    @implements("rpg_combat", "start_encounter", backend=FOUNDRY)
+    async def foundry_start_encounter(
+        cls,
+        requester_id: str,
+        campaign_id: str,
+        scene_id: str,
+        person_ids: List[str],
+        dispositions: Optional[Dict[str, str]] = None,
+    ) -> Doc:
+        """A combat on the scene with these people, their tokens' dispositions
+        set; it begins (round 1) with start_combat."""
+        _, world = await campaign_world(requester_id, campaign_id=campaign_id)
+        scene_uuid = await _scene_of(world, scene_id)
+        if await _world_of(requester_id, scene_id, *person_ids) != world:
+            raise InvalidInputExternalError("the scene and people are another world's")
+        combat_uuid = _first(
+            await _vtt().vtt_create_documents(
+                world, "Combat", [{"scene": _local(scene_uuid), "active": True}]
+            )
+        )
+        combat_uuid = (
+            combat_uuid
+            if combat_uuid.startswith("Combat.")
+            else f"Combat.{combat_uuid}"
+        )
+        tokens = {t.get("actorId"): t for t in await _tokens(world, scene_uuid)}
+        combatants: List[Doc] = []
+        token_changes: List[Doc] = []
+        for person_id in person_ids:
+            actor = _local(_actor_of(person_id))
+            token = tokens.get(actor)
+            if token is None:
+                token = await _place(world, scene_uuid, f"Actor.{actor}")
+                token = {"id": _local(parse_fvtt_id(token["id"])[1]), "actorId": actor}
+            token_id = str(token.get("id") or token.get("_id"))
+            combatants.append(
+                {"actorId": actor, "tokenId": token_id, "sceneId": _local(scene_uuid)}
+            )
+            wanted = (dispositions or {}).get(person_id)
+            if wanted in DISPOSITION_OF:
+                token_changes.append(
+                    {"_id": token_id, "disposition": DISPOSITION_OF[wanted]}
+                )
+        await _vtt().vtt_create_documents(
+            world, "Combatant", combatants, parent_uuid=combat_uuid
+        )
+        if token_changes:
+            await _vtt().vtt_update_documents(
+                world, "Token", token_changes, parent_uuid=scene_uuid
+            )
+        return await _order(
+            world, await _combat(world, fvtt_id(world, combat_uuid)), campaign_id
+        )
+
+    @classmethod
+    @implements("rpg_combat", "start_combat", backend=FOUNDRY)
+    async def foundry_start_combat(cls, requester_id: str, encounter_id: str) -> Doc:
+        world = await _world_of(requester_id, encounter_id)
+        combat = await _combat(world, encounter_id)
+        await _vtt().vtt_update_documents(
+            world, "Combat", [{"_id": combat["id"], "round": 1, "turn": 0}]
+        )
+        return await _order(world, {**combat, "round": 1, "turn": 0}, None)
+
+    @classmethod
+    @implements("rpg_combat", "next_turn", backend=FOUNDRY)
+    async def foundry_next_turn(cls, requester_id: str, encounter_id: str) -> Doc:
+        """The next combatant's turn; after the last, the next round."""
+        world = await _world_of(requester_id, encounter_id)
+        combat = await _combat(world, encounter_id)
+        count = len(
+            await _vtt().vtt_list_embedded(
+                world, combat["uuid"], "Combatant", fields=["actorId"]
+            )
+        )
+        round_number = max(1, int(combat.get("round") or 0))
+        turn = int(combat.get("turn") or 0) + 1
+        if count and turn >= count:
+            turn, round_number = 0, round_number + 1
+        await _vtt().vtt_update_documents(
+            world,
+            "Combat",
+            [{"_id": combat["id"], "round": round_number, "turn": turn}],
+        )
+        return await _order(
+            world, {**combat, "round": round_number, "turn": turn}, None
+        )
+
+    @classmethod
+    @implements("rpg_combat", "end_encounter", backend=FOUNDRY)
+    async def foundry_end_encounter(cls, requester_id: str, encounter_id: str) -> Doc:
+        """The fight as it ended; the combat is deleted (backed up first)."""
+        world = await _world_of(requester_id, encounter_id)
+        combat = await _combat(world, encounter_id)
+        order = await _order(world, combat, None)
+        await _vtt().vtt_delete_documents(world, "Combat", [combat["id"]])
+        return {**order, "status": "ended", "current_combatant_id": None}
+
+    @classmethod
+    @implements("rpg_combat", "set_disposition", backend=FOUNDRY)
+    async def foundry_set_disposition(
+        cls,
+        requester_id: str,
+        encounter_id: str,
+        person_id: str,
+        disposition: str,
+        hostile_to: Optional[List[str]] = None,
+    ) -> Doc:
+        """The person's token's disposition on the fight's scene."""
+        world = await _world_of(requester_id, encounter_id, person_id)
+        if disposition not in DISPOSITION_OF:
+            raise InvalidInputExternalError(
+                f"disposition is one of {', '.join(sorted(DISPOSITION_OF))}"
+            )
+        combat = await _combat(world, encounter_id)
+        scene = combat.get("scene")
+        if scene:
+            scene_uuid = f"Scene.{scene}"
+            actor = _local(_actor_of(person_id))
+            changes = [
+                {
+                    "_id": str(t.get("id") or t.get("_id")),
+                    "disposition": DISPOSITION_OF[disposition],
+                }
+                for t in await _tokens(world, scene_uuid)
+                if t.get("actorId") == actor
+            ]
+            if changes:
+                await _vtt().vtt_update_documents(
+                    world, "Token", changes, parent_uuid=scene_uuid
+                )
+        return await _order(world, combat, None)
+
+    @classmethod
+    @implements("rpg_core", "session_report", backend=FOUNDRY)
+    async def foundry_session_report(
+        cls,
+        model_registry: Any,
+        requester_id: str,
+        campaign_id: str,
+        title: str,
+        body: str,
+        occurred_at: Optional[str] = None,
+        mentions: Optional[List[str]] = None,
+    ) -> Doc:
+        """A journal entry in the world's "Sessions" folder (when it has one),
+        its report one text page."""
+        _, world = await campaign_world(requester_id, campaign_id=campaign_id)
+        folders = await _folders(world)
+        folder = next(
+            (fid for fid, name in folders.items() if name == SESSIONS_FOLDER), None
+        )
+        entry: Doc = {"name": title or "Session"}
+        if folder:
+            entry["folder"] = folder
+        uuid = _first(await _vtt().vtt_create_documents(world, "JournalEntry", [entry]))
+        uuid = uuid if uuid.startswith("JournalEntry.") else f"JournalEntry.{uuid}"
+        await _vtt().vtt_create_documents(
+            world,
+            "JournalEntryPage",
+            [
+                {
+                    "name": title or "Session",
+                    "type": "text",
+                    "text": {"content": body or ""},
+                }
+            ],
+            parent_uuid=uuid,
+        )
+        return {"id": fvtt_id(world, uuid)}
+
+    @classmethod
+    @implements("rpg_core", "advance_clock", backend=FOUNDRY)
+    async def foundry_advance_clock(
+        cls,
+        model_registry: Any,
+        requester_id: str,
+        campaign_id: str,
+        minutes: int,
+        reason: Optional[str] = None,
+    ) -> Doc:
+        """The world's clock (core.time, in seconds) moved on."""
+        _, world = await campaign_world(requester_id, campaign_id=campaign_id)
+        if int(minutes) < 0:
+            raise InvalidInputExternalError("the clock only moves forward")
+        now = int(await _vtt().vtt_get_setting(world, "core.time") or 0)
+        later = now + int(minutes) * 60
+        await _vtt().vtt_set_setting(world, "core.time", later)
+        return _clock(later)

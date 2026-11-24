@@ -40,7 +40,9 @@ TRUE = ("1", "true", "yes", "on")
 ASSISTANT = "assistant"
 CAMPAIGN = "campaign"
 MODES = (ASSISTANT, CAMPAIGN)
-WRITE_TOOLS = frozenset({"create_documents", "update_documents"})
+WRITE_TOOLS = frozenset(
+    {"create_documents", "update_documents", "delete_documents", "set_setting"}
+)
 
 
 def tool_value(result: Dict[str, Any]) -> Any:
@@ -97,6 +99,11 @@ class PRV_Foundry(AbstractVTTProvider):
             "assistant (a human GM runs the table; every write needs their "
             "approval) or campaign (the app's AI is the GM)",
             default=ASSISTANT,
+        ),
+        InstanceSetting(
+            "npc_actor_type",
+            "The actor type the world's system gives a new person",
+            default="npc",
         ),
         InstanceSetting(
             "webhook_secret",
@@ -170,6 +177,9 @@ class PRV_Foundry(AbstractVTTProvider):
             **(status if isinstance(status, dict) else {}),
             "writes": cls.writes_allowed(instance),
             "mode": cls.mode(instance),
+            "npc_actor_type": (
+                cls.setting(instance, "npc_actor_type") or "npc"
+            ).strip(),
         }
 
     @classmethod
@@ -261,4 +271,37 @@ class PRV_Foundry(AbstractVTTProvider):
                 },
                 approved,
             )
+        )
+
+    @classmethod
+    async def delete_documents(
+        cls,
+        instance: ProviderInstanceModel,
+        document_type: str,
+        ids: List[str],
+        parent_uuid: Optional[str],
+        approved: bool = False,
+    ) -> Doc:
+        result = await cls.tool(
+            instance,
+            "delete_documents",
+            {"document_type": document_type, "ids": ids, "parent_uuid": parent_uuid},
+            approved,
+        )
+        return result if isinstance(result, dict) else {"deleted": result}
+
+    @classmethod
+    async def game_setting(cls, instance: ProviderInstanceModel, key: str) -> Any:
+        return await cls.tool(instance, "get_setting", {"key": key})
+
+    @classmethod
+    async def set_game_setting(
+        cls,
+        instance: ProviderInstanceModel,
+        key: str,
+        value: Any,
+        approved: bool = False,
+    ) -> Any:
+        return await cls.tool(
+            instance, "set_setting", {"key": key, "value": value}, approved
         )
