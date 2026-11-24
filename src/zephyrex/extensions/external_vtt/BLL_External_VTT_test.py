@@ -2,21 +2,32 @@
 """A Foundry world's live events, signed by its foundry-webhooks module,
 reach the app's event bus as ``VTTEvent``s with the backend's own ids; an
 unsigned, stale, replayed or mis-keyed delivery, or one to a world that
-isn't the operator's, is the same 401 and publishes nothing."""
+isn't the operator's, is the same 401 and publishes nothing. A world's
+campaign members hear those events live on its stream, as notices that never
+carry the event's data; anyone else is a 404, and a member who leaves is
+revoked."""
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import time
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import AsyncIterator
+from typing import Any, Dict, Iterator, List, Optional, Set
 
 import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.external_vtt import BLL_External_VTT
+from zephyrex.extensions.external_vtt import FoundryBackend as backend
 from zephyrex.extensions.external_vtt.BLL_External_VTT import (
     EVENTS_PREFIX,
+    HUB,
     VTTEvent,
+    VTTStreamManager,
     event_signature,
 )
 from zephyrex.extensions.external_vtt.EXT_External_VTT import EXT_External_VTT
@@ -166,3 +177,150 @@ class TestEvents(ExtensionServerMixin):
             assert (
                 self._deliver(server, world.id, body, _headers(body)).status_code == 422
             )
+
+
+STREAM_WORLD = "solenne"
+FRAME_TIMEOUT_SECONDS = 5.0
+
+
+def _request() -> Request:
+    """A request whose client stays connected (the test closes the stream)."""
+
+    async def receive() -> Dict[str, Any]:
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    return Request({"type": "http", "method": "GET", "headers": []}, receive=receive)
+
+
+class Stream:
+    """One open world stream, read frame by frame."""
+
+    def __init__(self, body: AsyncIterator[Any]) -> None:
+        self._body = body
+
+    async def frame(self) -> str:
+        frame = await asyncio.wait_for(
+            self._body.__anext__(), timeout=FRAME_TIMEOUT_SECONDS
+        )
+        return str(frame)
+
+    async def event(self) -> tuple[str, Dict[str, Any]]:
+        """The next (event, data), skipping comments."""
+        while True:
+            frame = await self.frame()
+            if frame.startswith(":"):
+                continue
+            fields = dict(
+                line.split(": ", 1)
+                for line in frame.strip().splitlines()
+                if ": " in line
+            )
+            return fields["event"], json.loads(fields["data"])
+
+    async def close(self) -> None:
+        await self._body.aclose()  # type: ignore[attr-defined]
+
+
+@pytest.fixture
+def members(monkeypatch) -> Set[str]:
+    """The wiki's answer for the stream's world: the requester's own campaign
+    there while they are in it (``members``), none otherwise."""
+    inside: Set[str] = set()
+
+    async def campaign_backend(
+        model_registry: Any,
+        requester_id: str,
+        campaign_id: Optional[str] = None,
+        person_id: Optional[str] = None,
+        world_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if world_id == STREAM_WORLD and requester_id in inside:
+            return {"backend": "foundry", "world_id": STREAM_WORLD, "campaign_id": "c1"}
+        return {"backend": "native", "world_id": None, "campaign_id": None}
+
+    monkeypatch.setattr(backend, "_registry", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "loaded_ability",
+        lambda registry, ext, name: (
+            campaign_backend if name == "campaign_backend" else None
+        ),
+    )
+    return inside
+
+
+class TestStream(ExtensionServerMixin):
+    extension_class = EXT_External_VTT
+
+    async def _join(self, model_registry: Any, user: Any) -> Stream:
+        manager = VTTStreamManager(requester_id=user.id, model_registry=model_registry)
+        response = await manager.stream_route(request=_request(), world_id=STREAM_WORLD)
+        stream = Stream(response.body_iterator)
+        assert await stream.frame() == ": connected\n\n"
+        return stream
+
+    async def test_only_the_campaigns_members_may_join(
+        self, model_registry, admin_a, user_b, members
+    ):
+        members.add(str(admin_a.id))
+        manager = VTTStreamManager(
+            requester_id=user_b.id, model_registry=model_registry
+        )
+        with pytest.raises(HTTPException) as refused:
+            await manager.stream_route(request=_request(), world_id=STREAM_WORLD)
+        assert refused.value.status_code == 404
+        with pytest.raises(HTTPException) as unknown:
+            await manager.stream_route(request=_request(), world_id="no-such-world")
+        assert unknown.value.status_code == 404
+
+    async def test_an_event_reaches_the_member_without_its_data(
+        self, model_registry, admin_a, members
+    ):
+        members.add(str(admin_a.id))
+        stream = await self._join(model_registry, admin_a)
+        bus = get_event_bus()
+        await bus.publish(VTTEvent(world_id="elsewhere", type="roll"))
+        await bus.publish(
+            VTTEvent(
+                world_id=STREAM_WORLD,
+                type="chat",
+                document_type="ChatMessage",
+                document_id=f"fvtt:{STREAM_WORLD}:ChatMessage.m1",
+                data={"content": "a whisper to the GM", "whisper": ["gm"]},
+                at="2026-11-24T15:00:00Z",
+            )
+        )
+        event, data = await stream.event()
+        await stream.close()
+        assert event == "vtt"
+        assert data == {
+            "type": "chat",
+            "document_type": "ChatMessage",
+            "document_id": f"fvtt:{STREAM_WORLD}:ChatMessage.m1",
+            "at": "2026-11-24T15:00:00Z",
+        }
+
+    async def test_a_member_who_leaves_is_revoked(
+        self, model_registry, admin_a, members, monkeypatch
+    ):
+        monkeypatch.setattr(BLL_External_VTT, "ACCESS_RECHECK_SECONDS", 0.0)
+        members.add(str(admin_a.id))
+        stream = await self._join(model_registry, admin_a)
+        members.discard(str(admin_a.id))
+        await get_event_bus().publish(VTTEvent(world_id=STREAM_WORLD, type="roll"))
+        event, data = await stream.event()
+        assert event == "revoked"
+        assert data == {"world_id": STREAM_WORLD}
+        with pytest.raises(StopAsyncIteration):
+            await stream.frame()
+        assert HUB.listeners(STREAM_WORLD) == 0
+
+    async def test_a_closed_stream_leaves_the_world(
+        self, model_registry, admin_a, members
+    ):
+        members.add(str(admin_a.id))
+        stream = await self._join(model_registry, admin_a)
+        assert HUB.listeners(STREAM_WORLD) == 1
+        await stream.close()
+        assert HUB.listeners(STREAM_WORLD) == 0
