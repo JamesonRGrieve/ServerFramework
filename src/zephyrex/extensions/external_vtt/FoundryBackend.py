@@ -192,6 +192,15 @@ async def _token_places(world: str) -> Dict[str, str]:
     return places
 
 
+def _person_kind(
+    document_type: str, doc: Doc, folders: Dict[str, str]
+) -> Optional[str]:
+    """A person's own kind ("pc" or "npc"); None for anything else."""
+    if _kind(document_type, doc.get("folder"), folders) != "person":
+        return None
+    return "pc" if doc.get("type") in PC_ACTOR_TYPES else "npc"
+
+
 def _entity(
     world: str,
     document_type: str,
@@ -216,6 +225,7 @@ def _entity(
         "entry": None,
         "voice": None,
         "tts_voice": None,
+        "person_kind": _person_kind(document_type, doc, folders),
         "disposition": (
             DISPOSITIONS.get(disposition) if disposition is not None else None
         ),
@@ -224,7 +234,9 @@ def _entity(
     }
 
 
-ENTITY_FIELDS = ["folder", "prototypeToken.disposition"]
+ENTITY_FIELDS = ["folder", "type", "prototypeToken.disposition"]
+# A player's actor, as the app's people name it; every other actor an NPC.
+PC_ACTOR_TYPES = frozenset({"character"})
 
 
 async def _entities(world: str, types: Iterable[str]) -> List[Doc]:

@@ -31,8 +31,10 @@ DOCUMENTS: Dict[str, List[Dict[str, Any]]] = {
             "id": "a1",
             "uuid": "Actor.a1",
             "name": "Kol",
+            "type": "character",
             "prototypeToken.disposition": 1,
         },
+        {"id": "a3", "uuid": "Actor.a3", "name": "Dockhand", "type": "npc"},
         {"id": "a2", "uuid": "Actor.a2", "name": "The Ordo", "folder": "f-org"},
     ],
     "Scene": [
@@ -154,6 +156,12 @@ async def test_the_world_is_the_campaigns_cast_and_places(world):
     assert by_name["Kol"]["disposition"] == "friendly"
     assert by_name["Kol"]["location_id"] == "fvtt:w1:Scene.s1"
     assert by_name["The Ordo"]["kind"] == "organisation"  # its folder
+    assert (by_name["Kol"]["person_kind"], by_name["Dockhand"]["person_kind"]) == (
+        "pc",
+        "npc",
+    )
+    assert by_name["The Ordo"]["person_kind"] is None
+    assert by_name["Vell"]["person_kind"] is None
     assert by_name["Vell"]["kind"] == "place"
     assert by_name["Campaign"]["kind"] == "lore"
     assert all(e["id"].startswith("fvtt:w1:") for e in entities)
