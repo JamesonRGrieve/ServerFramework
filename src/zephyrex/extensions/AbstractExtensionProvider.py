@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from time import monotonic
 from types import ModuleType
+import functools
 import inspect
 from typing import (
     Any,
@@ -125,6 +126,67 @@ def ability(name: Optional[str] = None, enabled: bool = True) -> Callable:
     return decorator
 
 
+def implements(extension_name: str, ability_name: str, backend: str) -> Callable:
+    """Mark a classmethod as another backend of extension ``extension_name``'s
+    ability ``ability_name``: the same name and arguments, served from
+    elsewhere (a campaign kept in an external tabletop rather than the app's
+    own tables). :func:`loaded_ability` runs it for the calls that
+    extension's :func:`backend_selector` assigns to ``backend``."""
+
+    def decorator(method: Callable) -> Callable:
+        method._implements_info = {  # type: ignore[attr-defined]
+            "extension": extension_name,
+            "ability": ability_name,
+            "backend": backend,
+        }
+        return method
+
+    return decorator
+
+
+def backend_selector(method: Callable) -> Callable:
+    """Mark an extension's classmethod ``(ability_name, arguments) -> backend
+    name or None`` as the choice, per call, of which backend serves its
+    abilities. None (or a backend that offers no such ability) is the
+    extension's own."""
+    method._backend_selector = True  # type: ignore[attr-defined]
+    return method
+
+
+def _marked(extension: type, marker: str) -> List[Tuple[str, Any]]:
+    """``(attribute, info)`` of the extension's classmethods carrying
+    ``marker``, read statically: getattr on every attribute would run the
+    extension's classproperties."""
+    found: List[Tuple[str, Any]] = []
+    for attribute, member in inspect.getmembers_static(extension):
+        if isinstance(member, classmethod):
+            info = getattr(member.__func__, marker, None)
+            if info:
+                found.append((attribute, info))
+    return found
+
+
+def _own_ability(extension: type, ability_name: str) -> Optional[Callable[..., Any]]:
+    for attribute, info in _marked(extension, "_ability_info"):
+        if info.get("name") == ability_name:
+            method: Callable[..., Any] = getattr(extension, attribute)
+            return method
+    return None
+
+
+def ability_backends(
+    model_registry: Any, extension_name: str, ability_name: str
+) -> Dict[str, Callable[..., Any]]:
+    """The loaded extensions' other backends of an ability, by backend name."""
+    registry = getattr(model_registry, "extension_registry", None)
+    backends: Dict[str, Callable[..., Any]] = {}
+    for extension in getattr(registry, "extensions", None) or []:
+        for attribute, info in _marked(extension, "_implements_info"):
+            if (info["extension"], info["ability"]) == (extension_name, ability_name):
+                backends[info["backend"]] = getattr(extension, attribute)
+    return backends
+
+
 def loaded_ability(
     model_registry: Any, extension_name: str, ability_name: str
 ) -> Optional[Callable[..., Any]]:
@@ -135,23 +197,52 @@ def loaded_ability(
     How one extension calls another's ability without importing it, so a
     product composed with another reaches it only through what that one
     offers. An ability acts for a user through its ``requester_id``; the
-    caller passes whose permissions it uses."""
+    caller passes whose permissions it uses.
+
+    When another loaded extension implements the ability for a backend
+    (:func:`implements`), what comes back is a dispatcher: each call asks the
+    extension's :func:`backend_selector` which backend the call's arguments
+    belong to (a campaign's), and runs that backend's implementation, or the
+    extension's own. The caller never branches."""
     registry = getattr(model_registry, "extension_registry", None)
     if registry is None:
         return None
     for extension in registry.extensions:
         if extension.name != extension_name:
             continue
-        # Read statically: getattr on every attribute would run the
-        # extension's classproperties.
-        for attribute, member in inspect.getmembers_static(extension):
-            if not isinstance(member, classmethod):
-                continue
-            info = getattr(member.__func__, "_ability_info", None)
-            if info and info.get("name") == ability_name:
-                method: Callable[..., Any] = getattr(extension, attribute)
-                return method
+        own = _own_ability(extension, ability_name)
+        if own is None:
+            return None
+        backends = ability_backends(model_registry, extension_name, ability_name)
+        selectors = _marked(extension, "_backend_selector")
+        if not backends or not selectors:
+            return own
+        select: Callable[..., Any] = getattr(extension, selectors[0][0])
+        return _dispatcher(ability_name, own, backends, select)
     return None
+
+
+def _dispatcher(
+    ability_name: str,
+    own: Callable[..., Any],
+    backends: Dict[str, Callable[..., Any]],
+    select: Callable[..., Any],
+) -> Callable[..., Any]:
+    # The native ability's name, docs, annotations and signature: an agent's
+    # tool schema and the invoker's argument binding read them.
+    @functools.wraps(own)
+    async def dispatch(*args: Any, **kwargs: Any) -> Any:
+        chosen = select(ability_name, kwargs)
+        if inspect.isawaitable(chosen):
+            chosen = await chosen
+        target = backends.get(chosen, own) if chosen else own
+        result = target(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    setattr(dispatch, "_ability_backends", sorted(backends))
+    return dispatch
 
 
 class ExtensionRegistry(AbstractRegistry):
