@@ -4,7 +4,7 @@
 from typing import Any, ClassVar, Dict, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
-from zephyrex.extensions.ai.EXT_AI import CHAT
+from zephyrex.extensions.ai.EXT_AI import CHAT, EXTRA_BODY_SETTING
 from zephyrex.extensions.ai.OpenAICompatible import OpenAICompatibleProvider
 
 
@@ -20,4 +20,5 @@ class PRV_DeepSeek_AI(OpenAICompatibleProvider):
         ),
         InstanceSetting("model", "Model", default="deepseek-chat", field="model_name"),
         InstanceSetting("base_url", "API address", default="https://api.deepseek.com"),
+        EXTRA_BODY_SETTING,
     )

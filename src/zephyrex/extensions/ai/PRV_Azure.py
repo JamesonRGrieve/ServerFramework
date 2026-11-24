@@ -6,7 +6,7 @@ named by its deployment."""
 from typing import Any, ClassVar, Dict, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
-from zephyrex.extensions.ai.EXT_AI import CHAT, EMBEDDINGS
+from zephyrex.extensions.ai.EXT_AI import CHAT, EMBEDDINGS, EXTRA_BODY_SETTING
 from zephyrex.extensions.ai.OpenAICompatible import OpenAICompatibleProvider
 from zephyrex.extensions.ExternalErrors import TransientExternalError
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
@@ -37,6 +37,7 @@ class PRV_Azure_AI(OpenAICompatibleProvider):
         ),
         InstanceSetting("model", "Chat deployment name", field="model_name"),
         InstanceSetting("embedding_model", "Embedding deployment name"),
+        EXTRA_BODY_SETTING,
     )
 
     @classmethod

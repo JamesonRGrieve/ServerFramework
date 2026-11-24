@@ -5,7 +5,7 @@ API's OpenAI-compatible endpoint."""
 from typing import Any, ClassVar, Dict, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
-from zephyrex.extensions.ai.EXT_AI import CHAT, EMBEDDINGS
+from zephyrex.extensions.ai.EXT_AI import CHAT, EMBEDDINGS, EXTRA_BODY_SETTING
 from zephyrex.extensions.ai.OpenAICompatible import OpenAICompatibleProvider
 
 
@@ -35,4 +35,5 @@ class PRV_Google_AI(OpenAICompatibleProvider):
             default="https://generativelanguage.googleapis.com/v1beta/openai",
         ),
         InstanceSetting("embedding_model", "Embedding model"),
+        EXTRA_BODY_SETTING,
     )

@@ -7,7 +7,7 @@ private network must be named in ``EGRESS_ALLOWED_HOSTS``."""
 from typing import Any, ClassVar, Dict, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
-from zephyrex.extensions.ai.EXT_AI import CHAT, EMBEDDINGS
+from zephyrex.extensions.ai.EXT_AI import CHAT, EMBEDDINGS, EXTRA_BODY_SETTING
 from zephyrex.extensions.ai.OpenAICompatible import OpenAICompatibleProvider
 
 
@@ -22,4 +22,5 @@ class PRV_OpenAICompatible_AI(OpenAICompatibleProvider):
         InstanceSetting("api_key", "API key, if any", secret=True, field="api_key"),
         InstanceSetting("model", "Chat model", field="model_name"),
         InstanceSetting("embedding_model", "Embedding model"),
+        EXTRA_BODY_SETTING,
     )

@@ -29,18 +29,21 @@ against the user it ran for when one is named.
 import base64
 import binascii
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
     AbstractStaticExtension,
     AbstractStaticProvider,
+    InstanceSetting,
     ability,
 )
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     PermanentExternalError,
+    TransientExternalError,
 )
 from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import env
@@ -58,6 +61,25 @@ TRANSCRIPTION, SPEECH = "transcription", "text_to_speech"
 # Transcription with each segment's start and end (captions, read-along).
 TIMED_TRANSCRIPTION = "timed_transcription"
 IMAGE_SIZES = ("1024x1024", "1024x1536", "1536x1024", "auto")
+# Request fields a caller's ``params`` never replace: what is asked, of which
+# model, and how it is answered are the provider's to set.
+PROTECTED_REQUEST_FIELDS = frozenset({"messages", "model", "stream"})
+# An instance's own request fields (an endpoint's extra_body), sent with every
+# chat it serves, under the caller's ``params``.
+EXTRA_BODY_SETTING = InstanceSetting(
+    "extra_body",
+    "Extra fields sent with every chat request, as a JSON object",
+    multiline=True,
+)
+
+
+def checked_params(params: Any) -> dict[str, Any] | None:
+    """``params``: extra request fields, a JSON object (or None)."""
+    if params is None:
+        return None
+    if not isinstance(params, Mapping) or not all(isinstance(k, str) for k in params):
+        raise InvalidInputExternalError("params is an object of request fields")
+    return dict(params)
 
 
 def _image_reference(url: Any) -> str:
@@ -208,6 +230,29 @@ def chat_answer(
     }
 
 
+@dataclass
+class PrimedStream:
+    """A chat stream whose first event has arrived: what the rotation hands
+    back once an instance has started answering, so a failure before the
+    first delta moves on to the next instance and one after it ends the
+    stream. Iterating it yields that first event, then the rest."""
+
+    first: dict[str, Any]
+    rest: AsyncIterator[dict[str, Any]]
+
+    async def __aiter__(self) -> AsyncIterator[dict[str, Any]]:
+        yield self.first
+        async for event in self.rest:
+            yield event
+
+
+def sse_data(line: str) -> str | None:
+    """A server-sent event line's data, or None for any other line."""
+    if not line.startswith("data:"):
+        return None
+    return line[len("data:") :].strip()
+
+
 def arguments_text(arguments: Any) -> str:
     """A tool call's arguments as JSON text, whichever form they came in."""
     return arguments if isinstance(arguments, str) else json.dumps(arguments or {})
@@ -244,9 +289,110 @@ class AbstractAIProvider(AbstractStaticProvider):
         tools: list[dict[str, Any]] | None,
         max_tokens: int | None,
         temperature: float | None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """One chat turn in this provider's API: a :func:`chat_answer`."""
+        """One chat turn in this provider's API: a :func:`chat_answer`.
+        ``max_tokens`` None asks for no limit of the caller's; ``params``
+        are extra request fields (:meth:`request_params`), translated where
+        the API names them differently and dropped where it has none."""
         raise cls.unsupported("chat")
+
+    @classmethod
+    async def complete_stream(
+        cls,
+        instance: ProviderInstanceModel,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        temperature: float | None,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """One chat turn as it is written: ``{"content": …}`` and
+        ``{"reasoning": …}`` deltas, then one final ``{"finish_reason",
+        "usage", "model", "tool_calls"}``. A provider whose API doesn't
+        stream (or whose streaming isn't wired) answers whole: one content
+        delta, then the final event."""
+        answer = await cls.complete(
+            instance, messages, tools, max_tokens, temperature, params=params
+        )
+        message = answer.get("message") or {}
+        if message.get("content"):
+            yield {"content": message["content"]}
+        yield {
+            "finish_reason": answer.get("finish_reason"),
+            "usage": answer.get("usage") or {},
+            "model": answer.get("model"),
+            "tool_calls": message.get("tool_calls"),
+        }
+
+    @classmethod
+    async def stream(
+        cls,
+        instance: ProviderInstanceModel,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        requester_id: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """:meth:`complete_stream` with its input checked first and its
+        tokens recorded when the final event arrives, as :meth:`chat`
+        records them."""
+        async for event in cls.complete_stream(
+            instance,
+            checked_messages(messages),
+            checked_tools(tools),
+            max_tokens,
+            temperature,
+            params=checked_params(params),
+        ):
+            if "finish_reason" in event:
+                record_usage(instance, event.get("usage") or {}, requester_id)
+            yield event
+
+    @classmethod
+    async def open_stream(
+        cls, instance: ProviderInstanceModel, *args: Any, **kwargs: Any
+    ) -> PrimedStream:
+        """:meth:`stream` started: it returns once the first event has
+        arrived, so the rotation can still move on when an instance fails
+        before answering (a refused key, a stall, a dead server)."""
+        events = cls.stream(instance, *args, **kwargs)
+        try:
+            first = await events.__anext__()
+        except StopAsyncIteration:
+            raise TransientExternalError(
+                f"{cls.friendly_name} ended the stream before answering",
+                provider=cls.name,
+            )
+        return PrimedStream(first, events)
+
+    @classmethod
+    def request_params(
+        cls, instance: ProviderInstanceModel, params: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """The extra request fields for a call on ``instance``: its
+        ``extra_body`` setting (when the provider declares it), then the
+        caller's ``params`` over it, less :data:`PROTECTED_REQUEST_FIELDS`.
+        A malformed ``extra_body`` is the instance's fault, so the rotation
+        moves on (transient)."""
+        merged: dict[str, Any] = {}
+        if any(s.key == EXTRA_BODY_SETTING.key for s in cls.instance_settings):
+            raw = cls.setting(instance, EXTRA_BODY_SETTING.key)
+            if raw and raw.strip():
+                try:
+                    extra = json.loads(raw)
+                except ValueError:
+                    extra = None
+                if not isinstance(extra, dict):
+                    raise TransientExternalError(
+                        f"{cls.friendly_name} extra_body is not a JSON object",
+                        provider=cls.name,
+                    )
+                merged.update(extra)
+        merged.update(params or {})
+        return {k: v for k, v in merged.items() if k not in PROTECTED_REQUEST_FIELDS}
 
     @classmethod
     async def chat(
@@ -257,6 +403,7 @@ class AbstractAIProvider(AbstractStaticProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         requester_id: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """One chat turn, its tokens recorded against ``instance`` and the
         user named by ``requester_id``."""
@@ -266,6 +413,7 @@ class AbstractAIProvider(AbstractStaticProvider):
             checked_tools(tools),
             max_tokens,
             temperature,
+            params=checked_params(params),
         )
         record_usage(instance, answer.get("usage") or {}, requester_id)
         return answer
@@ -361,6 +509,7 @@ class EXT_AI(AbstractStaticExtension):
     _abilities: ClassVar[set[str]] = {
         "list_ai_models",
         "chat",
+        "chat_stream",
         "generate_text",
         "embed",
         "generate_image",
@@ -385,9 +534,19 @@ class EXT_AI(AbstractStaticExtension):
         max_tokens: int | None = None,
         temperature: float | None = None,
         requester_id: str | None = None,
+        as_user: str | None = None,
+        instance_ids: list[str] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """One chat turn over the neutral message shape; with ``tools`` the
-        model may answer with tool calls for the caller to run."""
+        model may answer with tool calls for the caller to run. ``params``
+        are extra request fields (top_p, stop, seed, response_format, …),
+        merged after the call's own; ``max_tokens`` None sends no limit.
+
+        ``as_user`` runs it only on instances that user may use, their own
+        first (:meth:`rotate_among`), and records its usage to them;
+        ``instance_ids`` names those instances, in order. Without either it
+        rotates over the root rotation, as the server's own call."""
         result: dict[str, Any] = await cls.rotate_capable(
             CHAT,
             "chat",
@@ -395,9 +554,46 @@ class EXT_AI(AbstractStaticExtension):
             checked_tools(tools),
             max_tokens,
             temperature,
-            requester_id,
+            requester_id or as_user,
+            checked_params(params),
+            as_user=as_user,
+            instance_ids=instance_ids,
         )
         return result
+
+    @classmethod
+    @ability("chat_stream")
+    async def chat_stream(
+        cls,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        requester_id: str | None = None,
+        as_user: str | None = None,
+        instance_ids: list[str] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """:meth:`chat` as it is written: ``{"content": …}`` and
+        ``{"reasoning": …}`` deltas as the model produces them, then one
+        final ``{"finish_reason", "usage", "model", "tool_calls"}``. The
+        rotation moves on to the next instance only until the first delta
+        arrives; after that, a failure ends the stream (it raises there).
+        Usage is recorded when the final event arrives."""
+        primed: PrimedStream = await cls.rotate_capable(
+            CHAT,
+            "open_stream",
+            checked_messages(messages),
+            checked_tools(tools),
+            max_tokens,
+            temperature,
+            requester_id or as_user,
+            checked_params(params),
+            as_user=as_user,
+            instance_ids=instance_ids,
+        )
+        async for event in primed:
+            yield event
 
     @classmethod
     @ability("generate_text")
@@ -407,14 +603,21 @@ class EXT_AI(AbstractStaticExtension):
         max_tokens: int | None = None,
         temperature: float | None = None,
         requester_id: str | None = None,
+        as_user: str | None = None,
+        instance_ids: list[str] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """A reply to one prompt: ``{text, model, usage}``."""
+        """A reply to one prompt: ``{text, model, usage}`` (``as_user``,
+        ``instance_ids`` and ``params`` as for :meth:`chat`)."""
         answer = await cls.chat(
             [{"role": "user", "content": prompt}],
             None,
             max_tokens,
             temperature,
             requester_id,
+            as_user=as_user,
+            instance_ids=instance_ids,
+            params=params,
         )
         return {
             "text": answer["message"]["content"] or "",
@@ -424,22 +627,43 @@ class EXT_AI(AbstractStaticExtension):
 
     @classmethod
     @ability("embed")
-    async def embed(cls, texts: list[str]) -> dict[str, Any]:
-        """An embedding vector per text."""
+    async def embed(
+        cls,
+        texts: list[str],
+        as_user: str | None = None,
+        instance_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """An embedding vector per text (``as_user`` and ``instance_ids`` as
+        for :meth:`chat`)."""
         result: dict[str, Any] = await cls.rotate_capable(
-            EMBEDDINGS, "embed", checked_texts(texts)
+            EMBEDDINGS,
+            "embed",
+            checked_texts(texts),
+            as_user=as_user,
+            instance_ids=instance_ids,
         )
         return result
 
     @classmethod
     @ability("generate_image")
     async def generate_image(
-        cls, prompt: str, size: str = "1024x1024"
+        cls,
+        prompt: str,
+        size: str = "1024x1024",
+        as_user: str | None = None,
+        instance_ids: list[str] | None = None,
     ) -> dict[str, Any]:
+        """An image for ``prompt`` (``as_user`` and ``instance_ids`` as for
+        :meth:`chat`)."""
         if not prompt or not prompt.strip():
             raise InvalidInputExternalError("an image needs a prompt")
         result: dict[str, Any] = await cls.rotate_capable(
-            IMAGES, "image", prompt, image_size(size)
+            IMAGES,
+            "image",
+            prompt,
+            image_size(size),
+            as_user=as_user,
+            instance_ids=instance_ids,
         )
         return result
 
@@ -478,10 +702,22 @@ class EXT_AI(AbstractStaticExtension):
 
     @classmethod
     @ability("speak")
-    async def speak(cls, text: str, voice: str | None = None) -> dict[str, Any]:
-        """``text`` as speech: base64 audio and its content type."""
+    async def speak(
+        cls,
+        text: str,
+        voice: str | None = None,
+        as_user: str | None = None,
+        instance_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """``text`` as speech: base64 audio and its content type (``as_user``
+        and ``instance_ids`` as for :meth:`chat`)."""
         result: dict[str, Any] = await cls.rotate_capable(
-            SPEECH, "speak", speech_text(text), voice
+            SPEECH,
+            "speak",
+            speech_text(text),
+            voice,
+            as_user=as_user,
+            instance_ids=instance_ids,
         )
         return result
 

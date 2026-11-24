@@ -9,6 +9,7 @@ import uuid
 import warnings
 from dataclasses import dataclass
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import (
     Any,
     Callable,
@@ -20,6 +21,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Sequence,
     Tuple,
     Union,
 )
@@ -2226,6 +2228,12 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         only_instances: Optional[Collection[str]] = kwargs.pop(
             "provider_instance_ids", None
         )
+        # An explicit chain: exactly these provider instances, in this order,
+        # instead of the rotation's own entries (the instances a user may use,
+        # chosen by the caller and already checked against what they may see).
+        explicit_chain: Optional[Sequence[str]] = kwargs.pop(
+            "provider_instance_chain", None
+        )
 
         # Get all rotation provider instances for this rotation
         if not self.target_id:
@@ -2234,7 +2242,14 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             )
 
         # Get rotation provider instances ordered by hierarchy
-        rotation_provider_instances = self._get_ordered_rotation_provider_instances()
+        rotation_provider_instances = (
+            [
+                SimpleNamespace(provider_instance_id=str(instance_id), parent_id=None)
+                for instance_id in explicit_chain
+            ]
+            if explicit_chain is not None
+            else self._get_ordered_rotation_provider_instances()
+        )
 
         if not rotation_provider_instances:
             # Nothing configured to serve the call: unavailable, not missing.

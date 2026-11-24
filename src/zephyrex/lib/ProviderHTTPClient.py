@@ -34,7 +34,7 @@ import re
 import socket
 import weakref
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Type
+from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple, Type
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -707,6 +707,66 @@ class ProviderHTTPClient:
         _classify_response(response, self.provider_name)
         # raw: the response itself, for a binary body decoding would corrupt.
         return response if raw else _maybe_parse_model(response, model)
+
+    async def stream_lines(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: Any = None,
+        headers: Optional[Mapping[str, str]] = None,
+        requester_id: Optional[str] = None,
+        deadline_ms: Optional[int] = None,
+    ) -> AsyncIterator[str]:
+        """The response body's lines as they arrive (server-sent events, JSON
+        lines), with :meth:`request`'s SSRF guard, rate limit, headers and
+        typed errors: a non-2xx answer raises before any line, as
+        :meth:`request` would; the connection failing or stalling past the
+        read timeout mid-stream raises ``TransientExternalError`` there. The
+        timeout applies to each wait for data, not to the whole stream."""
+        try:
+            validate_outbound_url(url)
+        except SSRFGuardError as exc:
+            raise InvalidInputExternalError(
+                f"Outbound URL refused by SSRF guard: {exc}",
+                provider=self.provider_name,
+            )
+        merged_headers = self._build_headers(headers, None, requester_id)
+        body = self._maybe_modify_body(json, requester_id)
+        self._acquire_rate_token(deadline_ms)
+        client = get_async_client(self.policy)
+        try:
+            async with client.stream(
+                method,
+                url,
+                headers=merged_headers,
+                json=body,
+                timeout=self._resolve_timeout(deadline_ms),
+            ) as response:
+                if not 200 <= response.status_code < 300:
+                    raw = await response.aread()
+                    raise map_upstream_status(
+                        response.status_code,
+                        f"Upstream returned status {response.status_code}",
+                        provider=self.provider_name,
+                        upstream_payload=_redact_secret(
+                            raw[:ERROR_BODY_BYTES].decode("utf-8", "replace")
+                        ),
+                    )
+                async for line in response.aiter_lines():
+                    yield line
+        except httpx.TimeoutException as exc:
+            raise TransientExternalError(
+                f"Timeout streaming {method} {_where(url)}",
+                provider=self.provider_name,
+                cause=exc,
+            )
+        except httpx.RequestError as exc:
+            raise TransientExternalError(
+                f"Network error streaming {method} {_where(url)}: {exc!s}",
+                provider=self.provider_name,
+                cause=exc,
+            )
 
     async def get(self, url: str, **kw: Any) -> Any:
         return await self.request("GET", url, **kw)

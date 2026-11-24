@@ -9,6 +9,7 @@ from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ai.EXT_AI import (
     CHAT,
     EMBEDDINGS,
+    EXTRA_BODY_SETTING,
     IMAGES,
     SPEECH,
     TIMED_TRANSCRIPTION,
@@ -53,4 +54,5 @@ class PRV_AGInYourPC_AI(OpenAICompatibleProvider):
             "Transcription model for captions (answers verbose_json with segments)",
         ),
         InstanceSetting("speech_model", "Speech model"),
+        EXTRA_BODY_SETTING,
     )

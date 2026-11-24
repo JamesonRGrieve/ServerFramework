@@ -6,13 +6,15 @@ the abilities it offers, and the error texts that mean a refused key on
 the servers that refuse one with a 400."""
 
 import base64
-from collections.abc import Mapping
+import json
+from collections.abc import AsyncIterator, Mapping
 from typing import Any, ClassVar
 
 from zephyrex.extensions.ai.EXT_AI import (
     AbstractAIProvider,
     arguments_text,
     chat_answer,
+    sse_data,
 )
 from zephyrex.extensions.ExternalErrors import (
     AuthExternalError,
@@ -174,8 +176,119 @@ class OpenAICompatibleProvider(AbstractAIProvider):
         tools: list[dict[str, Any]] | None,
         max_tokens: int | None,
         temperature: float | None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         model = cls.required_model(instance)
+        body = cls.chat_body(
+            instance, model, messages, tools, max_tokens, temperature, params
+        )
+        return openai_answer(
+            await cls.call(instance, "/chat/completions", json=body), model
+        )
+
+    @classmethod
+    async def stream_call(
+        cls, instance: ProviderInstanceModel, path: str, body: dict[str, Any]
+    ) -> AsyncIterator[str]:
+        """POST ``path`` and yield its server-sent events' data, a refused
+        key mapped to an auth failure as :meth:`call` maps it."""
+        try:
+            async for line in cls.http().stream_lines(
+                "POST",
+                f"{cls.base(instance)}{path}",
+                json=body,
+                headers=cls.auth_headers(instance),
+            ):
+                data = sse_data(line)
+                if data:
+                    yield data
+        except InvalidInputExternalError as exc:
+            payload = str(exc.upstream_payload or "")
+            if any(marker in payload for marker in cls.refused_key_markers):
+                raise AuthExternalError(
+                    f"{cls.friendly_name} refused the API key",
+                    provider=cls.name,
+                    upstream_status=exc.upstream_status,
+                ) from exc
+            raise
+
+    @classmethod
+    async def complete_stream(
+        cls,
+        instance: ProviderInstanceModel,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        temperature: float | None,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Chat Completions with ``stream: true``: each chunk's content and
+        reasoning (``reasoning_content``, or ``reasoning`` as some servers
+        name it) as deltas; tool-call fragments assembled; then the finish
+        reason and the usage the last chunk carries
+        (``stream_options.include_usage``)."""
+        model = cls.required_model(instance)
+        body = cls.chat_body(
+            instance, model, messages, tools, max_tokens, temperature, params
+        )
+        body["stream"] = True
+        body.setdefault("stream_options", {"include_usage": True})
+        finish_reason: str | None = None
+        usage: dict[str, Any] = {}
+        answered_model = model
+        calls: dict[int, dict[str, str]] = {}
+        async for data in cls.stream_call(instance, "/chat/completions", body):
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                continue
+            answered_model = str(chunk.get("model") or answered_model)
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            for choice in chunk.get("choices") or []:
+                delta = choice.get("delta") or {}
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning:
+                    yield {"reasoning": str(reasoning)}
+                if delta.get("content"):
+                    yield {"content": str(delta["content"])}
+                for fragment in delta.get("tool_calls") or []:
+                    call = calls.setdefault(
+                        int(fragment.get("index", 0)),
+                        {"id": "", "name": "", "arguments": ""},
+                    )
+                    function = fragment.get("function") or {}
+                    call["id"] = str(fragment.get("id") or call["id"])
+                    call["name"] += str(function.get("name") or "")
+                    call["arguments"] += str(function.get("arguments") or "")
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+        yield {
+            "finish_reason": finish_reason,
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens"),
+                "output_tokens": usage.get("completion_tokens"),
+            },
+            "model": answered_model,
+            "tool_calls": [calls[i] for i in sorted(calls)] or None,
+        }
+
+    @classmethod
+    def chat_body(
+        cls,
+        instance: ProviderInstanceModel,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        temperature: float | None,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """A chat request body: the call's own fields, then its extra ones
+        (:meth:`request_params`) as the API names them. No ``max_tokens``
+        sends no limit."""
         body: dict[str, Any] = {"model": model, "messages": openai_messages(messages)}
         if tools:
             body["tools"] = tools
@@ -183,9 +296,8 @@ class OpenAICompatibleProvider(AbstractAIProvider):
             body[cls.max_tokens_field] = max_tokens
         if temperature is not None:
             body["temperature"] = temperature
-        return openai_answer(
-            await cls.call(instance, "/chat/completions", json=body), model
-        )
+        body.update(cls.request_params(instance, params))
+        return body
 
     @classmethod
     async def embed(

@@ -9,7 +9,18 @@ from pathlib import Path
 from time import monotonic
 from types import ModuleType
 import inspect
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Type,
+)
 
 from fastapi import HTTPException, status
 from ordered_set import OrderedSet
@@ -2095,15 +2106,40 @@ class AbstractStaticExtension(
 
     @classmethod
     async def rotate_among(
-        cls, provider_names: List[str], method_name: str, *args: Any, **kwargs: Any
+        cls,
+        provider_names: List[str],
+        method_name: str,
+        *args: Any,
+        as_user: Optional[str] = None,
+        instance_ids: Optional[Sequence[str]] = None,
+        **kwargs: Any,
     ) -> Any:
         """:meth:`rotate_provider` over only the instances of the providers
-        named. 503 when the rotation holds no instance of one."""
+        named. 503 when the rotation holds no instance of one.
+
+        With ``as_user``, the chain is instead the instances that user may use
+        (:meth:`_chain_for`): their own, then their teams', then the
+        operator's system ones, never root ones; with ``instance_ids``,
+        exactly those, in that order, each one ``as_user`` (or, without it,
+        the server) may use, else 404. The same failover policy applies."""
         root = cls.root
         if root is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"No {cls.name} provider is configured",
+            )
+        if as_user is not None or instance_ids is not None:
+            chain = cls._chain_for(root, provider_names, as_user, instance_ids)
+            if not chain:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"No {cls.name} provider instance can do this",
+                )
+            return await root.arotate(
+                cls.provider_call(method_name),
+                *args,
+                provider_instance_chain=chain,
+                **kwargs,
             )
         from zephyrex.logic.BLL_Providers import (
             ProviderInstanceManager,
@@ -2131,6 +2167,91 @@ class AbstractStaticExtension(
             provider_instance_ids=instance_ids,
             **kwargs,
         )
+
+    # The order a user's chain takes its instances in: their own first, then
+    # their teams', then the operator's system ones. Root ones never serve a user.
+    USER_CHAIN_SCOPES: ClassVar[Tuple[str, ...]] = ("user", "team", "system")
+
+    @classmethod
+    def _chain_for(
+        cls,
+        root: Any,
+        provider_names: List[str],
+        as_user: Optional[str],
+        instance_ids: Optional[Sequence[str]],
+    ) -> List[str]:
+        """The provider-instance ids a call for ``as_user`` may rotate over,
+        in order, among the instances of the providers named.
+
+        Without ``instance_ids``: each instance of those providers ``as_user``
+        may use (their own and their teams', as they see them; every
+        system-scoped one; never a root-scoped one), live and not disabled,
+        by scope (:attr:`USER_CHAIN_SCOPES`), and within a scope in the root
+        rotation's order, then oldest first. With ``instance_ids``: exactly
+        those, in that order; one ``as_user`` may not use, or that is no
+        instance of those providers, is a 404 (it is never skipped quietly).
+        Without ``as_user`` the server's own call may use any live one."""
+        from zephyrex.logic.BLL_Providers import (
+            ProviderInstanceManager,
+            ProviderManager,
+        )
+
+        registry = root.model_registry
+        root_id = env("ROOT_ID")
+        providers = ProviderManager(model_registry=registry, requester_id=root_id)
+        provider_ids = set()
+        for name in provider_names:
+            try:
+                provider_ids.add(str(providers.get(name=name).id))
+            except HTTPException:
+                continue
+        as_root = ProviderInstanceManager(model_registry=registry, requester_id=root_id)
+        live = [as_root.DB.deleted_at.is_(None)]
+        if as_user is None:
+            usable = {
+                str(i.id): i
+                for i in as_root.list(filters=live)
+                if str(i.provider_id) in provider_ids and i.enabled is not False
+            }
+        else:
+            own = cls._instances_for(root, as_user)
+            seen = [
+                i
+                for i in own.list(filters=[own.DB.deleted_at.is_(None)])
+                if i.scope in ("user", "team")
+            ]
+            system = as_root.list(filters=live, scope="system")
+            usable = {
+                str(i.id): i
+                for i in [*seen, *system]
+                if str(i.provider_id) in provider_ids and i.enabled is not False
+            }
+        if instance_ids is not None:
+            missing = [str(i) for i in instance_ids if str(i) not in usable]
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Provider instance not found: {', '.join(missing)}",
+                )
+            return list(dict.fromkeys(str(i) for i in instance_ids))
+        rotation_order = {
+            str(entry.provider_instance_id): index
+            for index, entry in enumerate(
+                root._get_ordered_rotation_provider_instances()
+            )
+        }
+        scope_rank = {scope: n for n, scope in enumerate(cls.USER_CHAIN_SCOPES)}
+        return [
+            instance_id
+            for instance_id, _ in sorted(
+                usable.items(),
+                key=lambda item: (
+                    scope_rank.get(item[1].scope, len(scope_rank)),
+                    rotation_order.get(item[0], len(rotation_order)),
+                    str(item[1].created_at or ""),
+                ),
+            )
+        ]
 
     @classmethod
     def _instances_for(cls, root: Any, requester_id: Optional[str]) -> Any:

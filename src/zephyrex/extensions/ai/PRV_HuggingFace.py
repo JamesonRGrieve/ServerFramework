@@ -6,7 +6,7 @@ OpenAI-compatible chat API, the model named as on the Hub (optionally
 from typing import Any, ClassVar, Dict, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
-from zephyrex.extensions.ai.EXT_AI import CHAT
+from zephyrex.extensions.ai.EXT_AI import CHAT, EXTRA_BODY_SETTING
 from zephyrex.extensions.ai.OpenAICompatible import OpenAICompatibleProvider
 
 
@@ -26,4 +26,5 @@ class PRV_HuggingFace_AI(OpenAICompatibleProvider):
         InstanceSetting(
             "base_url", "Router address", default="https://router.huggingface.co/v1"
         ),
+        EXTRA_BODY_SETTING,
     )

@@ -37,11 +37,17 @@ from zephyrex.extensions.ExternalErrors import BaseExternalError
 # Parameters of an ability's calling convention, never the model's to fill.
 CALLING_CONVENTION = frozenset({"cls", "self", "requester_id"})
 REQUESTER = "requester_id"
+# Parameters only server code sets: whose provider instances serve a call,
+# which ones, and its raw request fields (EXT_AI's as_user, instance_ids and
+# params). A model naming them could run on another user's instances, on any
+# instance by its id, or send fields that multiply its cost (n, best_of).
+SERVER_ONLY = frozenset({"as_user", "instance_ids", "params"})
 
 # Abilities no agent may use, granted or not: the turn itself, running other
-# turns, and changing what agents may do.
+# turns, changing what agents may do, and a stream (an async iterator, which a
+# tool call can't consume).
 NEVER_AGENT_INVOCABLE: frozenset[str] = frozenset(
-    {"thinking_turn", "take_turn", "grant_ability"}
+    {"thinking_turn", "take_turn", "grant_ability", "chat_stream"}
 )
 
 _JSON_TYPE_OF = {
@@ -91,7 +97,7 @@ def ability_to_tool_schema(
     properties: Dict[str, Any] = {}
     required: List[str] = []
     for param_name, param in inspect.signature(method).parameters.items():
-        if param_name in CALLING_CONVENTION or param.kind in (
+        if param_name in CALLING_CONVENTION | SERVER_ONLY or param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
@@ -183,6 +189,8 @@ class AbilityInvoker:
             raise ToolInvocationError(f"{tool!r} is not an ability that can run")
         call = coerce_arguments(arguments)
         call.pop(REQUESTER, None)
+        for server_only in SERVER_ONLY:
+            call.pop(server_only, None)
         signature = inspect.signature(method)
         if REQUESTER in signature.parameters:
             call[REQUESTER] = self.requester_id

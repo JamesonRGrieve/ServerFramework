@@ -194,7 +194,8 @@ class TestOtherWires:
         assert answer["message"]["content"] == "Hi."
         headers = server.requests[0].headers
         assert headers["x-api-key"] == "ak" and headers["anthropic-version"]
-        assert body_of(server)["max_tokens"] == 4096
+        # No limit asked for: the model's own output maximum, never a quiet cap.
+        assert body_of(server)["max_tokens"] == 64000
 
     async def test_elevenlabs_transcription(self, local_http_server, provider_instance):
         server = local_http_server(

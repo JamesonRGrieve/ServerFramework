@@ -135,7 +135,10 @@ class PRV_Torch_TextGeneration(AbstractTorchProvider):
         tools: Optional[List[Dict[str, Any]]],
         max_tokens: Optional[int],
         temperature: Optional[float],
+        params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        # Extra request fields name an HTTP API's; a model run in-process has none.
+        del params
         turns = cls.plain_messages(messages, tools)
         limit, chosen, seconds = cls.bounds(instance, max_tokens, temperature)
         model = cls.model(instance)
