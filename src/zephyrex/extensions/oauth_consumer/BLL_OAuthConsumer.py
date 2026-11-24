@@ -101,6 +101,7 @@ from zephyrex.logic.BLL_Auth.user import issue_browser_session
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceModel,
     ProviderManager,
+    root_instance_name,
 )
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
@@ -400,14 +401,46 @@ def configured_providers(model_registry: Any) -> List[ConfiguredProvider]:
                 continue
             if provider.is_configured_instance(instance):
                 found.append(ConfiguredProvider(instance, provider))
-    return found
+    return _without_superseded_root(found)
+
+
+def _without_superseded_root(
+    found: List[ConfiguredProvider],
+) -> List[ConfiguredProvider]:
+    """``found`` without the seeded ``Root_Oidc`` once the operator's sign-in
+    instance is there: both read the same ``OIDC_CONSUMER_*`` environment, so
+    the seeded one would be a second button for the same identity provider,
+    through a redirect URI nobody registered."""
+    from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
+        sign_in_instance_name,
+    )
+
+    name = sign_in_instance_name()
+    if name is None or not any(
+        c.provider.name == "oidc" and c.instance.name == name for c in found
+    ):
+        return found
+    seeded = root_instance_name("oidc")
+    return [
+        c
+        for c in found
+        if not (c.provider.name == "oidc" and c.instance.name == seeded)
+    ]
 
 
 def public_names(configured: List[ConfiguredProvider]) -> Dict[str, str]:
     """What clients call each instance (by id): the provider's public name
     when it is the only one configured and no instance is named that,
-    else its own name."""
+    else its own name (always its own for the operator's sign-in
+    instance)."""
+    from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
+        sign_in_instance_name,
+    )
+
     names = {c.instance.name for c in configured}
+    # The operator's sign-in instance keeps its own name: its redirect URI
+    # (<APP_URI>/user/close/<name>) is the one registered at the provider.
+    sign_in = sign_in_instance_name()
     counts: Dict[str, int] = {}
     for c in configured:
         counts[c.provider.public_name] = counts.get(c.provider.public_name, 0) + 1
@@ -416,6 +449,7 @@ def public_names(configured: List[ConfiguredProvider]) -> Dict[str, str]:
             c.provider.public_name
             if counts[c.provider.public_name] == 1
             and c.provider.public_name not in names
+            and c.instance.name != sign_in
             else c.instance.name
         )
         for c in configured

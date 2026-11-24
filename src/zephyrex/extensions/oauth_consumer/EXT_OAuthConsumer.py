@@ -45,6 +45,16 @@ def live_instances(model_registry: Any, provider_id: str, name: str) -> List[Any
     return list(rows or [])
 
 
+def sign_in_instance_name() -> Optional[str]:
+    """The name of the operator's sign-in instance (``OIDC_CONSUMER_INSTANCE``,
+    default ``authentik``) when ``OIDC_CONSUMER_ISSUER_URL`` is set, else None."""
+    from zephyrex.lib.Environment import env
+
+    if not (env("OIDC_CONSUMER_ISSUER_URL") or "").strip():
+        return None
+    return (env("OIDC_CONSUMER_INSTANCE") or "").strip() or SIGN_IN_INSTANCE_DEFAULT
+
+
 def ensure_sign_in_instance(as_requester: Any) -> Optional[str]:
     """The root-scoped ``oidc`` instance the server signs people in with,
     made once when ``OIDC_CONSUMER_ISSUER_URL`` is set; its name, or None.
@@ -57,9 +67,9 @@ def ensure_sign_in_instance(as_requester: Any) -> Optional[str]:
     from zephyrex.lib.Environment import env
     from zephyrex.logic.BLL_Providers import ProviderInstanceManager, ProviderManager
 
-    if not (env("OIDC_CONSUMER_ISSUER_URL") or "").strip():
+    name = sign_in_instance_name()
+    if name is None:
         return None
-    name = (env("OIDC_CONSUMER_INSTANCE") or "").strip() or SIGN_IN_INSTANCE_DEFAULT
     root_id = env("ROOT_ID")
     provider = as_requester(ProviderManager, root_id).get(name="oidc")
     instances = as_requester(ProviderInstanceManager, root_id)

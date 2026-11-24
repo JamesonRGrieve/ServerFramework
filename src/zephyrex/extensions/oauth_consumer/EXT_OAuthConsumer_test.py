@@ -15,6 +15,8 @@ from alembic.operations import Operations
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
     GRANT_TYPE,
+    configured_providers,
+    public_names,
     OAuthIdentityModel,
     OAuthLoginStateModel,
 )
@@ -133,3 +135,28 @@ class TestSignInInstance(ExtensionServerMixin):
         ensure_sign_in_instance(EXT_OAuthConsumer.as_requester)
         (again,) = self._instances(server, "gone-sso")
         assert again.id != first.id
+
+    def test_the_sign_in_instance_supersedes_the_seeded_root_one(self, server, set_env):
+        """Both read OIDC_CONSUMER_*: once the sign-in instance is there, the
+        seeded Root_Oidc is no second button, and the sign-in instance is
+        listed by its own name (its redirect URI's), not as "oidc"."""
+        registry = server.app.state.model_registry
+        set_env("OIDC_CONSUMER_ISSUER_URL", ISSUER)
+        set_env("OIDC_CONSUMER_CLIENT_ID", "client")
+        set_env("OIDC_CONSUMER_INSTANCE", "zx-sign-in")
+
+        def oidc_names() -> list:
+            configured = configured_providers(registry)
+            listed = public_names(configured)
+            return sorted(
+                listed[str(c.instance.id)]
+                for c in configured
+                if c.provider.name == "oidc"
+            )
+
+        assert "Root_Oidc" in oidc_names()
+        ensure_sign_in_instance(EXT_OAuthConsumer.as_requester)
+        # Other tests' instances share this app; only these two matter here.
+        after = oidc_names()
+        assert "Root_Oidc" not in after
+        assert "zx-sign-in" in after
