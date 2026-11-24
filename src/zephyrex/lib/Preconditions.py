@@ -210,7 +210,13 @@ _expectations: ContextVar[Optional[_Expectations]] = ContextVar(
 
 
 def table_of(manager: Any) -> Optional[str]:
-    """The table a logic manager writes, or None for a manager with no model."""
+    """The table a logic manager writes, or None for a manager with no model.
+    A manager with no model of its own that writes another's rows (an action
+    manager's routes) names that table as ``versions_table``, so its routes'
+    If-Match holds those rows."""
+    named = getattr(manager, "versions_table", None)
+    if isinstance(named, str) and named:
+        return named
     try:
         return str(manager.DB.__tablename__)
     except (AttributeError, TypeError):

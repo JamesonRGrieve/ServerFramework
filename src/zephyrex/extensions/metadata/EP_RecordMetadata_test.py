@@ -149,13 +149,25 @@ class TestRecordMetadata(ExtensionServerMixin):
             ).status_code
             == 404
         )
+        from zephyrex.lib.Preconditions import entity_etag
+
+        # A save names the row's version (IF_MATCH_REQUIRED, on by default).
+        assert (
+            server.patch(
+                f"/v1/record_metadata/{row['id']}",
+                json={"record_metadata": {"value": "x"}},
+                headers=auth(admin_a),
+            ).status_code
+            == 428
+        )
         changed = server.patch(
             f"/v1/record_metadata/{row['id']}",
             json={"record_metadata": {"value": "Duchess Ime"}},
-            headers=auth(admin_a),
+            headers={**auth(admin_a), "If-Match": entity_etag(row)},
         )
         assert changed.status_code == 200, changed.text
         assert changed.json()["record_metadata"]["value"] == "Duchess Ime"
+        row = changed.json()["record_metadata"]
         assert (
             server.delete(
                 f"/v1/record_metadata/{row['id']}", headers=auth(admin_b)
@@ -164,7 +176,8 @@ class TestRecordMetadata(ExtensionServerMixin):
         )
         assert (
             server.delete(
-                f"/v1/record_metadata/{row['id']}", headers=auth(admin_a)
+                f"/v1/record_metadata/{row['id']}",
+                headers={**auth(admin_a), "If-Match": entity_etag(row)},
             ).status_code
             == 204
         )
@@ -266,3 +279,116 @@ class TestRecordMetadata(ExtensionServerMixin):
             ).status_code
             == 422
         )
+
+    def _change_batch(self, server: Any, user: Any, rows: Any) -> Any:
+        return server.put(
+            "/v1/record_metadata", json={"record_metadatas": rows}, headers=auth(user)
+        )
+
+    def _rows(self, server: Any, user: Any, city: str, *keys: str) -> Any:
+        row = {"target_entity_type": "team", "target_entity_id": city}
+        made = self._batch(server, user, [{**row, "key": key} for key in keys])
+        assert made.status_code == 201, made.text
+        return made.json()["record_metadatas"]
+
+    def test_a_batch_change_gives_each_row_its_own_change(
+        self, server: Any, admin_a: Any, user_b: Any, city: str
+    ) -> None:
+        from zephyrex.lib.Preconditions import entity_etag
+
+        ruler, port = self._rows(server, admin_a, city, "ruler", "port")
+        changed = self._change_batch(
+            server,
+            admin_a,
+            [
+                {"id": ruler["id"], "if_match": entity_etag(ruler), "value": "Arn"},
+                {
+                    "id": port["id"],
+                    "if_match": (port["updated_at"] or port["created_at"]),
+                    "value": "Vell",
+                    "ordinal": 3,
+                },
+            ],
+        )
+        assert changed.status_code == 200, changed.text
+        assert [r["value"] for r in changed.json()["record_metadatas"]] == [
+            "Arn",
+            "Vell",
+        ]
+        read = {r["key"]: r for r in self._of(server, user_b, city).json()["metadata"]}
+        assert (read["ruler"]["value"], read["port"]["ordinal"]) == ("Arn", 3)
+
+    def test_a_batch_change_reports_each_row_and_keeps_the_good_ones(
+        self, server: Any, admin_a: Any, admin_b: Any, city: str
+    ) -> None:
+        from zephyrex.lib.Preconditions import entity_etag
+
+        ruler, port, gate = self._rows(server, admin_a, city, "ruler", "port", "gate")
+        stale = '"1970-01-01T00:00:00"'
+        answered = self._change_batch(
+            server,
+            admin_a,
+            [
+                {"id": ruler["id"], "if_match": entity_etag(ruler), "value": "Arn"},
+                {"id": port["id"], "if_match": stale, "value": "lost"},
+                {"id": gate["id"], "if_match": entity_etag(gate), "key": "ruler"},
+                {"id": str(uuid.uuid4()), "value": "x"},
+                {"value": "no id"},
+            ],
+        )
+        assert answered.status_code == 207, answered.text
+        body = answered.json()
+        assert [r["outcome"] for r in body["results"]] == [
+            "updated",
+            "error",
+            "error",
+            "error",
+            "error",
+        ]
+        assert [r["status_code"] for r in body["results"][1:]] == [412, 409, 404, 422]
+        assert [r["value"] for r in body["record_metadatas"]] == ["Arn"]
+        assert (body["successful_updates"], body["failed_updates"]) == (1, 4)
+        read = {r["key"]: r for r in self._of(server, admin_a, city).json()["metadata"]}
+        assert (read["port"]["value"], "gate" in read) == (None, True)
+
+    def test_a_batch_change_by_someone_outside_is_the_first_rows_error(
+        self, server: Any, admin_a: Any, admin_b: Any, city: str
+    ) -> None:
+        (ruler,) = self._rows(server, admin_a, city, "ruler")
+        refused = self._change_batch(
+            server, admin_b, [{"id": ruler["id"], "value": "x"}]
+        )
+        assert refused.status_code == 404, refused.text
+
+    def test_a_change_or_removal_is_held_to_the_rows_version(
+        self, server: Any, admin_a: Any, city: str
+    ) -> None:
+        from zephyrex.lib.Preconditions import entity_etag
+
+        stale = '"1970-01-01T00:00:00"'
+        (ruler,) = self._rows(server, admin_a, city, "ruler")
+        path = f"/v1/record_metadata/{ruler['id']}"
+        refused = server.patch(
+            path,
+            json={"record_metadata": {"value": "lost"}},
+            headers={**auth(admin_a), "If-Match": stale},
+        )
+        assert refused.status_code == 412, refused.text
+        assert refused.json()["current"]["id"] == ruler["id"]
+        saved = server.patch(
+            path,
+            json={"record_metadata": {"value": "Arn"}},
+            headers={**auth(admin_a), "If-Match": entity_etag(ruler)},
+        )
+        assert saved.status_code == 200, saved.text
+        assert (
+            server.delete(
+                path, headers={**auth(admin_a), "If-Match": stale}
+            ).status_code
+            == 412
+        )
+        current = saved.json()["record_metadata"]
+        removed = server.delete(
+            path, headers={**auth(admin_a), "If-Match": entity_etag(current)}
+        )
+        assert removed.status_code == 204, removed.text

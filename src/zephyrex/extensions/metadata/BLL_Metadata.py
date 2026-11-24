@@ -298,6 +298,16 @@ class RecordMetadataOne(RouteModel):
     record_metadata: MetadataModel
 
 
+class RecordMetadataBatchChange(RouteModel):
+    """Each row's own change: ``{"id", "if_match"?, ...fields}``."""
+
+    record_metadatas: List[Any] = Field(..., max_length=MAX_BATCH_SIZE)
+
+
+class RecordMetadataPlural(RouteModel):
+    record_metadatas: List[MetadataModel]
+
+
 class RecordMetadataManager(AbstractBLLManager, RouterMixin):
     """A record's rows, under the record's own access: VIEW reads them (private ones need EDIT),
     EDIT writes them. Rows are read and stored as SYSTEM (which, unlike ROOT, never sees deleted rows), so the user/team permission paths never reach them;
@@ -311,6 +321,17 @@ class RecordMetadataManager(AbstractBLLManager, RouterMixin):
     tags: ClassVar[Optional[List[str]]] = ["Metadata"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
     routes_to_register: ClassVar[Optional[List[RouteType]]] = []
+
+    @property
+    def versions_table(self) -> str:
+        """The rows these routes write are the metadata table's, so a
+        PATCH's or DELETE's If-Match holds the row its path names."""
+        return str(self._root().DB.__tablename__)
+
+    def visible_current(self, id: str) -> Any:
+        """The row as it now stands, for a 412: only a row's editors write
+        it, and they may read all of its record's rows."""
+        return self._root().visible_current(id)
 
     def _root(self) -> MetadataManager:
         from zephyrex.lib.Environment import env
@@ -485,6 +506,9 @@ class RecordMetadataManager(AbstractBLLManager, RouterMixin):
     def change_route(
         self, id: str, record_metadata: RecordMetadataChange
     ) -> RecordMetadataOne:
+        return RecordMetadataOne(record_metadata=self._change(id, record_metadata))
+
+    def _change(self, id: str, record_metadata: Any) -> MetadataModel:
         row = self._row(id)
         # The body may arrive with every field present (None for those not sent): only real values change.
         changes = {
@@ -504,8 +528,77 @@ class RecordMetadataManager(AbstractBLLManager, RouterMixin):
                 raise HTTPException(
                     status_code=409, detail=f"The record already has {changes['key']!r}"
                 )
-        updated = self._root().update(id=id, **changes)
-        return RecordMetadataOne(record_metadata=updated)
+        updated: MetadataModel = self._root().update(id=id, **changes)
+        return updated
+
+    @custom_route(
+        method="PUT",
+        path="",
+        output_model=RecordMetadataPlural,
+        input_model=RecordMetadataBatchChange,
+        authentication_type="jwt",
+        openapi_tags=("Metadata",),
+        summary="Change many records' key/values, each row its own change, with "
+        "each row's outcome",
+        expose_in=(ExposeIn.REST,),
+    )
+    def change_batch_route(self, record_metadatas: List[Any]) -> JSONResponse:
+        """Every row attempted and reported in order, as the generic per-row
+        batch update is: each held to its own If-Match on the metadata table
+        (stale 412, none 428 when required); 200 when all changed, 207 with
+        each row's outcome when some failed, the first row's error when all
+        did."""
+        from zephyrex.lib.Preconditions import expect_versions
+        from zephyrex.pydantic2.fastapi.routes import (
+            _BATCH_ERROR,
+            _BATCH_UPDATED,
+            _batch_item_error,
+        )
+
+        outcomes: List[Dict[str, Any]] = []
+        changed: List[MetadataModel] = []
+        for index, row in enumerate(record_metadatas):
+            row_id = row.get("id") if isinstance(row, dict) else None
+            try:
+                if not isinstance(row, dict) or not row_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Each batch item must be an object with an 'id'",
+                    )
+                fields = {k: v for k, v in row.items() if k not in ("id", "if_match")}
+                with expect_versions(self, {row_id: row.get("if_match")}):
+                    updated = self._change(row_id, fields)
+            except Exception as err:  # this row's outcome; the batch goes on
+                outcome: Dict[str, Any] = {"index": index, "outcome": _BATCH_ERROR}
+                if row_id:
+                    outcome["id"] = row_id
+                outcomes.append({**outcome, **_batch_item_error(err)})
+                continue
+            outcomes.append({"index": index, "outcome": _BATCH_UPDATED, "id": row_id})
+            changed.append(updated)
+        if record_metadatas and not changed:
+            raise HTTPException(
+                status_code=outcomes[0]["status_code"], detail=outcomes[0]["error"]
+            )
+        records = [row.model_dump() for row in changed]
+        if len(changed) < len(record_metadatas):
+            errors = [o for o in outcomes if o["outcome"] == _BATCH_ERROR]
+            return JSONResponse(
+                status_code=207,
+                content=jsonable_encoder(
+                    {
+                        "message": "Partial success",
+                        "results": outcomes,
+                        "errors": errors,
+                        "successful_updates": len(changed),
+                        "failed_updates": len(errors),
+                        "record_metadatas": records,
+                    }
+                ),
+            )
+        return JSONResponse(
+            status_code=200, content=jsonable_encoder({"record_metadatas": records})
+        )
 
     @custom_route(
         method="DELETE",
