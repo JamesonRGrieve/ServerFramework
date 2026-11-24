@@ -947,3 +947,21 @@ class FoundryBackend:
         later = now + int(minutes) * 60
         await _vtt().vtt_set_setting(world, "core.time", later)
         return _clock(later)
+
+    @classmethod
+    @implements("rpg_scene", "pilot_token", backend=FOUNDRY)
+    async def foundry_pilot_token(
+        cls, requester_id: str, person_id: str, location_id: str
+    ) -> Optional[Doc]:
+        """A person's token taken to a place (that place's scene): their
+        token there, or None when the place is no scene."""
+        world = await _world_of(requester_id, person_id, location_id)
+        uuid = parse_fvtt_id(location_id)[1]
+        if not uuid.startswith("Scene.") or uuid.count(".") != 1:
+            return None
+        await cls.foundry_move_person(None, requester_id, person_id, location_id)
+        actor = _local(_actor_of(person_id))
+        for token in await _tokens(world, uuid):
+            if token.get("actorId") == actor:
+                return _token(world, uuid, token)
+        return None

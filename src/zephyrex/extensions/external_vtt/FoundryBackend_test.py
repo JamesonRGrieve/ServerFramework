@@ -270,6 +270,7 @@ def test_each_implements_the_contracts_ability():
         ("rpg_scene", "place_person"),
         ("rpg_scene", "remove_person_from_scene"),
         ("rpg_scene", "set_scene_background"),
+        ("rpg_scene", "pilot_token"),
         ("rpg_combat", "current_encounter"),
         ("rpg_combat", "start_encounter"),
         ("rpg_combat", "start_combat"),
@@ -515,3 +516,23 @@ async def test_a_stranger_writes_nothing(writes):
     with pytest.raises(InvalidInputExternalError):
         await EXT_External_VTT.foundry_next_turn("stranger", "fvtt:w1:Combat.k1")
     assert writes == []
+
+
+async def test_piloting_a_token_to_a_place(writes):
+    EMBEDDED[("Scene.s2", "Token")] = [
+        {"id": "t-new", "actorId": "a1", "x": 1000, "y": 500}
+    ]
+    try:
+        token = await EXT_External_VTT.foundry_pilot_token(
+            GM, "fvtt:w1:Actor.a1", "fvtt:w1:Scene.s2"
+        )
+    finally:
+        EMBEDDED[("Scene.s2", "Token")] = []
+    assert token is not None and token["id"] == "fvtt:w1:Scene.s2.Token.t-new"
+    assert writes[0] == ("delete", "Token", ["t1"], "Scene.s1")
+    assert (
+        await EXT_External_VTT.foundry_pilot_token(
+            GM, "fvtt:w1:Actor.a1", "fvtt:w1:JournalEntry.j1"
+        )
+        is None
+    )
