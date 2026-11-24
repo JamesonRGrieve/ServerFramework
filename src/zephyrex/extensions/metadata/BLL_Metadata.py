@@ -17,6 +17,8 @@ extension without importing it directly.
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
 
 from fastapi import HTTPException, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from pydantic import BaseModel as RouteModel
@@ -24,6 +26,7 @@ from pydantic import BaseModel as RouteModel
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.RecordTarget import can_edit, can_view
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
+from zephyrex.pydantic2.fastapi.limits import MAX_BATCH_SIZE
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.sqlalchemy.indexes import TableIndex
 from zephyrex.logic.AbstractLogicManager import (
@@ -272,7 +275,11 @@ class RecordMetadataWrite(RouteModel):
 
 
 class RecordMetadataEnvelope(RouteModel):
-    record_metadata: RecordMetadataWrite
+    """One row (``record_metadata``) or a batch (``record_metadatas``), each
+    batch row validated and reported on its own."""
+
+    record_metadata: Optional[RecordMetadataWrite] = None
+    record_metadatas: Optional[List[Any]] = Field(None, max_length=MAX_BATCH_SIZE)
 
 
 class RecordMetadataChange(RouteModel):
@@ -363,11 +370,83 @@ class RecordMetadataManager(AbstractBLLManager, RouterMixin):
         authentication_type="jwt",
         status_code=201,
         openapi_tags=("Metadata",),
-        summary="Add a key/value to a record one may edit (one row per key)",
+        summary="Add a key/value to a record one may edit (one row per key), or a "
+        "batch of them with each row's outcome",
         expose_in=(ExposeIn.REST,),
     )
-    def add_route(self, record_metadata: RecordMetadataWrite) -> RecordMetadataOne:
-        fields = RecordMetadataWrite.model_validate(record_metadata)
+    def add_route(
+        self,
+        record_metadata: Optional[RecordMetadataWrite] = None,
+        record_metadatas: Optional[List[Any]] = None,
+    ) -> Any:
+        if (record_metadata is None) == (record_metadatas is None):
+            raise HTTPException(
+                status_code=422,
+                detail="Send either 'record_metadata' (one row) or "
+                "'record_metadatas' (a batch)",
+            )
+        if record_metadatas is not None:
+            return self._add_batch(record_metadatas)
+        return RecordMetadataOne(record_metadata=self._add(record_metadata))
+
+    def _add_batch(self, rows: List[Any]) -> JSONResponse:
+        """Every row attempted and reported in order, as a plural create is:
+        201 when all were added, 207 with each row's outcome when some
+        failed, and the first row's error when all did."""
+        from zephyrex.pydantic2.fastapi.routes import (
+            _BATCH_CREATED,
+            _BATCH_ERROR,
+            _batch_item_error,
+        )
+
+        outcomes: List[Dict[str, Any]] = []
+        added: List[MetadataModel] = []
+        for index, row in enumerate(rows):
+            try:
+                created = self._add(row)
+            except Exception as err:  # this row's outcome; the batch goes on
+                outcomes.append(
+                    {"index": index, "outcome": _BATCH_ERROR, **_batch_item_error(err)}
+                )
+                continue
+            outcomes.append(
+                {"index": index, "outcome": _BATCH_CREATED, "id": created.id}
+            )
+            added.append(created)
+        if rows and not added:
+            raise HTTPException(
+                status_code=outcomes[0]["status_code"], detail=outcomes[0]["error"]
+            )
+        records = [row.model_dump() for row in added]
+        if len(added) < len(rows):
+            errors = [o for o in outcomes if o["outcome"] == _BATCH_ERROR]
+            return JSONResponse(
+                status_code=207,
+                content=jsonable_encoder(
+                    {
+                        "message": "Partial success",
+                        "results": outcomes,
+                        "errors": errors,
+                        "successful_creates": len(added),
+                        "failed_creates": len(errors),
+                        "record_metadatas": records,
+                    }
+                ),
+            )
+        return JSONResponse(
+            status_code=201, content=jsonable_encoder({"record_metadatas": records})
+        )
+
+    def _add(self, record_metadata: Any) -> MetadataModel:
+        if not isinstance(record_metadata, (dict, RecordMetadataWrite)):
+            raise HTTPException(
+                status_code=422, detail="Each batch item must be an object"
+            )
+        fields = RecordMetadataWrite.model_validate(
+            record_metadata.model_dump()
+            if isinstance(record_metadata, RecordMetadataWrite)
+            else record_metadata
+        )
         self._check_type(fields.value_type)
         self._require_edit(fields.target_entity_type, fields.target_entity_id)
         root = self._root()
@@ -383,8 +462,8 @@ class RecordMetadataManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(
                 status_code=422, detail=f"A record has at most {MAX_RECORD_KEYS} keys"
             )
-        row = root.create(**fields.model_dump())
-        return RecordMetadataOne(record_metadata=row)
+        row: MetadataModel = root.create(**fields.model_dump())
+        return row
 
     def _row(self, id: str) -> MetadataModel:
         row: MetadataModel = self._root().get(id=id)

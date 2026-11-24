@@ -186,3 +186,83 @@ class TestRecordMetadata(ExtensionServerMixin):
                 target_entity_id=city,
             )
         assert getattr(refused.value, "status_code", None) == 400
+
+    def _batch(self, server: Any, user: Any, rows: Any) -> Any:
+        return server.post(
+            "/v1/record_metadata", json={"record_metadatas": rows}, headers=auth(user)
+        )
+
+    def test_a_batch_adds_every_row(
+        self, server: Any, admin_a: Any, user_b: Any, city: str
+    ) -> None:
+        row = {"target_entity_type": "team", "target_entity_id": city}
+        made = self._batch(
+            server,
+            admin_a,
+            [{**row, "key": "ruler", "value": "Arn"}, {**row, "key": "port"}],
+        )
+        assert made.status_code == 201, made.text
+        assert [r["key"] for r in made.json()["record_metadatas"]] == ["ruler", "port"]
+        assert sorted(
+            r["key"] for r in self._of(server, user_b, city).json()["metadata"]
+        ) == ["port", "ruler"]
+
+    def test_a_batch_reports_each_row_and_keeps_the_good_ones(
+        self, server: Any, admin_a: Any, admin_b: Any, city: str
+    ) -> None:
+        row = {"target_entity_type": "team", "target_entity_id": city}
+        answered = self._batch(
+            server,
+            admin_a,
+            [
+                {**row, "key": "ruler"},
+                {**row, "key": "ruler"},  # the record already has it
+                {**row, "key": "x", "value_type": "colour"},
+                {
+                    "target_entity_type": "team",
+                    "target_entity_id": str(uuid.uuid4()),
+                    "key": "y",
+                },
+                "not-an-object",
+                {**row, "key": "port"},
+            ],
+        )
+        assert answered.status_code == 207, answered.text
+        body = answered.json()
+        assert [r["outcome"] for r in body["results"]] == [
+            "created",
+            "error",
+            "error",
+            "error",
+            "error",
+            "created",
+        ]
+        assert [r.get("status_code") for r in body["results"][1:5]] == [
+            409,
+            422,
+            404,
+            422,
+        ]
+        assert [r["key"] for r in body["record_metadatas"]] == ["ruler", "port"]
+        assert (body["successful_creates"], body["failed_creates"]) == (2, 4)
+
+    def test_a_batch_in_which_every_row_fails_is_the_first_rows_error(
+        self, server: Any, admin_b: Any, city: str
+    ) -> None:
+        row = {"target_entity_type": "team", "target_entity_id": city, "key": "x"}
+        assert self._batch(server, admin_b, [row, row]).status_code == 404
+
+    def test_one_shape_per_request(self, server: Any, admin_a: Any, city: str) -> None:
+        row = {"target_entity_type": "team", "target_entity_id": city, "key": "x"}
+        both = server.post(
+            "/v1/record_metadata",
+            json={"record_metadata": row, "record_metadatas": [row]},
+            headers=auth(admin_a),
+        )
+        assert both.status_code == 422, both.text
+        assert (
+            server.post(
+                "/v1/record_metadata", json={}, headers=auth(admin_a)
+            ).status_code
+            == 422
+        )
