@@ -14,9 +14,11 @@ import inspect
 
 import stringcase
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
 
 from zephyrex.lib.ClassMembers import decorated_functions
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.OffLoop import call_off_loop
 from zephyrex.pydantic2.util import manager_resource_name
 
 from .types import (
@@ -271,11 +273,15 @@ def create_router_from_manager(
                         mgr_class, model_registry, auth_type
                     )
                     request_info = await get_request_info(request)
-                    parent_manager = factory(request=request_info)
+                    # The manager's setup and a synchronous method run on a
+                    # worker thread, as every generated route's do.
+                    parent_manager = await run_in_threadpool(
+                        factory, request=request_info
+                    )
 
                     # Call method on parent manager (where nested custom routes are defined)
                     method_func: Callable = getattr(parent_manager, route_function)
-                    return method_func(parent_id)
+                    return await call_off_loop(method_func, parent_id)
 
                 return nested_endpoint
 

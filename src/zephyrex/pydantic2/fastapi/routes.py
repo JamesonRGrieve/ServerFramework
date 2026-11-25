@@ -1,3 +1,4 @@
+import inspect
 import json
 from typing import (
     TYPE_CHECKING,
@@ -28,10 +29,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel as RouteModel
 from pydantic import Field, ValidationError, create_model
+from starlette.concurrency import run_in_threadpool
 
 from zephyrex.lib.Environment import inflection, plural_noun
 from zephyrex.lib.InboundSecurity import carry_rate_limit
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.OffLoop import call_off_loop, runs_on_loop
 from zephyrex.lib.Preconditions import (
     IF_MATCH_HEADER,
     VERSION_FIELDS,
@@ -41,8 +44,8 @@ from zephyrex.lib.Preconditions import (
 )
 from zephyrex.pydantic2.util import manager_resource_name
 
+from .examples import ExampleGenerator
 from .limits import MAX_BATCH_SIZE, MAX_PAGE_SIZE
-from .types import AuthType, CustomRouteConfig, RouteType
 from .query import (
     _apply_field_projection_to_entity,
     _degradation_responses_annotation,
@@ -55,7 +58,6 @@ from .query import (
     create_query_model_dependency,
     get_request_info,
 )
-from .examples import ExampleGenerator
 from .resource import (
     _build_links,
     _populate_includes_on_serialized,
@@ -69,9 +71,11 @@ from .resource import (
     serialize_for_response,
     validate_field_acl_query,
 )
+from .types import AuthType, CustomRouteConfig, RouteType
 
 if TYPE_CHECKING:
     from zephyrex.pydantic2.manager_contract import ManagerContract as ManagerContract
+
     from .types import NetworkModelProtocol as NetworkModelProtocol
 
 # The If-Match request header of a single-record write: the record's ETag as
@@ -638,7 +642,7 @@ def _build_get_route(
     # at def-time to the per-model class FastAPI needs for query
     # validation. mypy can't resolve a dynamic attribute access used
     # as an annotation, so this is ignored rather than restructured.
-    async def get_resource(
+    def get_resource(
         request: Dict = Depends(get_request_info),
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
         query_params: network_model.GET = Depends(get_query_dependency),
@@ -894,7 +898,7 @@ def _build_list_route(
         dependencies=dependencies,
         responses=responses,
     )
-    async def list_resources(
+    def list_resources(
         request: Dict = Depends(get_request_info),
         # see get_resource() above: dynamic attr-as-annotation, live at runtime
         query_params: network_model.LIST = Depends(list_query_dependency),
@@ -1342,7 +1346,7 @@ def _build_create_route(
         responses=responses,
         openapi_extra=_multiformat_request_body_extra(),
     )
-    async def create_resource(
+    def create_resource(
         request: Dict = Depends(get_request_info),
         body: Dict = Body(...),
         manager=Depends(manager_factory),
@@ -1501,7 +1505,7 @@ def _build_update_route(
         responses=responses,
         openapi_extra=_multiformat_request_body_extra(),
     )
-    async def update_resource(
+    def update_resource(
         response: Response,
         request: Dict = Depends(get_request_info),
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
@@ -1675,7 +1679,7 @@ def _build_delete_route(
         status_code=status.HTTP_204_NO_CONTENT,
         dependencies=dependencies,
     )
-    async def delete_resource(
+    def delete_resource(
         request: Dict = Depends(get_request_info),
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
         if_match: Optional[str] = _IF_MATCH,
@@ -1733,7 +1737,7 @@ def _build_search_route(
         responses=responses,
         openapi_extra=_multiformat_request_body_extra(),
     )
-    async def search_resources(
+    def search_resources(
         request: Dict = Depends(get_request_info),
         # see get_resource() above: dynamic attr-as-annotation, live at runtime
         criteria: network_model.SEARCH = Body(...),
@@ -2066,7 +2070,7 @@ def _build_batch_update_route(
         responses=responses,
         openapi_extra=_multiformat_request_body_extra(),
     )
-    async def batch_update_resources(
+    def batch_update_resources(
         request: Dict = Depends(get_request_info),
         body: BatchUpdateModel = Body(...),
         manager=Depends(manager_factory),
@@ -2170,7 +2174,7 @@ def _build_batch_delete_route(
         status_code=status.HTTP_204_NO_CONTENT,
         dependencies=dependencies,
     )
-    async def batch_delete_resources(
+    def batch_delete_resources(
         request: Dict = Depends(get_request_info),
         target_ids: str = Query(
             ..., description=f"Comma-separated list of {resource_name_plural} IDs"
@@ -2264,7 +2268,6 @@ def register_custom_route(
     manager_class: Type["ManagerContract"],
 ) -> None:
     """Register a custom route on the router."""
-    import inspect
 
     # Get method from manager class
     method: Optional[Callable] = getattr(manager_class, custom_route.function, None)
@@ -2364,8 +2367,9 @@ def register_custom_route(
             if "cls" in sig.parameters:
                 method_args["cls"] = manager_class
 
-            # Call the static method
-            result = method(**method_args)
+            # A synchronous method (login and registration hash passwords)
+            # runs on a worker thread, never on the event loop.
+            result = await call_off_loop(method, **method_args)
 
             if (resp := _render_degradation_sentinel(result)) is not None:
                 return resp
@@ -2383,7 +2387,7 @@ def register_custom_route(
 
         async def endpoint(request: Request, response: Response):
             request_info = await get_request_info(request)
-            manager = manager_factory(request=request_info)
+            manager = await run_in_threadpool(manager_factory, request=request_info)
             method_func: Callable = getattr(manager, custom_route.function)
 
             method_args = {
@@ -2395,13 +2399,22 @@ def register_custom_route(
 
             if request.method in _BODY_METHODS:
                 method_args["body"] = await _json_body(request)
-            with expect_route_version(
-                manager,
-                request.method,
-                request.path_params,
-                request.headers.get(IF_MATCH_HEADER),
-            ):
-                result = method_func(**method_args)
+
+            def _call() -> Any:
+                with expect_route_version(
+                    manager,
+                    request.method,
+                    request.path_params,
+                    request.headers.get(IF_MATCH_HEADER),
+                ):
+                    return method_func(**method_args)
+
+            if runs_on_loop(method):
+                result = _call()
+                if inspect.isawaitable(result):
+                    result = await result
+            else:
+                result = await run_in_threadpool(_call)
 
             if (resp := _render_degradation_sentinel(result)) is not None:
                 return resp

@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional
 # call it by its short name.
 from zephyrex.bootstrap import run_venv_bootstrap as _venv  # noqa: F401
 from zephyrex.bootstrap import setup_python_path
-
 from zephyrex.lib.Logging import logger
 
 if __name__ == "__main__":
@@ -31,7 +30,6 @@ from fastapi.responses import JSONResponse
 
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env, inflection
-from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.lib.RequestContext import (
     DeadlineExceededError,
     clear_request_context,
@@ -40,6 +38,7 @@ from zephyrex.lib.RequestContext import (
     set_request_deadline_ms,
     set_request_user,
 )
+from zephyrex.pydantic2.registry import ModelRegistry
 
 # The installed framework's own source tree: what the source headers and
 # GET /source hash and check.
@@ -505,13 +504,16 @@ def build_app(model_registry: ModelRegistry):
             db_mgr.init_engine_config()
         db_mgr.init_worker()
 
+        from zephyrex.lib.LoopWatchdog import start_loop_watchdog
+
+        watchdog = start_loop_watchdog()
+
         valkey_client = None
         valkey_uri = getattr(app.state, "_valkey_uri", None)
         if valkey_uri:
             try:
-                from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
-
                 from zephyrex.extensions.database_memory.PRV_Valkey import (
+                    PRV_Valkey,
                     ValkeyConnectionStub,
                 )
 
@@ -592,6 +594,8 @@ def build_app(model_registry: ModelRegistry):
                 except Exception as exc:
                     logger.debug("Valkey close error: %s", exc)
             await db_mgr.close_worker()
+            if watchdog is not None:
+                watchdog.stop()
 
     # H-4 — gate the OpenAPI surface in production. Unauthenticated docs
     # let an attacker enumerate every route, parameter, and admin endpoint

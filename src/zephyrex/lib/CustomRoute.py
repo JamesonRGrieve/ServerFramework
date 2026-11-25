@@ -38,8 +38,10 @@ from typing import (
 
 from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel, TypeAdapter
+from starlette.concurrency import run_in_threadpool
 
 from zephyrex.lib.InboundSecurity import carry_rate_limit
+from zephyrex.lib.OffLoop import runs_on_loop
 from zephyrex.lib.Preconditions import IF_MATCH_HEADER, expect_route_version
 from zephyrex.lib.RequestBody import ROUTE_BODY_LIMIT_ATTRIBUTE
 from zephyrex.pydantic2.fastapi.resource import (
@@ -401,25 +403,46 @@ def _make_rest_endpoint(
     """
     binding = _RouteBinding.build(manager_cls, method_name, spec)
     auth_type = spec.auth_type
+    on_loop = runs_on_loop(getattr(manager_cls, method_name))
+
+    def _call(manager: Any, request: Request, arguments: Dict[str, Any]) -> Any:
+        with expect_route_version(
+            manager,
+            request.method,
+            request.path_params,
+            request.headers.get(IF_MATCH_HEADER),
+        ):
+            return getattr(manager, method_name)(**arguments)
 
     # ``request: Request`` resolves against this module's globals under
     # ``from __future__ import annotations``, so ``Request`` is imported at
     # module level (a function-local import breaks OpenAPI generation).
     async def endpoint(request: Request, response: Response) -> Any:
         try:
-            manager = create_manager_factory(
+            factory = create_manager_factory(
                 manager_cls,
                 getattr(request.app.state, "model_registry", None),
                 auth_type,
-            )(request=request)
-            arguments = await binding.arguments(request, response)
-            with expect_route_version(
-                manager,
-                request.method,
-                request.path_params,
-                request.headers.get(IF_MATCH_HEADER),
-            ):
-                result = getattr(manager, method_name)(**arguments)
+            )
+            if on_loop:
+                manager = factory(request=request)
+                arguments = await binding.arguments(request, response)
+                with expect_route_version(
+                    manager,
+                    request.method,
+                    request.path_params,
+                    request.headers.get(IF_MATCH_HEADER),
+                ):
+                    result = getattr(manager, method_name)(**arguments)
+                    if inspect.isawaitable(result):
+                        result = await result
+            else:
+                # A synchronous method, and the manager's setup (which may
+                # read the database to resolve an API key), runs on a worker
+                # thread: on the loop it would hold every other request.
+                manager = await run_in_threadpool(factory, request=request)
+                arguments = await binding.arguments(request, response)
+                result = await run_in_threadpool(_call, manager, request, arguments)
                 if inspect.isawaitable(result):
                     result = await result
             if spec.response_class is not None:
@@ -541,10 +564,25 @@ def _build_graphql_resolver(
     def _with_context(info: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         return {**kwargs, **{name: info.context[name] for name in context_params}}
 
+    on_loop = runs_on_loop(bound_method)
+
+    def _build_and_call(info: Any, kwargs: Dict[str, Any]) -> Any:
+        manager = manager_factory(info=info, auth_type=spec.auth_type)
+        return getattr(manager, method_name)(**kwargs)
+
+    async def _invoke(info: Any, kwargs: Dict[str, Any]) -> Any:
+        # As on REST: a synchronous method runs on a worker thread.
+        if on_loop:
+            result = _build_and_call(info, kwargs)
+        else:
+            result = await run_in_threadpool(_build_and_call, info, kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return _coerce_output(result, spec.output_model)
+
     if spec.method in ("POST", "PUT", "PATCH") and spec.input_model is not None:
 
         async def resolver(info: Any, input: spec.input_model) -> spec.output_model:  # type: ignore[name-defined]
-            manager = manager_factory(info=info, auth_type=spec.auth_type)
             payload = (
                 input.model_dump() if hasattr(input, "model_dump") else dict(input)
             )
@@ -552,21 +590,12 @@ def _build_graphql_resolver(
                 kwargs: Dict[str, Any] = {"body": input}
             else:
                 kwargs = _split_kwargs(payload)
-            kwargs = _with_context(info, kwargs)
-            result = getattr(manager, method_name)(**kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            return _coerce_output(result, spec.output_model)
+            return await _invoke(info, _with_context(info, kwargs))
 
     else:
 
         async def resolver(info: Any, **kwargs: Any) -> spec.output_model:  # type: ignore[name-defined, misc]
-            manager = manager_factory(info=info, auth_type=spec.auth_type)
-            accepted = _with_context(info, _split_kwargs(kwargs))
-            result = getattr(manager, method_name)(**accepted)
-            if inspect.isawaitable(result):
-                result = await result
-            return _coerce_output(result, spec.output_model)
+            return await _invoke(info, _with_context(info, _split_kwargs(kwargs)))
 
     resolver.__name__ = method_name
     resolver.__qualname__ = f"{manager_cls.__name__}.{method_name}"

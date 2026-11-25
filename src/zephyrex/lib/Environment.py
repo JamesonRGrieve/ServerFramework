@@ -136,6 +136,10 @@ class AppSettings(BaseModel):
 
     TZ: str = "UTC"
     UVICORN_WORKERS: Optional[str] = 1  # type: ignore[assignment]
+    # zephyrex.lib.LoopWatchdog: warn, with the loop thread's stack, when the
+    # event loop has not answered for this many seconds (0 turns it off).
+    LOOP_STALL_WARN_SECONDS: str = "2"
+    LOOP_WATCHDOG_INTERVAL_SECONDS: str = "0.5"
 
     @field_validator("DATABASE_NAME", "DATABASE_USER", mode="before")
     @classmethod
