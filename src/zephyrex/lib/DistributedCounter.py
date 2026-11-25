@@ -278,11 +278,17 @@ class PostgresDistributedCounter(DistributedCounter):
             )
         return self._session_provider()
 
-    async def _try_consume_one(self, amount: int) -> bool:
-        from sqlalchemy import text  # local import: keep module import light
+    # Each operation is a synchronous round trip on its own session: it runs
+    # on a worker thread so the event loop serves other requests meanwhile.
 
+    async def _try_consume_one(self, amount: int) -> bool:
         if amount <= 0:
             return True
+        return await asyncio.to_thread(self._try_consume_one_sync, amount)
+
+    def _try_consume_one_sync(self, amount: int) -> bool:
+        from sqlalchemy import text  # local import: keep module import light
+
         session = self._session()
         # Ensure row exists.
         session.execute(
@@ -305,10 +311,13 @@ class PostgresDistributedCounter(DistributedCounter):
         return result is not None
 
     async def release(self, amount: int) -> None:
-        from sqlalchemy import text
-
         if amount <= 0:
             return
+        await asyncio.to_thread(self._release_sync, amount)
+
+    def _release_sync(self, amount: int) -> None:
+        from sqlalchemy import text
+
         session = self._session()
         session.execute(
             text(
@@ -321,6 +330,10 @@ class PostgresDistributedCounter(DistributedCounter):
         session.commit()
 
     async def reset(self, period_key: str) -> None:
+        await asyncio.to_thread(self._reset_sync, period_key)
+        self.period_key = period_key
+
+    def _reset_sync(self, period_key: str) -> None:
         from sqlalchemy import text
 
         session = self._session()
@@ -333,9 +346,11 @@ class PostgresDistributedCounter(DistributedCounter):
             {"period_key": period_key, "key": self.key},
         )
         session.commit()
-        self.period_key = period_key
 
     async def consumed(self) -> int:
+        return await asyncio.to_thread(self._consumed_sync)
+
+    def _consumed_sync(self) -> int:
         from sqlalchemy import text
 
         session = self._session()

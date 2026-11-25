@@ -9,6 +9,7 @@ extra headers (a JSON object) come from its settings, each falling back to the
 environment.
 """
 
+import asyncio
 import base64
 import json
 from typing import Any, ClassVar, Dict, List, Optional
@@ -118,7 +119,8 @@ class PRV_GraphQL(AbstractDatabaseProvider):
         from gql import gql
 
         try:
-            result = client.session.execute(gql(query))
+            # gql's synchronous transport blocks for the whole round trip.
+            result = await asyncio.to_thread(client.session.execute, gql(query))
         except Exception as exc:
             raise cls.query_failed(exc, "GraphQL query") from exc
         finally:

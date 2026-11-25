@@ -8,6 +8,7 @@ static ``AbstractEmailProvider`` format. Uses only the Python standard library
 
 from __future__ import annotations
 
+import asyncio
 import email as _email
 import imaplib
 import os
@@ -287,10 +288,17 @@ class IMAPProvider(AbstractEmailProvider):
                     )
                     message.attach(part)
 
-            with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=30) as server:
-                server.starttls()
-                server.login(cfg["username"], cfg["password"])
-                server.send_message(message)
+            def deliver() -> None:
+                # A blocking SMTP exchange (up to its 30 s timeout): on a
+                # worker thread, not the event loop.
+                with smtplib.SMTP(
+                    cfg["smtp_host"], cfg["smtp_port"], timeout=30
+                ) as server:
+                    server.starttls()
+                    server.login(cfg["username"], cfg["password"])
+                    server.send_message(message)
+
+            await asyncio.to_thread(deliver)
             return f"Email sent successfully to {recipient}"
         except Exception as e:  # noqa: BLE001
             logger.error(f"Error sending {cls.get_platform_name()} email: {e}")

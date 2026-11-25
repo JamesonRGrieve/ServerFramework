@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Callable, Dict, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 
 class LockTimeoutError(Exception):
@@ -112,16 +112,20 @@ class PostgresAdvisoryLock:
                 "PostgresAdvisoryLock requires a session_provider injection."
             )
         self._session = self._session_provider()  # type: ignore[assignment]
+        session: Any = self._session
 
-        if self.timeout is not None:
-            ms = int(self.timeout * 1000)
-            self._session.execute(text(f"SET LOCAL lock_timeout = '{ms}ms'"))  # type: ignore[attr-defined]
-
-        try:
-            self._session.execute(  # type: ignore[attr-defined]
+        def acquire() -> None:
+            # Waiting for the lock blocks: on a worker thread, not the loop.
+            if self.timeout is not None:
+                ms = int(self.timeout * 1000)
+                session.execute(text(f"SET LOCAL lock_timeout = '{ms}ms'"))
+            session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:name))"),
                 {"name": self.name},
             )
+
+        try:
+            await asyncio.to_thread(acquire)
             self._acquired = True
         except Exception as e:
             # Postgres raises a generic operational error on lock_timeout.
