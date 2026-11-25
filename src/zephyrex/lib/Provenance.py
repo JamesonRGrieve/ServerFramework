@@ -24,11 +24,13 @@ This module uses only the standard library: the build hook in setup.py loads
 it directly, before the package's dependencies exist.
 """
 
+import asyncio
 import functools
 import hashlib
 import json
 import os
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -173,6 +175,17 @@ def source_state(root: Path) -> SourceState:
     )
 
 
+_computing = threading.Lock()
+
+
+def compute_source_state(root: Path) -> SourceState:
+    """``source_state`` for callers on any thread: the first computes it
+    (reading and hashing every shipped file, then ``git status``) and any
+    that arrive meanwhile wait for that one result rather than repeat it."""
+    with _computing:
+        return source_state(root)
+
+
 def source_headers(state: SourceState, link: str) -> List[Tuple[bytes, bytes]]:
     return [
         (b"source-link", link.encode("latin-1")),
@@ -189,12 +202,21 @@ class SourceHeadersMiddleware:
         self.app = app
         self.root = root
         self.link = link
+        self._state: Optional[SourceState] = None
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        headers = source_headers(source_state(self.root), self.link())
+        state = self._state
+        if state is None:
+            # Hashing the tree takes a while: never on the event loop, or
+            # the first request after a start holds every other one. The
+            # app's lifespan starts it before the first request in practice.
+            state = self._state = await asyncio.to_thread(
+                compute_source_state, self.root
+            )
+        headers = source_headers(state, self.link())
 
         async def with_source(message: Any) -> None:
             if message["type"] == "http.response.start":

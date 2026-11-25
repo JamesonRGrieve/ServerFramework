@@ -508,6 +508,16 @@ def build_app(model_registry: ModelRegistry):
 
         watchdog = start_loop_watchdog()
 
+        # Hash the shipped source for the source headers now, on a thread,
+        # rather than on the first request.
+        import asyncio
+
+        from zephyrex.lib.Provenance import compute_source_state
+
+        asyncio.get_running_loop().run_in_executor(
+            None, compute_source_state, PACKAGE_ROOT
+        )
+
         valkey_client = None
         valkey_uri = getattr(app.state, "_valkey_uri", None)
         if valkey_uri:
@@ -1163,7 +1173,7 @@ def build_app(model_registry: ModelRegistry):
             return {"status": "UP"}
 
         @app.get("/source", tags=["Meta"])
-        async def source() -> Dict[str, Any]:
+        def source() -> Dict[str, Any]:
             """Where to get this server's source (AGPL-3.0 section 13), and
             whether the running source is what was published, for the
             framework and each loaded extension. A deployment running

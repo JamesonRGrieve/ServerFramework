@@ -225,3 +225,36 @@ def test_a_consumer_extension_offers_its_own_source(tmp_path, monkeypatch):
     assert widgets["bundled"] is False
     assert widgets["source"] == "https://git.example.org/acme/widgets"
     assert widgets["hash_status"] == UNVERIFIED
+
+
+async def test_the_source_is_hashed_off_the_event_loop_and_once(tmp_path, monkeypatch):
+    """Hashing the shipped tree reads every file: on the loop, the first
+    request after a start would hold every other request on the worker."""
+    import threading
+
+    import httpx
+
+    root = _package(tmp_path / "pkg")
+    calls = []
+    real = Provenance.source_state
+
+    def recording(path):
+        calls.append(threading.get_ident())
+        return real(path)
+
+    monkeypatch.setattr(Provenance, "source_state", recording)
+    app = FastAPI()
+    app.add_middleware(SourceHeadersMiddleware, root=root, link=lambda: "x")
+
+    @app.get("/thing")
+    def thing():
+        return {}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        first = await c.get("/thing")
+        second = await c.get("/thing")
+    assert first.headers["source-hash-status"] == UNVERIFIED
+    assert second.headers["source-hash-status"] == UNVERIFIED
+    assert len(calls) == 1
+    assert calls[0] != threading.get_ident()
